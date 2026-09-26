@@ -1,0 +1,31 @@
+[package]
+name = "z0p"
+version = "0.1.0"
+edition = "2021"
+description = "From-scratch zero-knowledge core: binary fields, hashes, Merkle, FRI. Zero dependencies."
+license = "GPL-3.0-only"
+repository = "https://example.invalid/z0p"
+keywords = ["zero-knowledge", "fri", "stark", "cryptography", "no-std"]
+categories = ["cryptography"]
+rust-version = "1.70"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 0
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[[bench]]
+name = "speed_size"
+harness = false

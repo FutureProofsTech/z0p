@@ -1,0 +1,317 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue,
+  pdftitle={z0p: A Zero-Dependency Transparent STARK Stack in Safe Rust},
+  pdfauthor={nul0 (Future Proofs Tech)},
+  pdfsubject={Cryptography: zero-knowledge proofs, STARKs, FRI}}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{conjecture}{Conjecture}
+
+\title{z0p: A Zero-Dependency Transparent STARK Stack in Safe Rust}
+\author{nul0 \\ \textit{Future Proofs Tech} \\ \texttt{futureproofs@proton.me}}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present \textbf{z0p}, a complete zero-knowledge proving stack implemented
+from first principles in safe Rust with no dependencies beyond the compiler
+and the operating system. Binary fields, the BabyBear prime field, BLAKE3,
+Merkle trees, a parallel NTT, an arity-4 FRI polynomial commitment, and four
+STARK systems (Fibonacci AIR, range checks, table membership, and hash-folded
+IVC, plus LogUp lookups and zero-knowledge masking throughout) are all owned
+by a single crate under \texttt{\#![forbid(unsafe\_code)]}. The system is
+transparent (no trusted setup) and hash-based, hence plausibly
+post-quantum. Production parameters target $\approx 100$ conjectured
+soundness bits (rate $1/16$, 40 queries, 20-bit grinding). Measured on a
+16-core machine, a 1,048,576-step computation proves in 6.4~s
+($\approx 6.1\,\mu$s/step), verifies in 0.29~s, with a 160,401-byte proof.
+Validation combines 155 unit tests with two adversarial suites
+($\approx 800$ hostile attempts per run, zero acceptances, zero panics),
+wire-exact size assertions on every benchmark, and machine-checked
+regression gates.
+\end{abstract}
+
+\section{Introduction}
+
+Practical zero-knowledge infrastructure asks its users to trust a great
+deal: pairing-friendly elliptic curves, multi-party setup ceremonies,
+deep dependency trees, and provers whose soundness stories live in slide
+decks. At the same time, large-scale quantum computing threatens every
+discrete-logarithm and pairing-based proof system in deployment. The
+systems that survive that transition will be hash-based, transparently
+set up, small enough to audit, and tested hard enough to believe.
+
+\textbf{Contributions.} z0p is, to our knowledge, the first \emph{complete}
+STARK stack --- fields, hash, Merkle trees, NTT, polynomial commitment,
+AIR systems, and zero-knowledge masking --- implemented from scratch in
+safe Rust with zero dependencies:
+\begin{itemize}
+\item A transparent, plausibly post-quantum design: BLAKE3-256 digests and
+FRI Reed--Solomon commitments over BabyBear. No curves, no ceremonies.
+\item Production soundness sizing in one call
+(\texttt{Params::for\_security(\dots, 100)}): blowup 16, queries,
+grinding, final layer, and cap height jointly optimized for $\approx 100$
+conjectured bits.
+\item Competitive scalar performance with parallelism over
+\texttt{std::thread} only: 1M-step proofs at $\approx 163$k steps/s,
+millisecond verification, logarithmically growing proofs.
+\item Adversarial validation as a first-class artifact: every forgery
+class we could construct is tested continuously, including a fuzzer that
+once caught a genuine proof-malleability hole (since closed by binding
+dimensions into the transcript).
+\end{itemize}
+
+\subsection{Related work}
+
+STARKs \cite{BBHR18a} and the FRI proximity test \cite{BBHR18b},
+strengthened by DEEP-FRI \cite{BBHR19} and compiled via
+BCS-style Fiat--Shamir \cite{BCS16}, are our direct lineage. Production
+STARK toolchains (notably Plonky2/Polygon Zero \cite{Pol22} and Risc
+Zero) share the BabyBear-plus-FRI engineering core but retain large
+dependency footprints. We differ in taking dependency-freedom and
+auditable minimalism as hard constraints, and in publishing adversarial
+test evidence alongside performance claims. Our lookups follow the
+LogUp logarithmic-derivative design \cite{Hab22}. The hash is
+BLAKE3 \cite{BLAKE3}; Fiat--Shamir is classical \cite{FS86}.
+
+\section{Preliminaries}
+
+\paragraph{Fields.} Program words use binary fields $GF(2^8)$,
+$GF(2^{64})$, $GF(2^{128})$. Polynomial domains use BabyBear
+$\mathbb{F}_p$, $p = 2^{31}-2^{27}+1 = 2013265921$ with generator
+$31$; $p-1 = 2^{27}\cdot 15$, so $2^k$-roots of unity exist for
+$k \le 27$. Elements serialize as 4 canonical little-endian bytes;
+multiplication is Barrett reduction, inversion Fermat
+($0 \mapsto 0$), batch inversion Montgomery's trick.
+
+\paragraph{Domains.} Trace domain
+$H = \{1,\omega,\dots,\omega^{N-1}\}$; evaluation domain
+$D = \gamma\cdot\langle\Omega\rangle$ of size $M = N\cdot\beta$
+($\beta$ the blowup), coset shift $\gamma = 31$; $M \le 2^{27}$
+enforced everywhere. Vanishing polynomial $Z_H(x) = x^N - 1$.
+
+\paragraph{Hash and Merkle trees.} Unkeyed BLAKE3-256, implemented from
+the specification and validated against reference vectors including
+chunk boundaries. Trees use
+$\mathrm{leaf}(d) = H(0x00\|d)$,
+$\mathrm{node}(l,r) = H(0x01\|l\|r)$ (second-preimage resistant).
+\emph{Caps} expose an upper tree layer in the commitment so openings
+carry only middle path segments: column trees drop
+$\min(h,\mathrm{depth})$ levels, FRI quad layers
+$\min(h,\mathrm{depth}-2)$ (the verifier rebuilds the bottom two
+levels from revealed values).
+
+\paragraph{Transcripts.} Append-only, length-prefix-framed Fiat--Shamir
+transcript with a full domain-separation schedule (FRI:
+\texttt{fri-dims} first, then per-digest \texttt{fri-layer-root}, three
+\texttt{fri-fold} challenges per layer, \texttt{fri-final},
+\texttt{fri-pow}, per-query \texttt{fri-query}; per-protocol
+\texttt{params}/\texttt{column}/\texttt{alpha} labels; IVC
+\texttt{fold/step}, \texttt{fold/trace}, five \texttt{fold/alpha} per
+step plus per-step \texttt{fold/gamma}; lookup and sumcheck labels
+analogously). Proof-of-work grinding finds the smallest nonce with $d$
+leading zero bits under the history commitment; difficulties above 256
+always fail.
+
+\section{FRI polynomial commitment}
+
+\texttt{commit} encodes $n$ coefficients to $M = n\beta$ coset
+evaluations (shifted NTT); \texttt{commit\_evals} takes
+caller-supplied LDE values of declared degree $\le \mathrm{bound} < M$.
+Both enforce the rate gate $\mathrm{bound}+1 \le M/2$ at prove
+\emph{and} verify time. Prover-echoed dimensions are absorbed under
+\texttt{fri-dims} before any challenge, closing proof malleability of
+those bytes.
+
+Layers are bit-reversed; each adjacent quad sits at
+$(x,-x,j_0x,-j_0x)$ for the fixed fourth root $j_0$, sharing $x^4$.
+Writing $P(X) = A+BX+CX^2+DX^3$ in $Y = X^4$, each layer folds as
+$A + r_0B + r_1C + r_2D$ with fresh challenges, quartering the degree;
+point inverses are batch-inverted once per layer and folding is
+multi-threaded. Proofs carry the final layer in the clear plus, per
+query, all four values of every folded quad with middle path segments.
+The verifier replays the transcript, checks dimensions, rate, cap
+shapes, and PoW, verifies the final layer by divided differences
+against residual bound $\mathrm{bound} \gg 2f$, then checks every
+Merkle path and fold relation, chaining intermediate parents forward.
+
+\begin{conjecture}[FRI soundness sizing]
+Under the Johnson-radius heuristic ($\delta \approx 1-\sqrt{\rho}$),
+rate $\rho = 1/8$ with 12 queries gives $\approx 18$ bits (bench
+shape); rate $\rho = 1/16$ with 40 queries plus 20-bit grinding gives
+$80 + 20 = 100$ bits (production shape). Caps affect size only.
+\end{conjecture}
+
+\section{AIR systems}
+
+All application protocols share one pattern: interpolate columns,
+extend on the LDE coset, Merkle-commit joint rows, evaluate a
+composition vector (geometric vanishing recurrence with
+Montgomery-batched denominators, bit-identical to scalar evaluation),
+FRI-commit it, open trace columns at FRI query positions, and
+re-verify the identity per query.
+
+\paragraph{Fibonacci AIR.} Trace $A[0]=a_0$, $B[0]=b_0$,
+$A[i+1]=B[i]$, $B[i+1]=A[i]+B[i]$, claim $B[N-1]=b_{\mathrm{last}}$.
+With $w_{\mathrm{last}}=\omega^{N-1}$ and
+$Z_{\mathrm{trans}}(x)=(x^N-1)/(x-w_{\mathrm{last}})$:
+\begin{equation}
+\begin{aligned}
+C(x) ={}& \alpha_0\frac{a'-b}{Z_{\mathrm{trans}}(x)}
++ \alpha_1\frac{b'-(a+b)}{Z_{\mathrm{trans}}(x)}
++ \alpha_2\frac{a-a_0}{x-1} \\
+&+ \alpha_3\frac{b-b_0}{x-1}
++ \alpha_4\frac{b-b_{\mathrm{last}}}{x-w_{\mathrm{last}}}.
+\end{aligned}
+\end{equation}
+Dividing (not multiplying) by $Z_{\mathrm{trans}}$ is load-bearing: the
+quotient is low-degree iff the transition holds on every covered row.
+
+\paragraph{Range checks.} Value column plus $n\le 24$ bit columns:
+decomposition $(V-\sum 2^jC_j)/Z_H$, per-bit boolean quotients
+$C_j(C_j-1)/Z_H$, and a boundary quotient.
+
+\paragraph{Table membership.}
+$C(x)=\alpha_{\mathrm{member}}\prod_{t\in T}(v-t)/Z_H(x)
++ \alpha_{\mathrm{bound}}(v-\mathrm{value})/(x-1)$;
+small tables by design.
+
+\paragraph{Folding (IVC).} Chained segments share one batched FRI
+commitment over $\sum_s \gamma_s C_s$ with per-step challenges;
+one proof covers the chain.
+
+\paragraph{Lookups.} LogUp-style: multiplicities, $\beta$ challenge,
+quotients $1/(\beta+w)$, $m/(\beta+t)$, rational-sum equality and four
+sumchecks; proving fails closed on out-of-table witnesses.
+
+\paragraph{Zero knowledge.} Masked proving blinds columns with
+vanishing multiples from a ChaCha20 stream
+($n_{\mathrm{rand}}\ge$ queries enforced; key material zeroized on
+drop). Openings become witness-independent; verification is unchanged,
+and masked false statements still fail.
+
+\section{Encodings and parameters}
+
+Wire format (\texttt{VERSION}~=~1): counts as $u32$, dimensions as
+$u64$, fields as 4 canonical bytes ($<p$ enforced), digests as 32
+bytes, direction bits $0/1$. The decoder fails closed on wrong
+versions, trailing bytes, truncation, non-canonical fields, and counts
+past hard caps ($2^{20}$ queries, $64$ folds, $128$ path steps,
+$256$ cap digests, $2^{27}$ elements, $2^{20}$ IVC steps) before any
+allocation. Validation: power-of-two domains, blowup $\ge 4$ for AIR,
+$M/\mathrm{final}$ a power of four, $M \le 2^{27}$.
+
+\section{Security analysis}
+
+\paragraph{Assumptions.} BLAKE3 collision/preimage resistance; FRI
+soundness heuristic; Fiat--Shamir in the (Q)ROM. No discrete-log,
+pairing, or setup assumptions: Shor-inert by construction.
+
+\paragraph{Enforced invariants.} Bilateral rate gate;
+verifier-derived domains and query indices; final divided-difference
+check at true folded points; cap/path shape pins before hashing;
+\texttt{fri-dims} dimension binding; canonical-only decoding; PoW
+bound to history with queries sampled after.
+
+\paragraph{Adversarial validation.} Three layers: 155 unit tests
+(KATs, Horner cross-checks, parallel-vs-sequential identity); a
+13-vector security suite (tampering of every query/fold/value/path/
+digest, 300 single-bit-flip fuzz trials, PoW forgery, rate gates both
+directions, statement replay); and a 10-vector red-team suite
+(cross-proof transplants, false statements, IVC surgery, codec-limit
+abuse, transcript abuse, exact rate boundaries, masked soundness, and
+a 500-input garbage storm that must fail closed without panicking).
+Standing: $\approx 800$ hostile attempts per run, zero acceptances,
+zero panics, in debug and release.
+
+\section{Implementation and performance}
+
+Safe Rust, zero dependencies, parallelism over \texttt{std::thread}
+only (NTT stages $\ge 2^{16}$, folding, Merkle levels; all
+bit-identical). Key optimizations: Barrett field arithmetic,
+table-driven NTT, single-chunk hash fast paths, batched composition
+(geometric vanishing $+$ Montgomery denominators), verifier on-demand
+domain points, Merkle caps. Measured 2026-09-26, release, medians,
+16-core/31\,GB, \texttt{rustc} 1.97.1:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+Workload (production, $\approx 100$ bits) & Prove & Verify & Size \\
+\midrule
+AIR 1,024 steps & 23\,ms & 1.4\,ms & 48,221\,B \\
+AIR 8,192 steps & 75\,ms & 2.8\,ms & 74,809\,B \\
+AIR 65,536 steps & 370\,ms & 16\,ms & 107,609\,B \\
+AIR \textbf{1,048,576} steps & \textbf{6.4\,s} & \textbf{0.29\,s} & \textbf{160,401\,B} \\
+FRI poly-1024 & 37\,ms & 1.0\,ms & 33,382\,B \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Marginal cost $\approx 6.1\,\mu$s/step ($\approx 163$k steps/s);
+proof sizes are deterministic and asserted byte-for-byte every run.
+Primitives: BLAKE3 1\,MiB in 1.51\,ms, BabyBear $134.6$\,Mops/s, NTT
+$2^{14}$ in 0.36\,ms, 64k-leaf Merkle tree in 3.88\,ms.
+
+\section{Limitations and future work}
+
+Bench defaults are fast but weak and must not be mistaken for
+production soundness; large-table lookups await a multilinear PCS;
+vectorized hashing (pending a \texttt{rust-version} policy decision),
+recursion, and a zkVM are roadmap items; no external audit has yet
+been performed, for which the suites, gates, versioned wire format,
+and pinned baselines are the evidence package.
+
+\bibliographystyle{plain}
+\begin{thebibliography}{9}
+
+\bibitem{BCS16}
+E.~Ben-Sasson, A.~Chiesa, and N.~Spooner.
+\newblock Interactive oracle proofs.
+\newblock In {\em TCC 2016}.
+
+\bibitem{BBHR18a}
+E.~Ben-Sasson, I.~Bentov, Y.~Horesh, and M.~Riabzev.
+\newblock Scalable, transparent, and post-quantum secure computational integrity.
+\newblock Cryptology ePrint Archive, Report 2018/046, 2018.
+
+\bibitem{BBHR18b}
+E.~Ben-Sasson, I.~Bentov, Y.~Horesh, and M.~Riabzev.
+\newblock Fast Reed-Solomon interactive oracle proofs of proximity.
+\newblock In {\em ICALP 2018}.
+
+\bibitem{BBHR19}
+E.~Ben-Sasson, D.~Bentov, Y.~Horesh, and M.~Riabzev.
+\newblock DEEP-FRI: Sampling outside the box improves soundness.
+\newblock Cryptology ePrint Archive, Report 2019/336, 2019.
+
+\bibitem{FS86}
+A.~Fiat and A.~Shamir.
+\newblock How to prove yourself: practical solutions to identification and
+  signature problems.
+\newblock In {\em CRYPTO 1986}.
+
+\bibitem{BLAKE3}
+J.-P.~Aumasson, S.~Neves, J.~O'Connor, and Z.~Wilcox-O'Hearn.
+\newblock BLAKE3: one function, fast everywhere.
+\newblock \url{https://github.com/BLAKE3-team/BLAKE3}, 2020.
+
+\bibitem{Hab22}
+U.~Hab\"ock.
+\newblock Multivariate lookups based on logarithmic derivatives.
+\newblock Cryptology ePrint Archive, Report 2022/1530, 2022.
+
+\bibitem{Pol22}
+Polygon Zero Team.
+\newblock Plonky2: fast recursive arguments with PLONK and FRI.
+\newblock \url{https://github.com/0xPolygonZero/plonky2}, 2022.
+
+\end{thebibliography}
+
+\end{document}

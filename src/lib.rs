@@ -3,8 +3,8 @@
 //! Layers owned 100% by this crate:
 //! - [`gf2`]: binary fields `GF(2^8)`, `GF(2^64)`, `GF(2^128)` for word ops.
 //! - [`babybear`]: NTT-friendly prime field for the FRI domain.
-//! - [`hash`]: SHA3-256 from the FIPS 202 spec.
-//! - [`transcript`]: Fiat-Shamir transcript over SHA3-256.
+//! - [`hash`]: BLAKE3-256 from the official specification (unkeyed).
+//! - [`transcript`]: Fiat-Shamir transcript over BLAKE3-256.
 //! - [`merkle`]: domain-separated binary Merkle tree.
 //! - [`ntt`]: Cooley-Tukey NTT over [`babybear`].
 //! - [`par`]: data parallelism over `std::thread::scope` (no dependencies).
@@ -49,6 +49,19 @@
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
 #![warn(clippy::all, clippy::pedantic)]
+#![cfg_attr(
+    not(test),
+    warn(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::dbg_macro,
+        clippy::print_stdout,
+        clippy::print_stderr
+    )
+)]
 
 pub mod air;
 pub mod babybear;

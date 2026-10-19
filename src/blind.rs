@@ -10,7 +10,7 @@
 //! `n_rand >= num_queries`, the per-column query responses are jointly
 //! uniform and independent of the witness (Vandermonde surjectivity over
 //! distinct off-domain points), giving perfect hiding of query responses.
-//! Merkle roots remain computationally hiding under SHA3-256.
+//! Merkle roots remain computationally hiding under BLAKE3-256.
 //!
 //! Scope: this blinds STARK trace/column commitments ([`crate::air`],
 //! [`crate::range`], and later [`crate::fold`]). [`crate::lookup`] and

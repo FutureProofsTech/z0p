@@ -1,9 +1,9 @@
-//! Fiat-Shamir transcript over SHA3-256.
+//! Fiat-Shamir transcript over BLAKE3-256.
 //!
 //! Append-only and domain-separated: every [`Transcript::absorb`] frames the
 //! label and the payload with 64-bit length prefixes, so distinct call
-//! sequences can never collide. [`Transcript::squeeze`] feeds its own output
-//! back into the log, binding later challenges to earlier ones.
+//! sequences can never collide. Each `challenge_*` squeeze feeds its own
+//! output back into the log, binding later challenges to earlier ones.
 //!
 //! Challenge mapping into binary fields is uniform (every byte string is a
 //! valid [`F64`]/[`F128`] element). Mapping into [`babybear`](crate::babybear)
@@ -16,8 +16,8 @@
 //! `range/*`, `table/*`, `fold/*`, `lookup/*`, `sumcheck/*`.
 //!
 //! Within a protocol, every label carries one payload type in a fixed
-//! order on both sides, and repeats are counter-separated by
-//! [`Transcript::squeeze`]:
+//! order on both sides, and repeats are counter-separated by the squeeze
+//! counter:
 //! - FRI: `fri-dims` (dimensions, first), `fri-layer-root` (cap digests), `fri-fold` (3 fold challenges
 //!   per layer), `fri-final` (final poly), `fri-pow` (grinding nonce),
 //!   `fri-query` (one index per query).

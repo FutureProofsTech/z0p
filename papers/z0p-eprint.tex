@@ -30,7 +30,7 @@ transparent (no trusted setup) and hash-based, hence plausibly
 post-quantum. Production parameters target $\approx 100$ conjectured
 soundness bits (rate $1/16$, 40 queries, 20-bit grinding). Measured on a
 16-core machine, a 1,048,576-step computation proves in 6.4~s
-($\approx 6.1\,\mu$s/step), verifies in 0.29~s, with a 160,401-byte proof.
+($\approx 6.1\,\mu$s/step), verifies in 2.3~ms, with a 160,401-byte proof.
 Validation combines 155 unit tests with two adversarial suites
 ($\approx 800$ hostile attempts per run, zero acceptances, zero panics),
 wire-exact size assertions on every benchmark, and machine-checked
@@ -237,27 +237,31 @@ only (NTT stages $\ge 2^{16}$, folding, Merkle levels; all
 bit-identical). Key optimizations: Barrett field arithmetic,
 table-driven NTT, single-chunk hash fast paths, batched composition
 (geometric vanishing $+$ Montgomery denominators), verifier on-demand
-domain points, Merkle caps. Measured 2026-09-26, release, medians,
-16-core/31\,GB, \texttt{rustc} 1.97.1:
+domain points, Merkle caps. Measured 2026-10-19, release, medians,
+16-core/31\,GB, \texttt{rustc} 1.99.0:
 
 \begin{center}
 \begin{tabular}{lrrr}
 \toprule
 Workload (production, $\approx 100$ bits) & Prove & Verify & Size \\
 \midrule
-AIR 1,024 steps & 23\,ms & 1.4\,ms & 48,221\,B \\
-AIR 8,192 steps & 75\,ms & 2.8\,ms & 74,809\,B \\
-AIR 65,536 steps & 370\,ms & 16\,ms & 107,609\,B \\
-AIR \textbf{1,048,576} steps & \textbf{6.4\,s} & \textbf{0.29\,s} & \textbf{160,401\,B} \\
-FRI poly-1024 & 37\,ms & 1.0\,ms & 33,382\,B \\
+AIR 1,024 steps & 38\,ms & 1.0\,ms & 48,221\,B \\
+AIR 8,192 steps & 81\,ms & 1.6\,ms & 74,809\,B \\
+AIR 65,536 steps & 368\,ms & 1.8\,ms & 107,609\,B \\
+AIR \textbf{1,048,576} steps & \textbf{6.35\,s} & \textbf{2.3\,ms} & \textbf{160,401\,B} \\
+FRI poly-1024 & 38\,ms & 0.9\,ms & 33,382\,B \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Marginal cost $\approx 6.1\,\mu$s/step ($\approx 163$k steps/s);
+Marginal cost $\approx 6.1\,\mu$s/step ($\approx 165$k steps/s);
 proof sizes are deterministic and asserted byte-for-byte every run.
-Primitives: BLAKE3 1\,MiB in 1.51\,ms, BabyBear $134.6$\,Mops/s, NTT
-$2^{14}$ in 0.36\,ms, 64k-leaf Merkle tree in 3.88\,ms.
+Verification is size-independent: each FRI domain point is derived on
+demand in $O(\log)$ field operations rather than from a materialized
+$O(\mathrm{lde})$ layer table, so verify stays in the low milliseconds
+from $1{,}024$ to $1{,}048{,}576$ steps. Primitives: BLAKE3 1\,MiB in
+1.57\,ms, BabyBear $\approx 135$\,Mops/s, NTT $2^{14}$ in 0.37\,ms,
+64k-leaf Merkle tree in 3.47\,ms.
 
 \section{Limitations and future work}
 

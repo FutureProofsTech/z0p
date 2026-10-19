@@ -2,7 +2,7 @@
 //! For witness `w[0..N]` and table `t[0..M]` (both padded to powers of two),
 //! the prover shows a multiplicity vector `m` with `sum(m) = N` and the
 //! rational identity `sum_i 1/(beta + w_i) = sum_j m_j/(beta + t_j)` at a
-//! verifier challenge `beta`. Four [`sumcheck`](crate::sumcheck) invocations
+//! verifier challenge `beta`. Four [`sumcheck`] invocations
 //! establish the two sums plus the two well-formedness (`read-check`)
 //! identities `q * (beta + v) = 1` / `= m` via randomized equality polynomials.
 //!

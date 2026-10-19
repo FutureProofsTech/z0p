@@ -174,7 +174,7 @@ fn parent_root(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 fn chunk_output(blocks: &[u8], counter: u64, root: bool) -> [u8; 32] {
     debug_assert!(!blocks.is_empty() && blocks.len() <= CHUNK_LEN);
     let mut chaining = IV;
-    let block_count = (blocks.len() + BLOCK_LEN - 1) / BLOCK_LEN;
+    let block_count = blocks.len().div_ceil(BLOCK_LEN);
     for (i, block) in blocks.chunks(BLOCK_LEN).enumerate() {
         let mut words = [0u32; 16];
         let mut full_words = 0;

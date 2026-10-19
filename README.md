@@ -20,11 +20,14 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
 - **Production soundness on demand** — `Params::for_security(steps, …, 100)`
   sizes blowup 16, queries, grinding, final size, and cap height for
   ~100 conjectured bits (see [Soundness](#soundness)).
-- **Fast at scale** — 1,048,576-step production proof in ~6.4 s
-  (~6.1 µs/step, ~163k steps/s), verified in ~0.29 s, 160,401 bytes.
-- **Adversarially tested** — 155 unit tests plus two attack suites
-  ([security](docs/security-tests.md), [red-team](docs/red-team.md)):
-  ~800 hostile attempts per run, zero acceptances, zero panics.
+- **Fast at scale** — 1,048,576-step production proof in ~6.35 s
+  (~6.1 µs/step, ~165k steps/s), verified in **~2.3 ms**, 160,401 bytes.
+  Verification cost is essentially independent of trace size (the verifier
+  derives FRI domain points on demand, never materializing `O(lde_len)`).
+- **Adversarially tested** — 156 unit tests plus three attack suites
+  ([security](docs/security-tests.md), [red-team](docs/red-team.md),
+  hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
+  acceptances, zero panics.
 
 ## Quick start
 
@@ -71,23 +74,23 @@ verification is unchanged.
 
 ## Performance
 
-Release profile, median of runs, 16-core / 31 GB machine, `rustc 1.97.1`.
+Release profile, median of runs, 16-core / 31 GB machine, `rustc 1.99.0`.
 Full table with methodology: [docs/benchmarks.md](docs/benchmarks.md).
 
 | Proof (production shape, ~100 bits) | Prove | Verify | Size |
 |---|---|---|---|
-| AIR Fibonacci, 1,024 steps | 23 ms | 1.4 ms | 48,221 B |
-| AIR Fibonacci, 8,192 steps | 75 ms | 2.8 ms | 74,809 B |
-| AIR Fibonacci, 65,536 steps | 370 ms | 15.6 ms | 107,609 B |
-| AIR Fibonacci, **1,048,576 steps** | **6.42 s** | **0.29 s** | **160,401 B** |
-| FRI poly-1024 | 37 ms | 1.0 ms | 33,382 B |
+| AIR Fibonacci, 1,024 steps | 38 ms | 1.0 ms | 48,221 B |
+| AIR Fibonacci, 8,192 steps | 81 ms | 1.6 ms | 74,809 B |
+| AIR Fibonacci, 65,536 steps | 368 ms | 1.8 ms | 107,609 B |
+| AIR Fibonacci, **1,048,576 steps** | **6.35 s** | **2.3 ms** | **160,401 B** |
+| FRI poly-1024 | 38 ms | 0.9 ms | 33,382 B |
 
 | Primitive | Result |
 |---|---|
-| BLAKE3 1 MiB | 1.51 ms (661 MB/s) |
-| BabyBear mul | 134.6 Mops/s |
-| NTT forward 2¹⁴ | 0.36 ms |
-| Merkle 65,536 leaves | 3.88 ms |
+| BLAKE3 1 MiB | 1.57 ms (~668 MB/s) |
+| BabyBear mul | ~135 Mops/s |
+| NTT forward 2¹⁴ | 0.37 ms |
+| Merkle 65,536 leaves | 3.5 ms |
 
 Proof sizes are deterministic and asserted byte-for-byte against the wire
 format on every benchmark run.
@@ -111,13 +114,19 @@ plus the size-optimal final layer and Merkle cap height.
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 155 tests across 18 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 156 tests across 18 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
+| `tests/hardening.rs` | 8 vectors: hostile `Params`, decoder bit-flip fuzz, RNG uniformity | this README |
 
 Every forgery attempt is rejected; hostile input fails closed with `Err`
 (never panics); honest proofs always verify. Past findings and their fixes
 are recorded in the security docs.
+
+The project is **unaudited** — engineering for audit is complete (transparent
+setup, versioned wire format, pinned baselines, adversarial suites), but do not
+deploy for high-value statements before an external audit. See
+[SECURITY.md](SECURITY.md) for the threat model and reporting policy.
 
 ## Project structure
 
@@ -144,10 +153,13 @@ src/
 tests/
   security.rs   adversarial suite (tamper, fuzz, forgery)
   redteam.rs    cross-proof, false-statement, IVC, garbage vectors
+  hardening.rs  hostile Params, decoder fuzz, invariant + RNG checks
 benches/
   speed_size.rs speed + wire-exact size harness
 tools/
   check.py      platinum gates · baseline.json  pinned regression table
+.github/
+  workflows/ci.yml  fmt, clippy, test, MSRV 1.74, rustdoc gates
 docs/
   whitepaper.md      vision, design, performance, roadmap
   yellowpaper.md     formal specification (math, protocols, encodings)
@@ -158,6 +170,9 @@ docs/
 papers/
   z0p-eprint.tex     ePrint submission source (nul0, Future Proofs Tech)
   z0p-eprint.pdf     compiled submission-ready PDF
+SECURITY.md      threat model + vulnerability reporting
+CONTRIBUTING.md  ground rules, gates, wire-format policy
+CHANGELOG.md     release history (Keep a Changelog)
 ```
 
 ## Roadmap

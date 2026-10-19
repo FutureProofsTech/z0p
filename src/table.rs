@@ -102,7 +102,7 @@ impl Params {
     /// `target_bits` conjectured soundness bits, and size-optimal final
     /// size and cap height.
     ///
-    /// Masked ([`prove_zk`](crate::table::prove_zk)) callers size manually.
+    /// Masked ([`prove_zk`]) callers size manually.
     ///
     /// # Errors
     /// Same domain errors as [`Params::new`], plus oversized tables whose
@@ -165,6 +165,34 @@ impl Params {
                 .with_grinding_bits(self.grinding_bits)
                 .with_cap_height(self.cap_height),
         )
+    }
+
+    /// Re-check every invariant at entry points (fields are public).
+    fn validate(&self) -> Result<()> {
+        if self.n_rows < 2 || !self.n_rows.is_power_of_two() {
+            return Err(Error::InvalidDomainSize { size: self.n_rows });
+        }
+        if self.blowup < 2 || !self.blowup.is_power_of_two() {
+            return Err(Error::InvalidBlowup {
+                factor: self.blowup,
+            });
+        }
+        if self.num_queries == 0 {
+            return Err(Error::NoQueries);
+        }
+        if self.final_size == 0 || !self.final_size.is_power_of_two() {
+            return Err(Error::InvalidDomainSize {
+                size: self.final_size,
+            });
+        }
+        let lde = self
+            .n_rows
+            .checked_mul(self.blowup)
+            .ok_or(Error::InvalidDomainSize { size: self.n_rows })?;
+        if lde > (1usize << Field::TWO_ADICITY) {
+            return Err(Error::InvalidDomainSize { size: lde });
+        }
+        Ok(())
     }
 }
 
@@ -288,6 +316,7 @@ pub fn prove_zk(
     rng: &mut crate::rng::ChaCha20,
     transcript: &mut Transcript,
 ) -> Result<Proof> {
+    params.validate()?;
     check_table(table)?;
     if n_rand < params.num_queries {
         return Err(Error::MalformedInput {
@@ -323,6 +352,7 @@ fn prove_from_coeffs(
     degree_bound: usize,
     transcript: &mut Transcript,
 ) -> Result<Proof> {
+    params.validate()?;
     absorb_params(params, table, transcript);
 
     let lde = evaluate_on_coset(coeffs, params.blowup, crate::fri::LDE_SHIFT)?;
@@ -381,6 +411,7 @@ pub fn verify(
     proof: &Proof,
     transcript: &mut Transcript,
 ) -> Result<()> {
+    params.validate()?;
     check_table(table)?;
     // Domain size comes from the commitment: ZK proofs use larger (masked)
     // LDEs than `params.lde_len()`. FRI binding keeps this sound.

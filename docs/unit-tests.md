@@ -1,7 +1,7 @@
 # Unit tests — breakdown
 
 `cargo test --lib` (also run with `--release` by `tools/check.py`).
-Measured: 2026-09-26 — **155 passed, 0 failed.**
+Measured: 2026-10-19 — **156 passed, 0 failed.**
 
 ## Per-module counts
 
@@ -30,5 +30,5 @@ Measured: 2026-09-26 — **155 passed, 0 failed.**
 
 ```sh
 cargo test --lib              # debug
-cargo test --lib --release    # optimized (same 155, also gated)
+cargo test --lib --release    # optimized (same 156, also gated)
 ```

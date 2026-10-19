@@ -14,8 +14,12 @@ use core::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 use crate::error::{Error, Result};
 
 /// Element of the `BabyBear` field. Invariant: inner value `< MODULUS`.
+///
+/// The inner value is private so the invariant cannot be violated from safe
+/// code: all constructors reduce (or are crate-internal and checked). An
+/// out-of-range element would break `add`/`mul` range reasoning.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-pub struct Field(pub u32);
+pub struct Field(u32);
 
 impl Field {
     /// Field modulus.
@@ -35,13 +39,18 @@ impl Field {
 
     /// Wrap a canonical value. Requires `value < MODULUS`.
     ///
-    /// # Panics
-    /// Panics in debug builds when `value >= MODULUS`. Prefer [`Field::new`]
-    /// for untrusted input.
+    /// Crate-internal: the public constructor is [`Field::new`] (reducing).
+    /// Debug builds assert the range; callers are responsible in release.
     #[must_use]
-    pub const fn new_unchecked(value: u32) -> Self {
+    pub(crate) const fn new_unchecked(value: u32) -> Self {
         debug_assert!(value < Self::MODULUS);
         Self(value)
+    }
+
+    /// Raw canonical value (`< MODULUS`).
+    #[must_use]
+    pub const fn as_u32(self) -> u32 {
+        self.0
     }
 
     /// Reduce any `u32` into the field.
@@ -150,13 +159,12 @@ impl Field {
 
     /// Multiplicative inverse via Fermat (`a^(p-2)`).
     ///
-    /// Maps zero to zero instead of failing, mirroring [`crate::gf2`]
-    /// semantics so proof code avoids secret-dependent branches.
+    /// Maps zero to zero instead of failing (`0^(p-2) = 0` with
+    /// `p - 2 > 0`), mirroring [`crate::gf2`] semantics. No branch on the
+    /// operand: the fixed exponentiation is identical for zero and nonzero
+    /// inputs, so the timing does not reveal zero-ness.
     #[must_use]
     pub fn inv(self) -> Self {
-        if self.0 == 0 {
-            return Self::ZERO;
-        }
         self.pow(u64::from(Self::MODULUS - 2))
     }
 
@@ -415,6 +423,6 @@ mod tests {
                 assert_eq!(*value * *inv, Field::ONE);
             }
         }
-        assert!(batch_invert(&[]).is_empty());
+        assert_eq!(batch_invert(&[]).len(), 0);
     }
 }

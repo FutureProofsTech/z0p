@@ -2,12 +2,14 @@
 name = "z0p"
 version = "0.1.0"
 edition = "2021"
-description = "From-scratch zero-knowledge core: binary fields, hashes, Merkle, FRI. Zero dependencies."
+description = "From-scratch zero-knowledge core: binary fields, BLAKE3, Merkle, NTT, FRI, STARKs. Zero dependencies, no unsafe, no trusted setup."
 license = "GPL-3.0-only"
-repository = "https://example.invalid/z0p"
-keywords = ["zero-knowledge", "fri", "stark", "cryptography", "no-std"]
+repository = "https://github.com/FutureProofsTech/z0p"
+homepage = "https://github.com/FutureProofsTech/z0p"
+readme = "README.md"
+keywords = ["zero-knowledge", "fri", "stark", "cryptography", "blake3"]
 categories = ["cryptography"]
-rust-version = "1.70"
+rust-version = "1.74"
 
 [profile.release]
 opt-level = 3

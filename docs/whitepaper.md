@@ -68,7 +68,7 @@ Reed–Solomon proximity testing.
    explicitly (rate + queries + grinding) rather than implied. Bench
    shapes are fast and labeled weak (~18 bits); production shapes target
    ~100 bits via `Params::for_security(…, 100)`.
-5. **Evidence over claims.** 155 unit tests, two adversarial suites
+5. **Evidence over claims.** 156 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught
@@ -115,13 +115,14 @@ Measured, release profile, median of runs (full table:
 
 | Workload (production, ~100 bits) | Prove | Verify | Size |
 |---|---|---|---|
-| 1,024-step computation | 23 ms | 1.4 ms | 47 KiB |
-| 65,536-step computation | 370 ms | 16 ms | 105 KiB |
-| **1,048,576-step computation** | **6.4 s** | **0.29 s** | **157 KiB** |
+| 1,024-step computation | 38 ms | 1.0 ms | 47 KiB |
+| 65,536-step computation | 368 ms | 1.8 ms | 105 KiB |
+| **1,048,576-step computation** | **6.35 s** | **2.3 ms** | **157 KiB** |
 
-Marginal cost is ~6 µs per step (~163k steps/s): proving scales
-linearly, verification stays in the milliseconds, and proof size grows
-logarithmically. No GPU, no assembly, no dependencies — this is
+Marginal cost is ~6 µs per step (~165k steps/s): proving scales
+linearly, verification stays in the low milliseconds *independent of
+computation size* (FRI domain points are derived on demand rather than
+materialized), and proof size grows logarithmically. No GPU, no assembly, no dependencies — this is
 portable scalar-safe-Rust throughput with parallelism over
 `std::thread` only.
 

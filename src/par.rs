@@ -35,7 +35,7 @@ where
         f(0, items);
         return;
     }
-    let chunk = (items.len() + workers - 1) / workers;
+    let chunk = items.len().div_ceil(workers);
     std::thread::scope(|scope| {
         let shared = &f;
         for (k, piece) in items.chunks_mut(chunk).enumerate() {

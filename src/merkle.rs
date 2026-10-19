@@ -1,9 +1,9 @@
-//! Binary Merkle tree over SHA3-256.
+//! Binary Merkle tree over BLAKE3-256.
 //!
 //! Second-preimage hardened by domain separation:
 //! leaf = `H(0x00 || data)`, node = `H(0x01 || left || right)`.
-//! Fallible construction and opening return [`Error`](crate::Error); success
-//! paths never panic.
+//! Fallible construction and opening return [`Error`]; success paths never
+//! panic.
 
 use crate::error::{Error, Result};
 use crate::hash::{blake3_256, blake3_256_small, CHUNK_LEN};

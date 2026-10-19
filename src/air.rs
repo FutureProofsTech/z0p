@@ -113,7 +113,7 @@ impl Params {
     /// strength sized for `target_bits` conjectured soundness bits, and
     /// size-optimal final size and cap height.
     ///
-    /// Masked ([`prove_zk`](crate::air::prove_zk)) callers size manually:
+    /// Masked ([`prove_zk`]) callers size manually:
     /// masking raises the composition degree, which this constructor
     /// cannot see.
     ///
@@ -166,6 +166,36 @@ impl Params {
                 .with_grinding_bits(self.grinding_bits)
                 .with_cap_height(self.cap_height),
         )
+    }
+
+    /// Re-check every invariant, for entry points. The fields are public,
+    /// so a caller can build an invalid `Params` by hand; proving and
+    /// verifying re-validate rather than panicking downstream.
+    fn validate(&self) -> Result<()> {
+        if self.n_steps < 2 || !self.n_steps.is_power_of_two() {
+            return Err(Error::InvalidDomainSize { size: self.n_steps });
+        }
+        if self.blowup < 4 || !self.blowup.is_power_of_two() {
+            return Err(Error::InvalidBlowup {
+                factor: self.blowup,
+            });
+        }
+        if self.num_queries == 0 {
+            return Err(Error::NoQueries);
+        }
+        if self.final_size == 0 || !self.final_size.is_power_of_two() {
+            return Err(Error::InvalidDomainSize {
+                size: self.final_size,
+            });
+        }
+        let lde = self
+            .n_steps
+            .checked_mul(self.blowup)
+            .ok_or(Error::InvalidDomainSize { size: self.n_steps })?;
+        if lde > (1usize << Field::TWO_ADICITY) {
+            return Err(Error::InvalidDomainSize { size: lde });
+        }
+        Ok(())
     }
 }
 
@@ -257,8 +287,14 @@ impl Proof {
 }
 
 /// Build the Fibonacci trace columns from the input claims.
+///
+/// `n_steps == 0` returns two empty vectors (no panic); `n_steps == 1`
+/// returns the two initial claims.
 #[must_use]
 pub fn build_trace(a0: Field, b0: Field, n_steps: usize) -> (Vec<Field>, Vec<Field>) {
+    if n_steps == 0 {
+        return (Vec::new(), Vec::new());
+    }
     let mut a = vec![Field::ZERO; n_steps];
     let mut b = vec![Field::ZERO; n_steps];
     a[0] = a0;
@@ -300,6 +336,7 @@ pub fn prove_with_trace(
     col_b: &[Field],
     transcript: &mut Transcript,
 ) -> Result<Proof> {
+    params.validate()?;
     let n = params.n_steps;
     if col_a.len() != n || col_b.len() != n {
         return Err(Error::MalformedInput {
@@ -330,6 +367,7 @@ pub fn prove_zk(
     rng: &mut crate::rng::ChaCha20,
     transcript: &mut Transcript,
 ) -> Result<Proof> {
+    params.validate()?;
     if n_rand < params.num_queries {
         return Err(Error::MalformedInput {
             reason: "n_rand must cover num_queries for hiding",
@@ -448,6 +486,7 @@ fn prove_from_coeffs(
 /// Returns [`Error::FriVerificationFailed`] or [`Error::BadMerklePath`] on
 /// any failed check.
 pub fn verify(params: Params, proof: &Proof, transcript: &mut Transcript) -> Result<()> {
+    params.validate()?;
     let n = params.n_steps;
     // Domain size comes from the commitment: ZK proofs use larger (masked)
     // LDEs than `params.lde_len()`. FRI binding keeps this sound.

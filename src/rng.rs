@@ -143,11 +143,24 @@ impl ChaCha20 {
         u64::from_le_bytes(word)
     }
 
-    /// Next field element via `u64 mod p` (bias `< 2^-31`, documented in
-    /// [`crate::transcript`] style; fine for blinding randomness).
+    /// Next uniformly distributed field element (rejection sampling).
+    ///
+    /// Draws a 32-bit keystream word and rejects it when it falls in the
+    /// short top interval that does not divide evenly into `p` (here
+    /// `2^32 // p == 2`, so one interval of length `2^32 - 2p` is dropped).
+    /// The result is exactly uniform, so hiding arguments hold with no
+    /// statistical bias; rejection expects `< 2` draws on average.
     #[must_use]
     pub fn next_field(&mut self) -> Field {
-        Field::from_u64(self.next_u64())
+        let p = u64::from(Field::MODULUS);
+        let limit = (u64::from(u32::MAX) + 1) / p * p;
+        loop {
+            let word = u64::from(self.next_u32());
+            if word < limit {
+                #[allow(clippy::cast_possible_truncation)]
+                return Field::new((word % p) as u32);
+            }
+        }
     }
 }
 

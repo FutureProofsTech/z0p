@@ -113,7 +113,7 @@ impl Params {
     /// strength sized for `target_bits` conjectured soundness bits, and
     /// size-optimal final size and cap height.
     ///
-    /// Masked ([`prove_zk`](crate::range::prove_zk)) callers size manually.
+    /// Masked ([`prove_zk`]) callers size manually.
     ///
     /// # Errors
     /// Same domain errors as [`Params::new`].
@@ -174,6 +174,39 @@ impl Params {
                 .with_grinding_bits(self.grinding_bits)
                 .with_cap_height(self.cap_height),
         )
+    }
+
+    /// Re-check every invariant at entry points (fields are public).
+    fn validate(&self) -> Result<()> {
+        if self.n_rows < 2 || !self.n_rows.is_power_of_two() {
+            return Err(Error::InvalidDomainSize { size: self.n_rows });
+        }
+        if self.n_bits == 0 || self.n_bits > 24 {
+            return Err(Error::MalformedInput {
+                reason: "n_bits must be within 1..=24",
+            });
+        }
+        if self.blowup < 2 || !self.blowup.is_power_of_two() {
+            return Err(Error::InvalidBlowup {
+                factor: self.blowup,
+            });
+        }
+        if self.num_queries == 0 {
+            return Err(Error::NoQueries);
+        }
+        if self.final_size == 0 || !self.final_size.is_power_of_two() {
+            return Err(Error::InvalidDomainSize {
+                size: self.final_size,
+            });
+        }
+        let lde = self
+            .n_rows
+            .checked_mul(self.blowup)
+            .ok_or(Error::InvalidDomainSize { size: self.n_rows })?;
+        if lde > (1usize << Field::TWO_ADICITY) {
+            return Err(Error::InvalidDomainSize { size: lde });
+        }
+        Ok(())
     }
 }
 
@@ -275,7 +308,13 @@ pub fn build_columns(value: Field, n_bits: usize, n_rows: usize) -> (Vec<Field>,
     let v_col = vec![value; n_rows];
     let mut bit_cols = Vec::with_capacity(n_bits);
     for j in 0..n_bits {
-        let bit = Field::new((value.0 >> j) & 1);
+        // `value < p < 2^31`, so bits at/above 32 read as zero; the shift is
+        // guarded so out-of-range `n_bits` cannot overflow the shift.
+        let bit = if j < 32 {
+            Field::new((value.as_u32() >> j) & 1)
+        } else {
+            Field::ZERO
+        };
         bit_cols.push(vec![bit; n_rows]);
     }
     (v_col, bit_cols)
@@ -305,6 +344,7 @@ pub fn prove_with_columns(
     bit_cols: &[Vec<Field>],
     transcript: &mut Transcript,
 ) -> Result<Proof> {
+    params.validate()?;
     let n = params.n_rows;
     if v_col.len() != n || bit_cols.len() != params.n_bits || bit_cols.iter().any(|c| c.len() != n)
     {
@@ -340,6 +380,7 @@ pub fn prove_zk(
     rng: &mut crate::rng::ChaCha20,
     transcript: &mut Transcript,
 ) -> Result<Proof> {
+    params.validate()?;
     if n_rand < params.num_queries {
         return Err(Error::MalformedInput {
             reason: "n_rand must cover num_queries for hiding",
@@ -459,6 +500,7 @@ fn prove_from_columns(
 /// Returns [`Error::FriVerificationFailed`] or [`Error::BadMerklePath`] on
 /// any failed check.
 pub fn verify(params: Params, proof: &Proof, transcript: &mut Transcript) -> Result<()> {
+    params.validate()?;
     let n = params.n_rows;
     // Domain size comes from the commitment: ZK proofs use larger (masked)
     // LDEs than `params.lde_len()`. FRI binding keeps this sound.

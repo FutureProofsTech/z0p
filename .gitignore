@@ -1,1 +1,12 @@
 /target/
+**/*.rs.bk
+Cargo.lock
+
+# LaTeX build artifacts (paper source and PDF are committed)
+*.aux
+*.log
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.toc

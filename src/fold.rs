@@ -170,6 +170,38 @@ impl Params {
                 .with_cap_height(self.cap_height),
         )
     }
+
+    /// Re-check every invariant at entry points (fields are public).
+    fn validate(&self) -> Result<()> {
+        if self.seg_steps < 2 || !self.seg_steps.is_power_of_two() {
+            return Err(Error::InvalidDomainSize {
+                size: self.seg_steps,
+            });
+        }
+        if self.blowup < 4 || !self.blowup.is_power_of_two() {
+            return Err(Error::InvalidBlowup {
+                factor: self.blowup,
+            });
+        }
+        if self.num_queries == 0 {
+            return Err(Error::NoQueries);
+        }
+        if self.final_size == 0 || !self.final_size.is_power_of_two() {
+            return Err(Error::InvalidDomainSize {
+                size: self.final_size,
+            });
+        }
+        let lde = self
+            .seg_steps
+            .checked_mul(self.blowup)
+            .ok_or(Error::InvalidDomainSize {
+                size: self.seg_steps,
+            })?;
+        if lde > (1usize << Field::TWO_ADICITY) {
+            return Err(Error::InvalidDomainSize { size: lde });
+        }
+        Ok(())
+    }
 }
 
 /// In/out claims of one segment: row 0 and row `S-1`.
@@ -348,6 +380,7 @@ impl Accumulator {
         col_b: &[Field],
         transcript: &mut Transcript,
     ) -> Result<()> {
+        self.params.validate()?;
         let s = self.params.seg_steps;
         if col_a.len() != s || col_b.len() != s {
             return Err(Error::MalformedInput {
@@ -499,6 +532,7 @@ impl Accumulator {
 /// Returns [`Error::FriVerificationFailed`] or [`Error::BadMerklePath`] on
 /// any failed check.
 pub fn verify(params: Params, proof: &IvcProof, transcript: &mut Transcript) -> Result<()> {
+    params.validate()?;
     if proof.steps.is_empty() {
         return Err(Error::EmptyInput);
     }

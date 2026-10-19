@@ -133,7 +133,7 @@ fn butterfly_stage(
         }
         return;
     }
-    let blocks_per_chunk = (blocks + workers - 1) / workers;
+    let blocks_per_chunk = blocks.div_ceil(workers);
     let chunk_len = blocks_per_chunk * len;
     std::thread::scope(|scope| {
         for piece in values.chunks_mut(chunk_len) {

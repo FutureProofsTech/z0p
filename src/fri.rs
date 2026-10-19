@@ -133,10 +133,40 @@ impl Params {
         })
     }
 
+    /// Re-check every invariant, for entry points. The fields are public, so
+    /// a caller can build an invalid `Params` by hand; committing, opening,
+    /// and verifying re-validate rather than trusting the constructor.
+    fn validate(&self) -> Result<()> {
+        if self.blowup < 2 || !self.blowup.is_power_of_two() {
+            return Err(Error::InvalidBlowup {
+                factor: self.blowup,
+            });
+        }
+        if self.num_queries == 0 {
+            return Err(Error::NoQueries);
+        }
+        if self.num_queries > crate::codec::MAX_QUERIES as usize {
+            return Err(Error::MalformedInput {
+                reason: "num_queries above protocol cap",
+            });
+        }
+        if self.final_size == 0 || !self.final_size.is_power_of_two() {
+            return Err(Error::InvalidDomainSize {
+                size: self.final_size,
+            });
+        }
+        if self.grinding_bits > 32 {
+            return Err(Error::MalformedInput {
+                reason: "grinding_bits above 32",
+            });
+        }
+        Ok(())
+    }
+
     /// Set the proof-of-work difficulty (builder; default `0` = disabled).
     ///
-    /// Values above `32` are rejected by the transcript at prove time via
-    /// `debug_assert`; production callers should use `16..=24`.
+    /// Values above `32` are rejected with [`Error::MalformedInput`] when
+    /// committing or verifying; production callers should use `16..=24`.
     #[must_use]
     pub const fn with_grinding_bits(mut self, bits: u32) -> Self {
         self.grinding_bits = bits;
@@ -406,6 +436,7 @@ fn commit_inner(
     params: Params,
     transcript: &mut Transcript,
 ) -> Result<ProverState> {
+    params.validate()?;
     let lde_len = current.len();
     check_layers(lde_len, params.final_size)?;
     // Early rate gate (mirrors `verify`): fail at prove time, not verify.
@@ -522,6 +553,7 @@ pub fn verify(
     params: Params,
     transcript: &mut Transcript,
 ) -> Result<Vec<usize>> {
+    params.validate()?;
     if proof.queries.len() != params.num_queries {
         return Err(Error::FriVerificationFailed);
     }
@@ -605,13 +637,18 @@ pub fn verify(
         return Err(Error::FriVerificationFailed);
     }
 
-    // Final degree check at the true folded domain points, plus per-layer
-    // point tables for the fold terms of query verification.
+    // Final degree check at the true folded domain points. Points are
+    // computed on demand (`O(final_size)` field ops), not from a
+    // materialized `O(lde_len)` table: the commitment is untrusted, so
+    // building the full layer stack would let a tiny forged commitment
+    // force a huge verifier allocation.
     let unit = Field::two_adic_generator(2).map_err(|_| Error::FriVerificationFailed)?;
-    let point_layers = all_point_layers(commitment.lde_len, params.final_size)?;
     let residual = commitment.degree_bound >> (2 * folds);
-    let final_points = &point_layers[point_layers.len() - 1];
-    if !check_degree(final_points, &proof.final_poly, residual) {
+    let mut final_points = Vec::with_capacity(params.final_size);
+    for j in 0..params.final_size {
+        final_points.push(point_at(commitment.lde_len, folds, j)?);
+    }
+    if !check_degree(&final_points, &proof.final_poly, residual) {
         return Err(Error::FriVerificationFailed);
     }
 
@@ -627,7 +664,6 @@ pub fn verify(
         verify_one(&QueryCheck {
             commitment,
             proof,
-            point_layers: &point_layers,
             fold_challenges: &fold_challenges,
             query,
             leaf_index,
@@ -841,7 +877,7 @@ pub(crate) fn tune_strength(target_bits: u32, millibits_per_query: u32) -> (usiz
     let grinding = 20.min(target_bits / 2);
     let remaining = u64::from(target_bits.saturating_sub(grinding)) * 1000;
     let per_query = u64::from(millibits_per_query.max(1));
-    let queries = ((remaining + per_query - 1) / per_query).clamp(1, 1_000_000);
+    let queries = remaining.div_ceil(per_query).clamp(1, 1_000_000);
     #[allow(clippy::cast_possible_truncation)]
     let queries = queries as usize;
     (queries, grinding)
@@ -857,23 +893,33 @@ fn coset_points(len: usize) -> Result<Vec<Field>> {
     Ok(points)
 }
 
-/// Bit-reversed initial points plus every fourth-power-folded layer down to
-/// `final_size`. Layer `d` parallels FRI evaluation layer `d`, so the exact
-/// first-position point is always available (its powers matter for folding).
-fn all_point_layers(lde_len: usize, final_size: usize) -> Result<Vec<Vec<Field>>> {
-    let mut points = coset_points(lde_len)?;
-    bit_reverse_permute(&mut points);
-    let mut layers = vec![points];
-    while layers[layers.len() - 1].len() > final_size {
-        let prev = &layers[layers.len() - 1];
-        debug_assert_eq!(prev.len() % 4, 0);
-        layers.push(
-            prev.chunks_exact(4)
-                .map(|quad| quad[0].square().square())
-                .collect(),
-        );
+/// Point `j` of the bit-reversed FRI point layer `depth`.
+///
+/// Layer 0 is the bit-reversed coset `SHIFT * <omega>`; every later layer
+/// squares each fourth predecessor (`points_{d+1}[j] = points_d[4j]^4`), so
+/// `points_d[j] = (SHIFT * omega^{brev_{log_m-2d}(j)})^{4^d}` for
+/// `omega = primitive_root(lde_len)` and `brev` the bit reversal over
+/// `log_m - 2d` bits. Computed in `O(log)` field operations on demand: the
+/// verifier never materializes the `O(lde_len)` layer stack, so an untrusted
+/// (but shape-valid) commitment cannot force a large allocation.
+///
+/// # Errors
+/// Returns [`Error::InvalidDomainSize`] for invalid `lde_len`.
+fn point_at(lde_len: usize, depth: usize, j: usize) -> Result<Field> {
+    let log_m = lde_len.trailing_zeros() as usize;
+    let bits = log_m - 2 * depth;
+    let omega = Field::primitive_root(lde_len)?;
+    let exponent = reverse_bits(j, bits);
+    let base = LDE_SHIFT * omega.pow(exponent as u64);
+    Ok(base.pow(1u64 << (2 * depth)))
+}
+
+/// Reverse the low `bits` bits of `x` (0 when `bits == 0`).
+fn reverse_bits(x: usize, bits: usize) -> usize {
+    if bits == 0 {
+        return 0;
     }
-    Ok(layers)
+    x.reverse_bits() >> (usize::BITS as usize - bits)
 }
 
 fn check_layers(lde_len: usize, final_size: usize) -> Result<()> {
@@ -892,7 +938,6 @@ fn check_layers(lde_len: usize, final_size: usize) -> Result<()> {
 struct QueryCheck<'a> {
     commitment: &'a Commitment,
     proof: &'a Proof,
-    point_layers: &'a [Vec<Field>],
     fold_challenges: &'a [[Field; 3]],
     query: &'a QueryProof,
     leaf_index: usize,
@@ -926,11 +971,7 @@ fn verify_one(check: &QueryCheck<'_>) -> Result<()> {
         let entry = cap
             .get(base >> (depth_bits - drop))
             .ok_or(Error::BadMerklePath)?;
-        let x = *check
-            .point_layers
-            .get(depth)
-            .and_then(|layer| layer.get(base))
-            .ok_or(Error::FriVerificationFailed)?;
+        let x = point_at(check.commitment.lde_len, depth, base)?;
         // Rebuild the quad node from all four values and walk the shared
         // path (the first two siblings are recomputed, not transmitted).
         let left = hash_node(
@@ -1156,6 +1197,34 @@ mod tests {
         assert!(Params::new(3, 8, 1).is_err());
         assert!(Params::new(4, 0, 1).is_err());
         assert!(Params::new(4, 8, 3).is_err());
+    }
+
+    #[test]
+    fn on_demand_point_at_matches_materialized_layers() {
+        // Reference: the old full layer stack (bit-reversed coset, then
+        // square every fourth predecessor). Cross-check the O(log) formula.
+        fn reference(lde_len: usize, final_size: usize) -> Vec<Vec<Field>> {
+            let mut points = coset_points(lde_len).unwrap();
+            bit_reverse_permute(&mut points);
+            let mut layers = vec![points];
+            while layers[layers.len() - 1].len() > final_size {
+                let prev = &layers[layers.len() - 1];
+                layers.push(
+                    prev.chunks_exact(4)
+                        .map(|quad| quad[0].square().square())
+                        .collect(),
+                );
+            }
+            layers
+        }
+        for &(lde_len, final_size) in &[(16usize, 1usize), (64, 4), (256, 4), (1024, 1)] {
+            let layers = reference(lde_len, final_size);
+            for (depth, layer) in layers.iter().enumerate() {
+                for (j, expected) in layer.iter().enumerate() {
+                    assert_eq!(point_at(lde_len, depth, j).unwrap(), *expected);
+                }
+            }
+        }
     }
 
     #[test]

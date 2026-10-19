@@ -65,6 +65,20 @@ opening; sizes re-recorded). Regression tests:
 `air::tests::shifted_opening_tamper_fails`,
 `fold::tests::shifted_opening_tamper_fails`.
 
+## Finding closed by internal audit: fold A-boundary jump
+
+Each fold segment constrained `A`/`B` at row 0 and `B` at the last row,
+but not `A` at the last row. A multi-segment prover could set a segment's
+`out_a` claim arbitrarily, start the next segment at that `A`, keep `B`
+chained, and reach a false global `B`. A two-segment adversarial proof
+(fragment of the Fibonacci chain with an arbitrary `A` jump) verified
+before the fix.
+
+Fix: the per-segment composition now includes
+`(A - out_a)/(x - w_last)` with a sixth `fold/alpha` challenge, binding
+the claimed output `A` to the committed column. Regression:
+`fold::tests::forged_segment_a_jump_rejected`; it now fails closed.
+
 ## Finding closed by internal audit: constructor overflow
 
 `air`, `range`, `fold`, and `table` constructors checked that each size was

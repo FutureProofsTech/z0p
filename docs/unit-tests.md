@@ -1,7 +1,7 @@
 # Unit tests — breakdown
 
 `cargo test --lib` (also run with `--release` by `tools/check.py`).
-Measured: 2026-10-20 — **220 passed, 0 failed.**
+Measured: 2026-10-20 — **221 passed, 0 failed.**
 
 ## Per-module counts
 
@@ -11,7 +11,7 @@ Measured: 2026-10-20 — **220 passed, 0 failed.**
 | `babybear` | 7 | wrap arithmetic, Barrett vs `%` (100k random + corners), inverse, two-adicity, batch inversion |
 | `blind` | 5 | masking degree/length, on-domain agreement, off-domain randomness |
 | `codec` | 2 | direction bits, capped counts, truncation, non-canonical fields, version/trailer |
-| `fold` | 14 | IVC chaining, broken chains, bad segments, caps, encoding, shifted-opening tamper |
+| `fold` | 15 | IVC chaining, broken chains, bad segments, caps, encoding, shifted-opening tamper, forged out_a boundary |
 | `fri` | 20 | roundtrips, tampering, rate gates both directions, grinding, caps, dimensions, encodings |
 | `gf2` | 7 | F8/F64/F128 arithmetic, inverses, distributivity |
 | `hash` | 6 | BLAKE3 KATs (empty/`abc`/multi-chunk), single-chunk identity, incremental/split inputs, chunk boundaries |
@@ -33,5 +33,5 @@ Measured: 2026-10-20 — **220 passed, 0 failed.**
 
 ```sh
 cargo test --lib              # debug
-cargo test --lib --release    # optimized (same 220, also gated)
+cargo test --lib --release    # optimized (same 221, also gated)
 ```

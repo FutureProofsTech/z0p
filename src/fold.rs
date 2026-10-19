@@ -19,7 +19,9 @@
 //!
 //! The per-step relation is the [`crate::air`] Fibonacci relation in
 //! quotient form: transition numerators over the transition vanishing
-//! polynomial, boundaries over point vanishing polynomials.
+//! polynomial, boundaries over point vanishing polynomials. Boundary
+//! constraints bind both `A` and `B` at the first and last rows, so claims
+//! cannot jump between segments.
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};
@@ -27,6 +29,9 @@ use crate::fri::{self, Commitment as FriCommitment, Proof as FriProof};
 use crate::merkle::MerkleTree;
 use crate::ntt::{evaluate_on_coset, interpolate};
 use crate::transcript::Transcript;
+
+/// Composition challenges: two transitions and four boundary claims.
+const ALPHAS: usize = 6;
 
 /// Folding parameters plus the global computation claims.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -445,13 +450,10 @@ impl Accumulator {
             &crate::merkle::cap_bytes(&tree.cap(step_drop)),
         );
 
-        let alphas = [
-            transcript.challenge_bb(b"fold/alpha"),
-            transcript.challenge_bb(b"fold/alpha"),
-            transcript.challenge_bb(b"fold/alpha"),
-            transcript.challenge_bb(b"fold/alpha"),
-            transcript.challenge_bb(b"fold/alpha"),
-        ];
+        let mut alphas = [Field::ZERO; ALPHAS];
+        for slot in &mut alphas {
+            *slot = transcript.challenge_bb(b"fold/alpha");
+        }
         let points = lde_points(self.params.lde_len())?;
         let w_last = omega_base.pow((s - 1) as u64);
         let composition = compose_step(
@@ -577,17 +579,15 @@ pub fn verify(params: Params, proof: &IvcProof, transcript: &mut Transcript) -> 
     // Replay per-step commitments and challenges.
     let omega_base = Field::primitive_root(s)?;
     let w_last = omega_base.pow((s - 1) as u64);
-    let mut all_alphas: Vec<[Field; 5]> = Vec::with_capacity(proof.steps.len());
+    let mut all_alphas: Vec<[Field; ALPHAS]> = Vec::with_capacity(proof.steps.len());
     for step in &proof.steps {
         absorb_step(&step.claims, transcript);
         transcript.absorb(b"fold/trace", &crate::merkle::cap_bytes(&step.column_cap));
-        all_alphas.push([
-            transcript.challenge_bb(b"fold/alpha"),
-            transcript.challenge_bb(b"fold/alpha"),
-            transcript.challenge_bb(b"fold/alpha"),
-            transcript.challenge_bb(b"fold/alpha"),
-            transcript.challenge_bb(b"fold/alpha"),
-        ]);
+        let mut alphas = [Field::ZERO; ALPHAS];
+        for slot in &mut alphas {
+            *slot = transcript.challenge_bb(b"fold/alpha");
+        }
+        all_alphas.push(alphas);
         if step.openings.len() != params.num_queries {
             return Err(Error::FriVerificationFailed);
         }
@@ -772,7 +772,7 @@ fn compose_step(
     claims: StepClaims,
     s: usize,
     offset: usize,
-    alphas: &[Field; 5],
+    alphas: &[Field; ALPHAS],
 ) -> Vec<Field> {
     let m = cols[0].len();
     let shifted = |j: usize, i: usize| cols[j][(i + offset) % m];
@@ -822,12 +822,14 @@ fn compose_step(
             let trans2 = (shifted(1, i) - (cols[0][i] + cols[1][i])) * inv_z[j];
             let bound_in_a = (cols[0][i] - claims.in_a) * inv_b[j];
             let bound_in_b = (cols[1][i] - claims.in_b) * inv_b[j];
-            let bound_out = (cols[1][i] - claims.out_b) * inv_a[j];
+            let bound_out_a = (cols[0][i] - claims.out_a) * inv_a[j];
+            let bound_out_b = (cols[1][i] - claims.out_b) * inv_a[j];
             *slot = alphas[0] * trans1
                 + alphas[1] * trans2
                 + alphas[2] * bound_in_a
                 + alphas[3] * bound_in_b
-                + alphas[4] * bound_out;
+                + alphas[4] * bound_out_a
+                + alphas[5] * bound_out_b;
         }
     });
     out
@@ -841,7 +843,7 @@ fn composition_at(
     w_last: Field,
     claims: StepClaims,
     s: usize,
-    alphas: &[Field; 5],
+    alphas: &[Field; ALPHAS],
 ) -> Field {
     let vanishing = point.pow(s as u64) - Field::ONE;
     let z_trans = vanishing * (point - w_last).inv();
@@ -849,12 +851,14 @@ fn composition_at(
     let trans2 = (next[1] - (cols[0] + cols[1])) * z_trans.inv();
     let bound_in_a = (cols[0] - claims.in_a) * (point - Field::ONE).inv();
     let bound_in_b = (cols[1] - claims.in_b) * (point - Field::ONE).inv();
-    let bound_out = (cols[1] - claims.out_b) * (point - w_last).inv();
+    let bound_out_a = (cols[0] - claims.out_a) * (point - w_last).inv();
+    let bound_out_b = (cols[1] - claims.out_b) * (point - w_last).inv();
     alphas[0] * trans1
         + alphas[1] * trans2
         + alphas[2] * bound_in_a
         + alphas[3] * bound_in_b
-        + alphas[4] * bound_out
+        + alphas[4] * bound_out_a
+        + alphas[5] * bound_out_b
 }
 
 fn bit_reverse_index(mut x: usize, bits: u32) -> usize {
@@ -900,6 +904,64 @@ mod tests {
         assert!(Params::new(8, 8, 0, 4, Field::ONE, Field::ONE, Field::ONE).is_err());
         let huge = 1usize << (usize::BITS - 1);
         assert!(Params::new(huge, 4, 8, 4, Field::ONE, Field::ONE, Field::ONE).is_err());
+    }
+
+    #[test]
+    fn forged_segment_a_jump_rejected() {
+        // Bind `out_a` at the last row. Without that boundary, a prover can
+        // jump A between segments while keeping B chained, and set the
+        // second segment's input A arbitrarily to reach a false global B.
+        let s = 8;
+        let (first_a, first_b) = chained_traces(s, 1).remove(0);
+        let jump = Field::new(99);
+        let (second_a, second_b) = crate::air::build_trace(jump, first_b[s - 1], s);
+        let target = second_b[s - 1];
+        let true_out = crate::air::build_trace(Field::ONE, Field::ONE, 2 * s).1[2 * s - 1];
+        assert_ne!(target, true_out);
+
+        let params = Params::new(s, 8, 8, 4, Field::ONE, Field::ONE, target).unwrap();
+        let mut prover = Transcript::new(b"fold-forge-a");
+        let mut acc = Accumulator::new(params);
+        acc.add_segment(&first_a, &first_b, &mut prover).unwrap();
+        acc.add_segment(&second_a, &second_b, &mut prover).unwrap();
+
+        let mut steps = acc.steps;
+        steps[0].claims.out_a = jump;
+
+        // Replay the prover transcript with the forged boundary claim and
+        // recompute both compositions so the FRI commitment is internally
+        // consistent with the mutated proof.
+        let mut t = Transcript::new(b"fold-forge-a");
+        absorb_params(params, &mut t);
+        let m = params.lde_len();
+        let points = lde_points(m).unwrap();
+        let w_last = Field::primitive_root(s).unwrap().pow((s - 1) as u64);
+        let offset = m / s;
+        let (drop, _) = crate::merkle::capped_shape(m, params.cap_height);
+        for step in &mut steps {
+            absorb_step(&step.claims, &mut t);
+            t.absorb(
+                b"fold/trace",
+                &crate::merkle::cap_bytes(&step.tree.cap(drop)),
+            );
+            let mut alphas = [Field::ZERO; ALPHAS];
+            for slot in &mut alphas {
+                *slot = t.challenge_bb(b"fold/alpha");
+            }
+            step.composition = compose_step(
+                &[&step.ldes[0][..], &step.ldes[1][..]],
+                &points,
+                w_last,
+                step.claims,
+                s,
+                offset,
+                &alphas,
+            );
+        }
+        let forged = Accumulator { params, steps };
+        let proof = forged.finalize(&mut t).unwrap();
+        let mut verifier = Transcript::new(b"fold-forge-a");
+        assert!(verify(params, &proof, &mut verifier).is_err());
     }
 
     #[test]

@@ -7,6 +7,15 @@ All notable changes to `z0p` are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **Fold/IVC cross-segment A jump closed.** The fold composition bound
+  `A` at the first row and `B` at the last row of each segment, but not
+  `A` at the last row. A multi-segment prover could therefore set a
+  segment's `out_a` claim to an arbitrary value, start the next segment at
+  that arbitrary `A`, and keep `B` chained to reach a false global `out_b`.
+  A regression constructs exactly that two-segment proof (the forged
+  proof verified before the fix) and now fails. The composition has a
+  sixth challenge and a `(A - out_a)/(x - w_last)` boundary:
+  `fold::tests::forged_segment_a_jump_rejected`.
 - **Domain-size constructor overflow and table prover ordering hardened.**
   The `air`, `range`, `fold`, and `table` constructors multiplied
   power-of-two sizes before checking overflow, so hostile huge sizes could

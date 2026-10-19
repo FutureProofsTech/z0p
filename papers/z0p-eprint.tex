@@ -33,7 +33,7 @@ the 31-bit base field leaves a separate algebraic ceiling (see
 Section~\ref{sec:security}). Measured on a
 16-core machine, a 1,048,576-step computation proves in 4.6~s
 ($\approx 4.4\,\mu$s/step), verifies in 2.4~ms, with a 186,961-byte proof.
-Validation combines 220 unit tests with three adversarial suites
+Validation combines 221 unit tests with three adversarial suites
 ($\approx 800$ hostile attempts per run, zero acceptances, zero panics),
 wire-exact size assertions on every benchmark, and machine-checked
 regression gates.
@@ -116,7 +116,7 @@ transcript with a full domain-separation schedule (FRI:
 \texttt{fri-fold} challenges per layer, \texttt{fri-final},
 \texttt{fri-pow}, per-query \texttt{fri-query}; per-protocol
 \texttt{params}/\texttt{column}/\texttt{alpha} labels; IVC
-\texttt{fold/step}, \texttt{fold/trace}, five \texttt{fold/alpha} per
+\texttt{fold/step}, \texttt{fold/trace}, six \texttt{fold/alpha} per
 step plus per-step \texttt{fold/gamma}; lookup and sumcheck labels
 analogously). Proof-of-work grinding finds the smallest nonce with $d$
 leading zero bits under the history commitment; difficulties above 256
@@ -229,7 +229,7 @@ check at true folded points; cap/path shape pins before hashing;
 \texttt{fri-dims} dimension binding; canonical-only decoding; PoW
 bound to history with queries sampled after.
 
-\paragraph{Adversarial validation.} Three layers: 220 unit tests
+\paragraph{Adversarial validation.} Three layers: 221 unit tests
 (KATs, Horner cross-checks, parallel-vs-sequential identity); a
 13-vector security suite (tampering of every query/fold/value/path/
 digest, 300 single-bit-flip fuzz trials, PoW forgery, rate gates both

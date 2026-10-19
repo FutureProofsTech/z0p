@@ -83,7 +83,7 @@ low bits for power-of-two domains (unbiased).
 |---|---|
 | FRI | `fri-dims` (dimensions first), `fri-layer-root` per cap digest, `fri-fold` ×3 per layer, `fri-final`, `fri-pow` (nonce), `fri-query` per query |
 | AIR / range / table | `<proto>/params` (all parameters first), `<proto>/column` (column cap), `<proto>/alpha` (one squeeze per constraint class, fixed count) |
-| fold (IVC) | `fold/params`, then per step `fold/step`, `fold/trace`, five `fold/alpha`, finally one `fold/gamma` per step |
+| fold (IVC) | `fold/params`, then per step `fold/step`, `fold/trace`, six `fold/alpha`, finally one `fold/gamma` per step |
 | lookup | `lookup/ctx` separators (`sum-w`/`read-w`/`sum-t`/`read-t`), `witness`, `table`, `sums`, `qw`, `qt`, `m`, `beta`, `beta-challenge`, `r1`, `r2` |
 | sumcheck | `sumcheck/claim`, then per round `sumcheck/round`, `sumcheck/challenge` |
 
@@ -278,7 +278,7 @@ cap/path shape pins before hashing; `fri-dims` dimension binding
 (closes proof malleability of echoed dimensions); canonical-only
 decoding; PoW bound to history with queries sampled after.
 
-**Validation.** 220 unit tests (KATs, cross-checks against Horner/`%`,
+**Validation.** 221 unit tests (KATs, cross-checks against Horner/`%`,
 parallel-vs-sequential identity), 13-test security suite and 10-test
 red-team suite (~800 hostile attempts/run, zero acceptances, zero
 panics), wire-exact size assertions on every benchmark, and a

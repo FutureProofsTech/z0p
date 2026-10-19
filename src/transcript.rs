@@ -25,7 +25,7 @@
 //!   `<proto>/column` (column cap), `<proto>/alpha` (one challenge per
 //!   constraint class, fixed count).
 //! - fold: `fold/params` (first), then per step `fold/step` (claims),
-//!   `fold/trace` (column cap), five `fold/alpha`, and finally one
+//!   `fold/trace` (column cap), six `fold/alpha`, and finally one
 //!   `fold/gamma` per step — identical order prover and verifier.
 //! - lookup: `lookup/ctx` (separator with distinct payloads
 //!   `sum-w`/`read-w`/`sum-t`/`read-t`), then per-phase labels

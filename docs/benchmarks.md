@@ -12,7 +12,7 @@ so a passing run also gates correctness and wire stability.
 - `tools/check.py` pins all 19 rows: sizes must match byte-for-byte, times
   must stay within 3× of `tools/baseline.json`
 
-## Production shapes (`for_security(100)` — ~100 conjectured bits)
+## Production shapes (`for_security(100)` — 100-bit query/PoW schedule; field-limited)
 
 Blowup 16, rate 1/16, 40 queries, 20-bit grinding, size-optimal final
 layer and Merkle cap height.

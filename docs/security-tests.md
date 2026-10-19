@@ -64,3 +64,28 @@ opening; sizes re-recorded). Regression tests:
 `air::tests::false_claim_with_forged_trace_rejected`,
 `air::tests::shifted_opening_tamper_fails`,
 `fold::tests::shifted_opening_tamper_fails`.
+
+## Findings closed by internal audit: parameter binding and panic surfaces
+
+- **FRI commitment parameter binding.** AIR, range, table, fold, and
+  recursion verifiers trusted `proof.fri_commitment.lde_len` and
+  `degree_bound`. A valid plain proof could be re-proved with an inflated
+  composition bound, weakening the effective FRI rate or making the final
+  degree check vacuous. Plain proofs now pin the exact domain
+  (`n * blowup`), exact honest bound, and `poly_len == lde_len`; masked
+  proofs are capped at the largest honest bound for their padded length.
+  Regressions: `air`, `range`, and `table`
+  `downgraded_composition_bound_rejected`.
+- **Merkle shift overflow.** Attacker-controlled path lengths of
+  `>= usize::BITS` panicked in debug and wrapped the index check in
+  release. `verify`, `verify_digest`, and `verify_capped` now fail closed;
+  regression `merkle::tests::oversized_paths_fail_closed`.
+- **Query-domain underflow.** `Transcript::challenge_index` debug-asserted
+  a power-of-two domain but underflowed `domain_size - 1` in release.
+  It now returns `None` for zero/non-power-of-two domains; regression
+  `transcript::tests::index_rejects_zero_and_non_power_of_two`.
+- **`check_degree` hostile inputs.** Mismatched/empty slices and a
+  `usize::MAX` bound no longer rely on debug assertions or overflow.
+- **Field-size ceiling documented.** The ~100-bit production figure is a
+  query/PoW schedule, not total soundness; 31-bit challenges cap the
+  algebraic term. See README, `fri` docs, and the ePrint.

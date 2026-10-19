@@ -137,7 +137,10 @@ impl MerkleTree {
         index: usize,
         path: &[([u8; 32], bool)],
     ) -> bool {
-        if index >> path.len() != 0 {
+        // A path at or above the machine-word width cannot index a tree in
+        // this crate, and shifting by that amount would panic in debug or
+        // silently wrap in release.
+        if path.len() >= usize::BITS as usize || index >> path.len() != 0 {
             return false;
         }
         let mut current = hash_leaf(leaf_data);
@@ -162,7 +165,7 @@ impl MerkleTree {
         index: usize,
         path: &[([u8; 32], bool)],
     ) -> bool {
-        if index >> path.len() != 0 {
+        if path.len() >= usize::BITS as usize || index >> path.len() != 0 {
             return false;
         }
         let mut current = *leaf_digest;
@@ -218,7 +221,10 @@ impl MerkleTree {
         total_depth: usize,
         path: &[([u8; 32], bool)],
     ) -> bool {
-        if path.len() > total_depth || index >> total_depth != 0 {
+        if total_depth >= usize::BITS as usize
+            || path.len() > total_depth
+            || index >> total_depth != 0
+        {
             return false;
         }
         let mut current = hash_leaf(leaf_data);
@@ -356,6 +362,26 @@ mod tests {
         assert_eq!(tree.num_leaves(), 8);
         let path = tree.prove(4).unwrap();
         assert!(MerkleTree::verify(&tree.root(), &leaves[4], 4, &path));
+    }
+
+    #[test]
+    fn oversized_paths_fail_closed() {
+        // A path at or above the word width used to panic in debug builds
+        // (shift overflow) and pass the index check after wrapping in
+        // release builds. It must fail closed in both.
+        let root = [7u8; 32];
+        let leaf = b"leaf";
+        let digest = hash_leaf(leaf);
+        let path = vec![([0u8; 32], true); usize::BITS as usize];
+        assert!(!MerkleTree::verify(&root, leaf, 0, &path));
+        assert!(!MerkleTree::verify_digest(&root, &digest, 0, &path));
+        assert!(!MerkleTree::verify_capped(
+            &root,
+            leaf,
+            0,
+            usize::BITS as usize,
+            &[],
+        ));
     }
 
     #[test]

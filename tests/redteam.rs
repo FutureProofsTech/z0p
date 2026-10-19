@@ -345,7 +345,7 @@ fn transcript_abuse_diverges() {
     let mut t = Transcript::new(b"redteam/range");
     let mut in_range = true;
     for _ in 0..200 {
-        if t.challenge_index(b"q", 64) >= 64 {
+        if !matches!(t.challenge_index(b"q", 64), Some(i) if i < 64) {
             in_range = false;
         }
     }

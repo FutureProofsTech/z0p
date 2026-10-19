@@ -110,8 +110,9 @@ impl Params {
     }
 
     /// Production parameters for plain (non-masked) columns: blowup 16,
-    /// strength sized for `target_bits` conjectured soundness bits, and
-    /// size-optimal final size and cap height.
+    /// strength sized for a `target_bits` query/grinding schedule (see the
+    /// field-size ceiling in [`crate::fri`]), and size-optimal final size
+    /// and cap height.
     ///
     /// Masked ([`prove_zk`]) callers size manually.
     ///
@@ -503,8 +504,36 @@ pub fn verify(params: Params, proof: &Proof, transcript: &mut Transcript) -> Res
     params.validate()?;
     let n = params.n_rows;
     // Domain size comes from the commitment: ZK proofs use larger (masked)
-    // LDEs than `params.lde_len()`. FRI binding keeps this sound.
+    // LDEs than `params.lde_len()`. Pin the domain and the composition
+    // degree schedule so a prover cannot weaken the effective FRI rate.
     let m = proof.fri_commitment.lde_len;
+    let expected_m = n
+        .checked_mul(params.blowup)
+        .ok_or(Error::FriVerificationFailed)?;
+    if m < expected_m || m % expected_m != 0 {
+        return Err(Error::FriVerificationFailed);
+    }
+    let degree_bound = proof.fri_commitment.degree_bound;
+    if m == expected_m {
+        if degree_bound != n - 1 {
+            return Err(Error::FriVerificationFailed);
+        }
+    } else {
+        // Masked columns have `n + n_rand` coefficients padded to a power
+        // of two. Bound the declared composition degree by the largest
+        // degree any valid mask of this padded length can produce.
+        let padded = m / params.blowup;
+        let max_bound = 2usize
+            .checked_mul(padded)
+            .and_then(|v| v.checked_sub(n + 2))
+            .ok_or(Error::FriVerificationFailed)?;
+        if degree_bound > max_bound {
+            return Err(Error::FriVerificationFailed);
+        }
+    }
+    if proof.fri_commitment.poly_len != m {
+        return Err(Error::FriVerificationFailed);
+    }
     absorb_params(params, transcript);
 
     if proof.openings.len() != params.num_queries {
@@ -903,6 +932,24 @@ mod tests {
         bad.value = Field::new(1_000);
         let mut verifier_t = Transcript::new(b"range-claim");
         assert!(verify(bad, &proof, &mut verifier_t).is_err());
+    }
+
+    #[test]
+    fn downgraded_composition_bound_rejected() {
+        // A structurally valid plain proof with an inflated declared bound
+        // must fail the verifier's exact plain-bound pin.
+        let params = test_params(999);
+        let n = params.n_rows;
+        let (v_col, bit_cols) = build_columns(params.value, params.n_bits, n);
+        let mut columns = Vec::with_capacity(params.n_columns());
+        columns.push(interpolate(&v_col).unwrap());
+        for bits in &bit_cols {
+            columns.push(interpolate(bits).unwrap());
+        }
+        let mut prover_t = Transcript::new(b"range-downgrade");
+        let proof = prove_from_columns(params, &columns, n, &mut prover_t).unwrap();
+        let mut verifier_t = Transcript::new(b"range-downgrade");
+        assert!(verify(params, &proof, &mut verifier_t).is_err());
     }
 
     fn zk_rng() -> crate::rng::ChaCha20 {

@@ -495,7 +495,17 @@ pub fn verify(params: Params, proof: &Proof, transcript: &mut Transcript) -> Res
     params.validate()?;
     let n = params.n_rows();
     let m = proof.fri_commitment.lde_len;
-    if m == 0 || !m.is_power_of_two() || m % n != 0 {
+    let expected_m = n
+        .checked_mul(params.blowup)
+        .ok_or(Error::FriVerificationFailed)?;
+    if m != expected_m || m % n != 0 {
+        return Err(Error::FriVerificationFailed);
+    }
+    // Pin the FRI domain and composition bound; the commitment travels in
+    // the proof and must not be allowed to lower the effective rate.
+    if proof.fri_commitment.poly_len != m
+        || proof.fri_commitment.degree_bound != params.composition_degree_bound()
+    {
         return Err(Error::FriVerificationFailed);
     }
     let offset = m / n;

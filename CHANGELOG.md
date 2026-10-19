@@ -7,6 +7,41 @@ All notable changes to `z0p` are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **FRI commitment parameter binding (air, range, table, fold, recursion).**
+  Verifiers previously took `proof.fri_commitment.lde_len` and
+  `degree_bound` from the proof without pinning them to protocol parameters.
+  A valid plain proof could be re-proved with a larger FRI domain and a
+  looser composition bound, weakening the effective FRI rate or making the
+  final degree check vacuous. Verifiers now require the plain domain
+  `n * blowup`, the exact honest plain degree bound, and `poly_len ==
+  lde_len`; masked proofs are restricted to the largest bound any honest
+  mask of that padded length can produce. Fold and recursion pin their
+  single exact domain/bound. Regressions:
+  `air::tests::downgraded_composition_bound_rejected`,
+  `range::tests::downgraded_composition_bound_rejected`,
+  `table::tests::downgraded_composition_bound_rejected`.
+- **Merkle path shift overflow closed.** `MerkleTree::verify` /
+  `verify_digest` shifted by an attacker-controlled path length: debug
+  panicked, release masked the shift and could pass the index check.
+  Paths at or above `usize::BITS` now fail closed; `verify_capped` also
+  rejects out-of-range total depths. Regression:
+  `merkle::tests::oversized_paths_fail_closed`.
+- **`fri::check_degree` hardened.** Mismatched/empty points and values now
+  return `false` instead of relying on `debug_assert_eq!`, and the
+  vacuous-bound test uses `bound >= n.saturating_sub(1)` so a hostile
+  `usize::MAX` bound cannot overflow.
+- **`Transcript::challenge_index` fails closed.** It now returns
+  `Option<usize>` and rejects zero/non-power-of-two domains, closing a
+  release-mode underflow in `domain_size - 1` and biased sampling.
+  Regression: `transcript::tests::index_rejects_zero_and_non_power_of_two`.
+- **Soundness claims corrected for the 31-bit field.** Docs, README, and
+  the ePrint now state that the ~100-bit production figure is a
+  query/proof-of-work schedule, not total soundness: finite-field
+  challenge collisions cap effective conjectured security well below it
+  (about 31 bits at best, lower for wide instances). Extension-field
+  challenges or repeated independent checks are required before restoring
+  a 100-bit claim.
+
 - **Unbound next-row trace columns fixed (air, fold).** `a_next`/`b_next`
   were committed as separate trace columns, but the verifier never tied
   them to the trace: a malicious prover could choose them to satisfy the

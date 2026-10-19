@@ -60,16 +60,29 @@
 //!   `delta ~= 0.65`, about `1.5` bits per query, roughly **18 bits** total.
 //!   Fast, but not production soundness.
 //! - Production shape (`blowup = 16`, rate `1/16`, `40` queries, `20`-bit
-//!   grinding): `delta ~= 0.75`, about `2` bits per query, roughly
-//!   **80 + 20 = 100 bits** total (queries plus proof-of-work).
+//!   grinding): `delta ~= 0.75`, about `2` bits per query, a
+//!   **100-bit query/proof-of-work schedule** (80 + 20).
 //!
 //! Grinding bits add one-to-one: finding a `d`-bit nonce costs the prover
 //! `2^d` hashes and denies the forger a `2^-d` shortcut. Size the query
 //! count from the rate first, then top up with grinding to the target.
 //!
+//! # Field-size ceiling (important)
+//! The totals above count query sampling and grinding only. Folding and
+//! algebraic identities draw their challenges from the 31-bit base field,
+//! so finite-field collision terms (roughly `degree / p` per independent
+//! challenge) cap effective conjectured soundness well below 100 bits for
+//! wide instances: a degree-`2^20` composition gives about `2^-11` per
+//! challenge, and the union over folds is worse. Treat the production
+//! schedule as query/PoW sizing, not a 100-bit guarantee. Higher assurance
+//! needs extension-field challenges (for example a `BabyBear` quartic) or
+//! repeated independent algebraic checks; both are roadmap work. Until
+//! then, do not claim more than about 31 bits, and less for high-degree or
+//! widely folded instances.
+//!
 //! Merkle caps are size-only: they shorten transmitted paths without
-//! changing the committed function or the query count, so the bit-levels
-//! above are unaffected (fewer bytes, same challenges).
+//! changing the committed function or the query count, so the query/PoW
+//! levels above are unaffected (fewer bytes, same challenges).
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};
@@ -94,8 +107,8 @@ pub struct Params {
     pub final_size: usize,
     /// Proof-of-work difficulty in leading-zero bits (`0` disables grinding).
     ///
-    /// Adds that many conjectured soundness bits at `2^bits` prover hashes;
-    /// see the module soundness notes for sizing.
+    /// Adds that many query/PoW bits at `2^bits` prover hashes; see the
+    /// module soundness notes, including the field-size ceiling.
     pub grinding_bits: u32,
     /// Merkle cap height: `2^cap_height` digests per layer stay in the
     /// commitment instead of one root (`0` disables caps).
@@ -185,8 +198,9 @@ impl Params {
     }
 
     /// Production parameters for the [`commit`] path: blowup 16 (rate
-    /// 1/16), queries plus grinding sized for `target_bits` conjectured
-    /// soundness bits, and size-optimal final size and cap height.
+    /// 1/16), queries plus grinding sized for a `target_bits` query/PoW
+    /// schedule (see the field-size ceiling above), and size-optimal final
+    /// size and cap height.
     ///
     /// `poly_len` is the coefficient count (power of two, non-empty);
     /// the expanded LDE must fit `2^27`. Plain (non-ZK) path only;
@@ -512,8 +526,8 @@ fn commit_inner(
 /// verifier-recomputable and are not stored in the proof itself.
 ///
 /// # Errors
-/// Returns [`Error`] only when a Merkle opening unexpectedly fails; query
-/// sampling itself is infallible.
+/// Returns [`Error`] when the prover state's LDE length is not a nonzero
+/// power of two, or when a Merkle opening unexpectedly fails.
 pub fn open(state: &ProverState, transcript: &mut Transcript) -> Result<(Proof, Vec<usize>)> {
     let pow_nonce = if state.params.grinding_bits > 0 {
         transcript.grind(b"fri-pow", state.params.grinding_bits)
@@ -523,7 +537,9 @@ pub fn open(state: &ProverState, transcript: &mut Transcript) -> Result<(Proof, 
     let mut queries = Vec::with_capacity(state.params.num_queries);
     let mut indices = Vec::with_capacity(state.params.num_queries);
     for _ in 0..state.params.num_queries {
-        let leaf_index = transcript.challenge_index(b"fri-query", state.lde_len);
+        let leaf_index = transcript
+            .challenge_index(b"fri-query", state.lde_len)
+            .ok_or(Error::FriVerificationFailed)?;
         queries.push(open_one(state, leaf_index)?);
         indices.push(leaf_index);
     }
@@ -655,7 +671,11 @@ pub fn verify(
     // Query checks.
     let mut indices = Vec::with_capacity(params.num_queries);
     for _ in &proof.queries {
-        indices.push(transcript.challenge_index(b"fri-query", commitment.lde_len));
+        indices.push(
+            transcript
+                .challenge_index(b"fri-query", commitment.lde_len)
+                .ok_or(Error::FriVerificationFailed)?,
+        );
     }
     for (query, &leaf_index) in proof.queries.iter().zip(&indices) {
         if query.folds.len() != folds {
@@ -1132,12 +1152,18 @@ pub(crate) fn fold_values(
 /// Check `values` at distinct `points` interpolate to degree `<= bound`.
 ///
 /// Uses divided differences: degree `<= bound` iff every difference of order
-/// `> bound` vanishes. Vacuous (`true`) when `bound + 1 >= len`.
+/// `> bound` vanishes. Vacuous (`true`) when `bound >= len - 1`; empty
+/// inputs return `false`.
 #[must_use]
 pub fn check_degree(points: &[Field], values: &[Field], bound: usize) -> bool {
-    debug_assert_eq!(points.len(), values.len());
+    if points.len() != values.len() || values.is_empty() {
+        return false;
+    }
     let n = values.len();
-    if bound + 1 >= n {
+    // `bound >= n - 1` is always satisfiable at `n` points; use a
+    // subtraction-safe form so a hostile `bound = usize::MAX` cannot
+    // overflow in debug builds.
+    if bound >= n.saturating_sub(1) {
         return true;
     }
     let mut table = values.to_vec();

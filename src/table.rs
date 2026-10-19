@@ -99,9 +99,9 @@ impl Params {
     }
 
     /// Production parameters for plain (non-masked) columns: blowup sized
-    /// for rate `<= 1/4` at this table length, strength sized for
-    /// `target_bits` conjectured soundness bits, and size-optimal final
-    /// size and cap height.
+    /// for rate `<= 1/4` at this table length, strength sized for a
+    /// `target_bits` query/grinding schedule (see the field-size ceiling
+    /// in [`crate::fri`]), and size-optimal final size and cap height.
     ///
     /// Masked ([`prove_zk`]) callers size manually.
     ///
@@ -122,7 +122,12 @@ impl Params {
                 reason: "table needs at least two entries",
             });
         }
-        let bound = membership_bound(table_len, n_rows, 0);
+        let bound = table_len
+            .checked_mul(n_rows - 1)
+            .and_then(|v| v.checked_sub(n_rows))
+            .ok_or(Error::MalformedInput {
+                reason: "table length overflows composition bound",
+            })?;
         // Smallest blowup in 2.. with `(bound + 1) <= lde / 4`.
         let need = bound.saturating_add(1);
         let mut blowup = 2usize;
@@ -415,8 +420,38 @@ pub fn verify(
     params.validate()?;
     check_table(table)?;
     // Domain size comes from the commitment: ZK proofs use larger (masked)
-    // LDEs than `params.lde_len()`. FRI binding keeps this sound.
+    // LDEs than `params.lde_len()`. Pin the domain and composition degree
+    // schedule so a prover cannot weaken the effective FRI rate.
+    let n = params.n_rows;
     let m = proof.fri_commitment.lde_len;
+    let expected_m = n
+        .checked_mul(params.blowup)
+        .ok_or(Error::FriVerificationFailed)?;
+    if m < expected_m || m % expected_m != 0 {
+        return Err(Error::FriVerificationFailed);
+    }
+    let degree_bound = proof.fri_commitment.degree_bound;
+    if m == expected_m {
+        if degree_bound != membership_bound(table.len(), n, 0) {
+            return Err(Error::FriVerificationFailed);
+        }
+    } else {
+        // Masked value column: padded length `p = m / blowup` bounds the
+        // number of maskers by `p - n`, hence the largest honest
+        // composition degree for this domain.
+        let padded = m / params.blowup;
+        let max_bound = table
+            .len()
+            .checked_mul(padded.saturating_sub(1))
+            .and_then(|v| v.checked_sub(n))
+            .ok_or(Error::FriVerificationFailed)?;
+        if degree_bound > max_bound {
+            return Err(Error::FriVerificationFailed);
+        }
+    }
+    if proof.fri_commitment.poly_len != m {
+        return Err(Error::FriVerificationFailed);
+    }
     absorb_params(params, table, transcript);
 
     if proof.openings.len() != params.num_queries {
@@ -793,6 +828,24 @@ mod tests {
         // |T| = 4, n = 8: vanishing numerator `4 * 7`, over degree-8 Z_H.
         assert_eq!(membership_bound(4, 8, 0), 20);
         assert_eq!(membership_bound(4, 8, 8), 52);
+    }
+
+    #[test]
+    fn for_security_rejects_overflowing_table_len() {
+        assert!(Params::for_security(8, usize::MAX, Field::ONE, 12).is_err());
+    }
+
+    #[test]
+    fn downgraded_composition_bound_rejected() {
+        let params = test_params(20);
+        let table = table();
+        let n = params.n_rows;
+        let coeffs = interpolate(&vec![params.value; n]).unwrap();
+        let bound = membership_bound(table.len(), n, 0) + 1;
+        let mut prover_t = Transcript::new(b"table-downgrade");
+        let proof = prove_from_coeffs(params, &table, &coeffs, bound, &mut prover_t).unwrap();
+        let mut verifier_t = Transcript::new(b"table-downgrade");
+        assert!(verify(params, &table, &proof, &mut verifier_t).is_err());
     }
 
     fn zk_rng() -> crate::rng::ChaCha20 {

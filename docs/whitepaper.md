@@ -64,11 +64,15 @@ Reed–Solomon proximity testing.
    through a fail-closed reader (canonical encodings, capped counts,
    no `with_capacity` from attacker-controlled lengths) and can never
    panic the verifier.
-4. **Conjectured, quantified soundness.** Bit-levels are stated
-   explicitly (rate + queries + grinding) rather than implied. Bench
-   shapes are fast and labeled weak (~18 bits); production shapes target
-   ~100 bits via `Params::for_security(…, 100)`.
-5. **Evidence over claims.** 213 unit tests, three adversarial suites
+4. **Conjectured, quantified query soundness.** Query/PoW bit-levels are
+   stated explicitly (rate + queries + grinding) rather than implied.
+   Bench shapes are fast and labeled weak (~18 query bits); production
+   shapes target a ~100-bit query/PoW schedule via
+   `Params::for_security(…, 100)`. This schedule does not remove the
+   finite-field algebraic term: with 31-bit challenges, effective
+   conjectured soundness is at most ~31 bits until extension-field
+   challenges or repeated independent checks are implemented.
+5. **Evidence over claims.** 219 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught
@@ -113,7 +117,7 @@ accept / reject
 Measured, release profile, median of runs (full table:
 [Benchmarks](benchmarks.md)):
 
-| Workload (production, ~100 bits) | Prove | Verify | Size |
+| Workload (production query/PoW schedule) | Prove | Verify | Size |
 |---|---|---|---|
 | 1,024-step computation | 25 ms | 1.1 ms | 60 KiB |
 | 65,536-step computation | 324 ms | 1.8 ms | 126 KiB |

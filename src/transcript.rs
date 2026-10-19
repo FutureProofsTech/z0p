@@ -119,12 +119,15 @@ impl Transcript {
         Bb::from_u64(u64::from_le_bytes(word))
     }
 
-    /// Squeeze a query index below `domain_size` (must be a power of two).
+    /// Squeeze a query index below `domain_size`.
     ///
-    /// Uses the low bits of the hash output, which is unbiased for
-    /// power-of-two domains.
-    pub fn challenge_index(&mut self, label: &[u8], domain_size: usize) -> usize {
-        debug_assert!(domain_size.is_power_of_two());
+    /// Returns `None` unless `domain_size` is a nonzero power of two. Failing
+    /// closed here is important: `domain_size == 0` used to underflow the
+    /// mask and non-powers-of-two silently biased the sample.
+    pub fn challenge_index(&mut self, label: &[u8], domain_size: usize) -> Option<usize> {
+        if domain_size == 0 || !domain_size.is_power_of_two() {
+            return None;
+        }
         let bytes = self.squeeze_raw(label);
         let mut word = [0u8; 8];
         word.copy_from_slice(&bytes[..8]);
@@ -132,7 +135,7 @@ impl Transcript {
         // (`<= 2^27` in this crate), so the narrowing cast is exact.
         #[allow(clippy::cast_possible_truncation)]
         let masked = (u64::from_le_bytes(word) & (domain_size as u64 - 1)) as usize;
-        masked
+        Some(masked)
     }
 
     fn squeeze_raw(&mut self, label: &[u8]) -> [u8; 32] {
@@ -346,8 +349,16 @@ mod tests {
     fn index_in_range() {
         let mut t = Transcript::new(b"idx");
         for _ in 0..32 {
-            assert!(t.challenge_index(b"q", 64) < 64);
+            assert!(matches!(t.challenge_index(b"q", 64), Some(i) if i < 64));
         }
+    }
+
+    #[test]
+    fn index_rejects_zero_and_non_power_of_two() {
+        let mut t = Transcript::new(b"idx-invalid");
+        assert_eq!(t.challenge_index(b"q", 0), None);
+        assert_eq!(t.challenge_index(b"q", 3), None);
+        assert_eq!(t.challenge_index(b"q", usize::MAX), None);
     }
 
     #[test]

@@ -144,11 +144,21 @@ survival $\le 1 - \delta$):
 - Bench shape ($\beta = 8$, $\rho = 1/8$, 12 queries, no grinding):
   $\delta \approx 0.65$, ~1.5 bits/query, **~18 bits** total.
 - Production shape ($\beta = 16$, $\rho = 1/16$, 40 queries, 20-bit
-  grinding): $\delta \approx 0.75$, ~2 bits/query, **80 + 20 = 100
-  bits** total. `tune_strength` caps grinding at 20 bits (half the
-  target when smaller); `tune_shape` picks finals $\le 32$ and caps
-  $0..=4$ minimizing the exact byte estimator. Merkle caps are
-  size-only and do not affect bit-levels.
+  grinding): $\delta \approx 0.75$, ~2 bits/query, a **100-bit
+  query/PoW schedule** (80 + 20). `tune_strength` caps grinding at 20
+  bits (half the target when smaller); `tune_shape` picks finals
+  $\le 32$ and caps $0..=4$ minimizing the exact byte estimator. Merkle
+  caps are size-only and do not affect bit-levels.
+
+**Field-size ceiling.** This heuristic counts query sampling and grinding
+only. Folding and algebraic identities use 31-bit BabyBear challenges, so
+a nonzero polynomial of degree $d$ can vanish at a random challenge with
+probability up to about $d/p$; for $d = 2^{20}$ that is roughly
+$2^{-11}$ per independent challenge, and the union over folds is worse.
+The production schedule is therefore not a 100-bit soundness guarantee;
+until extension-field challenges or repeated independent checks are
+implemented, treat effective conjectured security as at most about 31
+bits, and lower for wide or deeply folded instances.
 
 ## 4. AIR systems
 
@@ -268,7 +278,7 @@ cap/path shape pins before hashing; `fri-dims` dimension binding
 (closes proof malleability of echoed dimensions); canonical-only
 decoding; PoW bound to history with queries sampled after.
 
-**Validation.** 213 unit tests (KATs, cross-checks against Horner/`%`,
+**Validation.** 219 unit tests (KATs, cross-checks against Horner/`%`,
 parallel-vs-sequential identity), 13-test security suite and 10-test
 red-team suite (~800 hostile attempts/run, zero acceptances, zero
 panics), wire-exact size assertions on every benchmark, and a

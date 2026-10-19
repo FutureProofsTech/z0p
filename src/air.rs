@@ -113,8 +113,9 @@ impl Params {
     }
 
     /// Production parameters for plain (non-masked) traces: blowup 16,
-    /// strength sized for `target_bits` conjectured soundness bits, and
-    /// size-optimal final size and cap height.
+    /// strength sized for a `target_bits` query/grinding schedule (see the
+    /// field-size ceiling in [`crate::fri`]), and size-optimal final size
+    /// and cap height.
     ///
     /// Masked ([`prove_zk`]) callers size manually:
     /// masking raises the composition degree, which this constructor
@@ -499,13 +500,33 @@ fn prove_from_coeffs(
 /// # Errors
 /// Returns [`Error::FriVerificationFailed`] or [`Error::BadMerklePath`] on
 /// any failed check.
+#[allow(clippy::too_many_lines)]
 pub fn verify(params: Params, proof: &Proof, transcript: &mut Transcript) -> Result<()> {
     params.validate()?;
     let n = params.n_steps;
     // Domain size comes from the commitment: ZK proofs use larger (masked)
-    // LDEs than `params.lde_len()`. FRI binding keeps this sound.
+    // LDEs than `params.lde_len()`. Pin it to an integer multiple of the
+    // plain domain and pin the composition-degree schedule so a prover
+    // cannot downgrade the effective rate or make the final check vacuous.
     let m = proof.fri_commitment.lde_len;
-    if m == 0 || !m.is_power_of_two() || m % n != 0 {
+    let expected_m = n
+        .checked_mul(params.blowup)
+        .ok_or(Error::FriVerificationFailed)?;
+    if m < expected_m || m % expected_m != 0 {
+        return Err(Error::FriVerificationFailed);
+    }
+    let degree_bound = proof.fri_commitment.degree_bound;
+    if m == expected_m {
+        // Plain proof: exactly the honest composition bound.
+        if degree_bound != n - 1 {
+            return Err(Error::FriVerificationFailed);
+        }
+    } else if degree_bound >= m / params.blowup {
+        // Masked proof: keep rate `<= 1 / blowup`, matching the parameter
+        // schedule used to choose the query count.
+        return Err(Error::FriVerificationFailed);
+    }
+    if proof.fri_commitment.poly_len != m {
         return Err(Error::FriVerificationFailed);
     }
     let offset = m / n;
@@ -853,6 +874,23 @@ mod tests {
         let mut prover_t = Transcript::new(b"fib-forged-trace");
         let proof = prove_with_trace(params, &col_a, &col_b, &mut prover_t).unwrap();
         let mut verifier_t = Transcript::new(b"fib-forged-trace");
+        assert!(verify(params, &proof, &mut verifier_t).is_err());
+    }
+
+    #[test]
+    fn downgraded_composition_bound_rejected() {
+        // A valid trace can be re-proved with an inflated FRI degree bound,
+        // which weakens the low-degree check's rate. The verifier must pin
+        // the plain composition bound to `n - 1`.
+        let params = test_params();
+        let (col_a, col_b) = build_trace(params.a0, params.b0, params.n_steps);
+        let coeff_a = interpolate(&col_a).unwrap();
+        let coeff_b = interpolate(&col_b).unwrap();
+        let downgraded = params.lde_len() / 2 - 1;
+        let mut prover_t = Transcript::new(b"fib-downgrade");
+        let proof =
+            prove_from_coeffs(params, &coeff_a, &coeff_b, downgraded, &mut prover_t).unwrap();
+        let mut verifier_t = Transcript::new(b"fib-downgrade");
         assert!(verify(params, &proof, &mut verifier_t).is_err());
     }
 

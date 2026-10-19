@@ -34,10 +34,12 @@
 //! plausibly post-quantum STARK family. Concrete bits come from the FRI
 //! rate, the query count, and the proof-of-work difficulty — see the
 //! [`fri`] soundness notes for the sizing table. Bench defaults are fast
-//! but weak (`~18` conjectured bits); production callers want blowup `16`,
-//! `40` queries, and `20`-bit grinding (`~100` conjectured bits), set via
+//! but weak (`~18` query bits); production callers want blowup `16`, `40`
+//! queries, and `20`-bit grinding (a ~100-bit query/PoW schedule), set via
 //! `Params::with_grinding_bits` on [`fri`], [`air`], [`range`], [`table`],
-//! and [`fold`].
+//! and [`fold`]. The 31-bit base field limits algebraic challenge entropy;
+//! see the field-size ceiling in [`fri`] before treating any schedule as a
+//! 100-bit guarantee.
 //!
 //! # Example
 //! ```

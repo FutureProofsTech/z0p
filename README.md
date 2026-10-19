@@ -17,14 +17,15 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
   public APIs (`Result`, never `unwrap` on public paths), documented items.
 - **Transparent setup, PQ-oriented** — BLAKE3-256 digests, FRI Reed–Solomon
   commitments over BabyBear; nothing to ceremony, nothing pairing-based.
-- **Production soundness on demand** — `Params::for_security(steps, …, 100)`
-  sizes blowup 16, queries, grinding, final size, and cap height for
-  ~100 conjectured bits (see [Soundness](#soundness)).
+- **Production parameter sizing** — `Params::for_security(steps, …, 100)`
+  sizes blowup 16, queries, grinding, final size, and cap height for a
+  ~100-bit query/proof-of-work schedule. The 31-bit base field is a
+  separate algebraic ceiling; see [Soundness](#soundness).
 - **Fast at scale** — 1,048,576-step production proof in ~4.65 s
   (~4.4 µs/step, ~226k steps/s), verified in **~2.4 ms**, 186,961 bytes.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 213 unit tests plus three attack suites
+- **Adversarially tested** — 219 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -61,7 +62,8 @@ let mut verifier = Transcript::new(b"my-app/fib");
 air::verify(params, &proof, &mut verifier).expect("verify");
 ```
 
-Production soundness (~100 conjectured bits) in one call:
+Production query/PoW schedule (~100 bits before the field-size ceiling) in
+one call:
 
 ```rust
 let params = air::Params::for_security(steps, Field::ONE, Field::ONE, b_last, 100)
@@ -77,7 +79,7 @@ verification is unchanged.
 Release profile, median of runs, 16-core / 31 GB machine, `rustc 1.99.0`.
 Full table with methodology: [docs/benchmarks.md](docs/benchmarks.md).
 
-| Proof (production shape, ~100 bits) | Prove | Verify | Size |
+| Proof (production query/PoW schedule) | Prove | Verify | Size |
 |---|---|---|---|
 | AIR Fibonacci, 1,024 steps | 25 ms | 1.1 ms | 61,581 B |
 | AIR Fibonacci, 8,192 steps | 77 ms | 1.8 ms | 92,129 B |
@@ -97,10 +99,11 @@ format on every benchmark run.
 
 ## Soundness
 
-Conjectured bit-levels (Fiat–Shamir + FRI in the QROM, Johnson-radius
-heuristic) — see the `fri` module docs for the full sizing table:
+Conjectured query/PoW bit-levels (Fiat–Shamir + FRI in the QROM,
+Johnson-radius heuristic) — see the `fri` module docs for the full sizing
+table:
 
-| Shape | Rate | Queries | Grinding | Total |
+| Shape | Rate | Queries | Grinding | Query+PoW target |
 |---|---|---|---|---|
 | Bench (fast, weak) | 1/8 | 12 | 0-bit | ~18 bits |
 | Production | 1/16 | 40 | 20-bit | ~100 bits |
@@ -110,11 +113,21 @@ hashes and denies a forger a `2^-d` shortcut. Size the queries from the
 rate first, then top up with grinding — `for_security` does exactly this,
 plus the size-optimal final layer and Merkle cap height.
 
+**Field-size ceiling.** The totals above count query sampling and grinding,
+not finite-field algebraic error. Folding and identity checks draw
+challenges from 31-bit BabyBear; for a degree-`2^20` composition one
+challenge collides with probability roughly `2^-11`, and the union over
+folds is worse. Do not treat these parameters as a 100-bit soundness
+guarantee: until extension-field challenges (for example a BabyBear
+quartic) or repeated independent algebraic checks land, effective
+conjectured security is at most about 31 bits, and lower for high-degree or
+widely folded instances.
+
 ## Security testing
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 213 tests across 21 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 219 tests across 21 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 8 vectors: hostile `Params`, decoder bit-flip fuzz, RNG uniformity | this README |

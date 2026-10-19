@@ -112,9 +112,9 @@ impl Params {
         self
     }
 
-    /// Production parameters: blowup 16, strength sized for `target_bits`
-    /// conjectured soundness bits, and size-optimal final size and cap
-    /// height.
+    /// Production parameters: blowup 16, strength sized for a `target_bits`
+    /// query/grinding schedule (see the field-size ceiling in
+    /// [`crate::fri`]), and size-optimal final size and cap height.
     ///
     /// The cap tunes for a single step; multi-step accumulations may bump
     /// it manually (column caps scale with the step count, FRI caps do
@@ -556,6 +556,14 @@ pub fn verify(params: Params, proof: &IvcProof, transcript: &mut Transcript) -> 
     let s = params.seg_steps;
     let m = params.lde_len();
     if m % s != 0 {
+        return Err(Error::FriVerificationFailed);
+    }
+    // The shared FRI commitment is untrusted: pin it to the single domain,
+    // composition degree, and evaluation-message length used by the prover.
+    if proof.fri_commitment.lde_len != m
+        || proof.fri_commitment.poly_len != m
+        || proof.fri_commitment.degree_bound != s - 1
+    {
         return Err(Error::FriVerificationFailed);
     }
     // Shift offset in LDE index space: `omega_base * x_i = x_{(i+offset)}`.

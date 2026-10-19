@@ -7,6 +7,14 @@ All notable changes to `z0p` are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **Domain-size constructor overflow and table prover ordering hardened.**
+  The `air`, `range`, `fold`, and `table` constructors multiplied
+  power-of-two sizes before checking overflow, so hostile huge sizes could
+  panic in debug builds instead of returning an error. They now use
+  `checked_mul` and fail with `InvalidDomainSize`; the `rejects_bad_params`
+  tests cover the overflowing cases. `table::prove` now validates `Params`
+  before computing the membership bound, closing an underflow path for a
+  hand-built `n_rows = 1`.
 - **Lookup multiplicity forgery closed.** The verifier accepted arbitrary
   field-valued `multiplicities` constrained only by their sum equalling the
   padded witness length. A non-member could solve the two rational-sum

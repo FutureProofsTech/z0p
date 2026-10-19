@@ -65,6 +65,17 @@ opening; sizes re-recorded). Regression tests:
 `air::tests::shifted_opening_tamper_fails`,
 `fold::tests::shifted_opening_tamper_fails`.
 
+## Finding closed by internal audit: constructor overflow
+
+`air`, `range`, `fold`, and `table` constructors checked that each size was
+a power of two, then multiplied before checking the two-adicity ceiling. A
+hand-built pair of huge power-of-two sizes (for example `1 << 40` and
+`1 << 30`) overflowed in debug builds and panicked instead of returning
+`Err`. All four now use `checked_mul`; the `rejects_bad_params` tests include
+overflowing pairs. `table::prove` also validates parameters before computing
+its membership bound, so an invalid `n_rows = 1` fails closed rather than
+underflowing.
+
 ## Finding closed by internal audit: unbound lookup multiplicities
 
 `lookup` sends multiplicities as proof data and only checked that they sum

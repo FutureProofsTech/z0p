@@ -69,8 +69,10 @@ impl Params {
         if final_size == 0 || !final_size.is_power_of_two() {
             return Err(Error::InvalidDomainSize { size: final_size });
         }
-        let lde = n_rows * blowup;
-        if lde / blowup != n_rows || lde > (1usize << Field::TWO_ADICITY) {
+        let Some(lde) = n_rows.checked_mul(blowup) else {
+            return Err(Error::InvalidDomainSize { size: n_rows });
+        };
+        if lde > (1usize << Field::TWO_ADICITY) {
             return Err(Error::InvalidDomainSize { size: lde });
         }
         Ok(Self {
@@ -293,6 +295,7 @@ fn check_table(table: &[Field]) -> Result<()> {
 /// Returns [`Error::MalformedInput`] for tiny tables, otherwise structural
 /// errors (a non-member still proves structurally and fails [`verify`]).
 pub fn prove(params: Params, table: &[Field], transcript: &mut Transcript) -> Result<Proof> {
+    params.validate()?;
     check_table(table)?;
     let base_vals = vec![params.value; params.n_rows];
     let coeffs = interpolate(&base_vals)?;
@@ -671,10 +674,15 @@ mod tests {
         assert!(Params::new(3, 8, 8, 4, Field::ONE).is_err());
         assert!(Params::new(8, 1, 8, 4, Field::ONE).is_err());
         assert!(Params::new(8, 8, 0, 4, Field::ONE).is_err());
+        let huge = 1usize << (usize::BITS - 1);
+        assert!(Params::new(huge, 4, 8, 4, Field::ONE).is_err());
         let params = test_params(20);
         let mut t = Transcript::new(b"table-shape");
         assert!(prove(params, &[Field::ONE], &mut t).is_err());
         assert!(prove(params, &[], &mut t).is_err());
+        let mut bad = params;
+        bad.n_rows = 1;
+        assert!(prove(bad, &table(), &mut t).is_err());
     }
 
     #[test]

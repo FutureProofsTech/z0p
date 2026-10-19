@@ -79,8 +79,10 @@ impl Params {
         if final_size == 0 || !final_size.is_power_of_two() {
             return Err(Error::InvalidDomainSize { size: final_size });
         }
-        let lde = n_rows * blowup;
-        if lde / blowup != n_rows || lde > (1usize << Field::TWO_ADICITY) {
+        let Some(lde) = n_rows.checked_mul(blowup) else {
+            return Err(Error::InvalidDomainSize { size: n_rows });
+        };
+        if lde > (1usize << Field::TWO_ADICITY) {
             return Err(Error::InvalidDomainSize { size: lde });
         }
         Ok(Self {
@@ -779,6 +781,8 @@ mod tests {
         assert!(Params::new(8, 25, 8, 8, 4, Field::ONE).is_err());
         assert!(Params::new(8, 16, 1, 8, 4, Field::ONE).is_err());
         assert!(Params::new(8, 16, 8, 0, 4, Field::ONE).is_err());
+        let huge = 1usize << (usize::BITS - 1);
+        assert!(Params::new(huge, 16, 4, 8, 4, Field::ONE).is_err());
     }
 
     #[test]

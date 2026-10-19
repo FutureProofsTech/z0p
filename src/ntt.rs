@@ -16,6 +16,9 @@ use crate::error::{Error, Result};
 /// In-place bit-reversal permutation.
 pub(crate) fn bit_reverse_permute(values: &mut [Field]) {
     let n = values.len();
+    if n <= 1 {
+        return;
+    }
     let bits = n.trailing_zeros();
     for i in 0..n {
         let rev = i.reverse_bits() >> (usize::BITS - bits);

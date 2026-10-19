@@ -600,14 +600,14 @@ pub fn verify(
         return Err(Error::FriVerificationFailed);
     }
     let folds = commitment.caps.len().saturating_sub(1);
-    if folds > 30 || (commitment.lde_len >> (2 * folds)) != params.final_size {
+    if !fold_shift_fits(folds) || (commitment.lde_len >> (2 * folds)) != params.final_size {
         return Err(Error::FriVerificationFailed);
     }
     // Pin cap shapes before hashing them: each layer's cap holds exactly
     // `2^drop` digests for its depth. The commitment is untrusted input;
     // without this, a bloated cap wastes hashing and a short one fails
-    // confusingly late. (`i <= 30` here, so `2 * i` cannot overflow and
-    // every shift below is exact.)
+    // confusingly late. (`2 * i < usize::BITS` here, so every shift is
+    // exact on 32-bit and 64-bit targets.)
     for (i, cap) in commitment.caps.iter().enumerate() {
         let layer_len = commitment.lde_len >> (2 * i);
         #[allow(clippy::cast_possible_truncation)]
@@ -759,6 +759,11 @@ impl Commitment {
             degree_bound,
         })
     }
+}
+
+/// Whether every layer shift `2 * i` fits the target word size.
+fn fold_shift_fits(folds: usize) -> bool {
+    folds <= 30 && folds < usize::BITS as usize / 2
 }
 
 /// Top steps a FRI layer drops under `cap_height`.

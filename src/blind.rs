@@ -29,7 +29,8 @@ use crate::rng::ChaCha20;
 ///
 /// # Errors
 /// Returns [`Error::MalformedInput`] when `coeffs` is longer than `n`, and
-/// [`Error::InvalidDomainSize`] for non-power-of-two `n`.
+/// [`Error::InvalidDomainSize`] for non-power-of-two `n` or a padded mask
+/// domain above `2^27` (the largest domain this crate supports).
 pub fn mask_coeffs(
     coeffs: &[Field],
     n: usize,
@@ -44,10 +45,19 @@ pub fn mask_coeffs(
             reason: "coefficients longer than base domain",
         });
     }
+    let total = n
+        .checked_add(n_rand)
+        .ok_or(Error::InvalidDomainSize { size: usize::MAX })?;
+    let padded = total
+        .checked_next_power_of_two()
+        .ok_or(Error::InvalidDomainSize { size: total })?;
+    if padded > (1usize << Field::TWO_ADICITY) {
+        return Err(Error::InvalidDomainSize { size: padded });
+    }
     // Random R of degree `< n_rand`: uniform field elements from the stream.
     let random: Vec<Field> = (0..n_rand).map(|_| rng.next_field()).collect();
     // `Z_H * R` with `Z_H = x^n - 1` is a shift-and-subtract (sparse).
-    let mut masked = vec![Field::ZERO; n + n_rand];
+    let mut masked = vec![Field::ZERO; total];
     for (i, &c) in coeffs.iter().enumerate() {
         masked[i] += c;
     }
@@ -56,7 +66,7 @@ pub fn mask_coeffs(
         masked[i] -= r;
     }
     // Power-of-two length for the NTT backend (zero padding is exact).
-    masked.resize(masked.len().next_power_of_two(), Field::ZERO);
+    masked.resize(padded, Field::ZERO);
     Ok(masked)
 }
 
@@ -80,6 +90,8 @@ mod tests {
         let mut rng = test_rng();
         assert!(mask_coeffs(&[Field::ONE; 4], 3, 2, &mut rng).is_err());
         assert!(mask_coeffs(&[Field::ONE; 5], 4, 2, &mut rng).is_err());
+        assert!(mask_coeffs(&[Field::ONE], 8, usize::MAX, &mut rng).is_err());
+        assert!(mask_coeffs(&[Field::ONE], 1 << 27, 1, &mut rng).is_err());
     }
 
     #[test]

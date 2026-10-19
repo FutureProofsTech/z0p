@@ -114,6 +114,17 @@ Regression: `lookup::tests::forged_multiplicities_rejected`. This does not
 make the API zero-knowledge; multiplicities and quotient columns remain
 public.
 
+## Hardening closed by internal audit: mask domains and shift portability
+
+`blind::mask_coeffs` allocated `n + n_rand` mask coefficients and padded
+the result before checking either arithmetic or the crate's `2^27` domain
+ceiling; a public hostile `n_rand` could therefore panic or request an
+unsupported domain. It now checks `checked_add`, `checked_next_power_of_two`,
+and the ceiling before drawing randomness or allocating. The NTT
+bit-reversal routine accepts a one-element slice, and FRI rejects fold
+counts whose `2 * i` layer shifts would exceed `usize` on 32-bit targets.
+Regression: `blind::tests::rejects_bad_shapes`.
+
 ## Findings closed by internal audit: parameter binding and panic surfaces
 
 - **FRI commitment parameter binding.** AIR, range, table, fold, and

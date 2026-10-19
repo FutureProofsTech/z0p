@@ -21,6 +21,14 @@ All notable changes to `z0p` are documented here. The format follows
   proof verified before the fix) and now fails. The composition has a
   sixth challenge and a `(A - out_a)/(x - w_last)` boundary:
   `fold::tests::forged_segment_a_jump_rejected`.
+- **Mask-domain arithmetic and platform shift guards hardened.**
+  `blind::mask_coeffs` now rejects `n + n_rand` overflow and any padded
+  masked domain above `2^27` before drawing randomness or allocating, so a
+  hostile `n_rand` cannot panic or request an unsupported domain;
+  `blind::tests::rejects_bad_shapes` covers both. `ntt::bit_reverse_permute`
+  accepts the one-element edge case, and FRI rejects fold counts whose
+  `2 * i` layer shifts do not fit the target's `usize` (relevant on 32-bit
+  platforms) before applying them.
 - **Domain-size constructor overflow and table prover ordering hardened.**
   The `air`, `range`, `fold`, and `table` constructors multiplied
   power-of-two sizes before checking overflow, so hostile huge sizes could

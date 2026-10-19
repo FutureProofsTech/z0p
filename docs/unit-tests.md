@@ -1,7 +1,7 @@
 # Unit tests — breakdown
 
 `cargo test --lib` (also run with `--release` by `tools/check.py`).
-Measured: 2026-10-19 — **186 passed, 0 failed.**
+Measured: 2026-10-20 — **201 passed, 0 failed.**
 
 ## Per-module counts
 
@@ -22,6 +22,7 @@ Measured: 2026-10-19 — **186 passed, 0 failed.**
 | `par` | 2 | parallel-vs-sequential identity, sequential thresholds |
 | `range` | 16 | honest/out-of-range/boundary, bit columns, ZK masking, caps, encodings |
 | `upcs` | 14 | honest openings (n=1..64, four points), wrong value/point/commitment, leaf/path/commitment/FRI tampering, wrong quotient, caps/dim gates, encodings |
+| `gemini` | 15 | honest n=0..5, Möbius vs `Mle`, wrong value/point, tampered layers/values/openings, shape/codec/transcript, zero coordinates |
 | `recursion` | 12 | honest fold chains (2/3 folds, padding), wrong output, broken chain, opening/shift tampering, caps, encoding, degree bound |
 | `rng` | 7 | ChaCha20 vectors, determinism, key sensitivity, key-material redaction |
 | `sumcheck` | 6 | product sums, tampered rounds/finals, transcript binding, shapes |

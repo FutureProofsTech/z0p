@@ -13,10 +13,11 @@
 //!
 //! # Oracle model (`v1`)
 //! [`verify`] evaluates the [`Mle`]s directly as the polynomial oracle.
-//! [`crate::upcs`] now supplies FRI-backed point openings for committed
-//! univariate polynomials; a multilinear PCS (the remaining step for
-//! committed oracles) is roadmap work. Sumcheck soundness below assumes a
-//! binding oracle.
+//! [`crate::upcs`] supplies FRI-backed point openings for committed
+//! univariate polynomials, and [`crate::gemini`] builds a first multilinear
+//! PCS from them (`O(n)` openings); compact multilinear FRI and committed
+//! oracles remain roadmap work. Sumcheck soundness below assumes a binding
+//! oracle.
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};

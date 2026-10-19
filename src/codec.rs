@@ -169,6 +169,11 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// Take exactly `len` bytes (for nested length-prefixed encodings).
+    pub(crate) fn take_bytes(&mut self, len: usize) -> Result<&'a [u8]> {
+        self.take(len)
+    }
+
     /// Read a 32-byte digest.
     pub(crate) fn digest(&mut self) -> Result<[u8; 32]> {
         let bytes = self.take(32)?;

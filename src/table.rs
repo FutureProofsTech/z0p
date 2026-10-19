@@ -11,8 +11,9 @@
 //! witness) for small tables. Cost scales with `|T|`: the vanishing product
 //! has degree `|T|`, so the composition bound is `|T| * (n + k - 1) - n`
 //! and large tables need proportionally larger blowup to keep rate `< 1/2`.
-//! Large-table `LogUp` with hidden tables needs committed sumcheck (a
-//! multilinear PCS), which remains a scheduled follow-up.
+//! Large-table `LogUp` with hidden tables needs committed sumcheck; the
+//! first multilinear PCS ([`crate::gemini`]) is in place, but compact
+//! multilinear FRI and binding it into the AIR remain follow-ups.
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};

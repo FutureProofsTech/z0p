@@ -16,6 +16,7 @@
 //! - [`range`]: range-check AIR (bit decomposition over committed columns).
 //! - [`recursion`]: STARK re-checking one FRI query's fold chain (recursion fragment).
 //! - [`upcs`]: FRI-backed univariate polynomial commitments with point openings.
+//! - [`gemini`]: multilinear commitments with Gemini-style fold-chain openings.
 //! - [`fold`]: hash-based folding/IVC accumulation with one batched FRI.
 //! - [`rng`]: `ChaCha20` (RFC 8439) CSPRNG plus OS seeding.
 //! - [`blind`]: hiding layer — vanishing-multiple masking for ZK proofs.
@@ -73,6 +74,7 @@ mod codec;
 pub mod error;
 pub mod fold;
 pub mod fri;
+pub mod gemini;
 pub mod gf2;
 pub mod hash;
 pub mod lookup;

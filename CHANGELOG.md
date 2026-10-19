@@ -52,6 +52,18 @@ All notable changes to `z0p` are documented here. The format follows
   1M-step AIR proof 160,401 → 186,961 B, prove 6.35 → 4.65 s.
 
 ### Added
+- **Multilinear PCS (`gemini`).** Gemini-style commitment to the
+  monomial-coefficient encoding of an `n`-variable multilinear polynomial:
+  `commit_evals` applies the Möbius transform, `open` folds one variable
+  at a time, commits the folded layers, and opens them with `upcs` at
+  random fold challenges (`g_i(beta^2) = (g_{i-1}(beta) +
+  g_{i-1}(-beta))/2 + r_i (g_{i-1}(beta) - g_{i-1}(-beta))/(2 beta)`),
+  plus the public final-point check `g_{n-1}(r_0) = y`. 15 tests:
+  honest `n = 0..5`, Möbius vs `Mle`, zero coordinates, wrong
+  value/point, tampered layers/values/openings, dimension/codec/transcript
+  gates. Transparent, non-hiding v1; proof size is `O(n)` `upcs` openings,
+  and the 31-bit field bounds the fold-check error (`n 2^n / p`), so wide
+  instances await extension-field challenges or compact multilinear FRI.
 - **Point-evaluation commitments (`upcs`).** FRI-backed univariate PCS:
   commit to coefficients over the bit-reversed LDE, open `g(beta) = y` by
   committing the quotient `(g - y)/(X - beta)`, FRI low-degree-testing both

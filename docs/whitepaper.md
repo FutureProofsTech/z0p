@@ -68,7 +68,7 @@ Reed–Solomon proximity testing.
    explicitly (rate + queries + grinding) rather than implied. Bench
    shapes are fast and labeled weak (~18 bits); production shapes target
    ~100 bits via `Params::for_security(…, 100)`.
-5. **Evidence over claims.** 186 unit tests, three adversarial suites
+5. **Evidence over claims.** 201 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught
@@ -142,7 +142,9 @@ portable scalar-safe-Rust throughput with parallelism over
   panicking. Current standing: zero acceptances, zero panics.
 - **Known limits (stated, not hidden).** Bench defaults are fast but
   weak — production callers must use `for_security`. Table lookups are
-  small-table (a multilinear PCS for large tables is roadmap work).
+  small-table; a first Gemini-style multilinear PCS exists (`gemini.rs`),
+  but its `O(n)` openings are not compact enough for large tables, so an
+  efficient multilinear FRI is roadmap work.
   The system has not yet had an external audit; the test suites, gates,
   versioned wire format, and pinned baselines are the pre-audit package.
 
@@ -159,9 +161,14 @@ portable scalar-safe-Rust throughput with parallelism over
    two FRI low-degree checks, and Merkle-checked identity at the quotient's
    query points. Transparent, non-hiding, cap height `0`; the opening
    primitive for a multilinear PCS.
-4. **Programs / zkVM** — multilinear PCS, large-table lookups, then
+4. **Multilinear PCS — first version done.** `gemini.rs` commits the
+   monomial-coefficient encoding and proves `f(r) = y` with Gemini-style
+   fold-chain checks and `upcs` point openings; `commit_evals` applies the
+   Möbius transform. Proof size is `O(n)` openings, so compact multilinear
+   FRI (BaseFold/WHIR) is the next step.
+5. **Programs / zkVM** — compact multilinear PCS, large-table lookups, then
    general program execution proofs.
-5. **External audit** — procurement item; the evidence package is ready.
+6. **External audit** — procurement item; the evidence package is ready.
 
 ## 8. License
 

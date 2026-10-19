@@ -31,7 +31,7 @@ post-quantum. Production parameters target $\approx 100$ conjectured
 soundness bits (rate $1/16$, 40 queries, 20-bit grinding). Measured on a
 16-core machine, a 1,048,576-step computation proves in 4.6~s
 ($\approx 4.4\,\mu$s/step), verifies in 2.4~ms, with a 186,961-byte proof.
-Validation combines 201 unit tests with three adversarial suites
+Validation combines 213 unit tests with three adversarial suites
 ($\approx 800$ hostile attempts per run, zero acceptances, zero panics),
 wire-exact size assertions on every benchmark, and machine-checked
 regression gates.
@@ -219,7 +219,7 @@ check at true folded points; cap/path shape pins before hashing;
 \texttt{fri-dims} dimension binding; canonical-only decoding; PoW
 bound to history with queries sampled after.
 
-\paragraph{Adversarial validation.} Three layers: 201 unit tests
+\paragraph{Adversarial validation.} Three layers: 213 unit tests
 (KATs, Horner cross-checks, parallel-vs-sequential identity); a
 13-vector security suite (tampering of every query/fold/value/path/
 digest, 300 single-bit-flip fuzz trials, PoW forgery, rate gates both
@@ -268,8 +268,9 @@ from $1{,}024$ to $1{,}048{,}576$ steps. Primitives: BLAKE3 1\,MiB in
 Bench defaults are fast but weak and must not be mistaken for
 production soundness; large-table lookups await a compact multilinear
 PCS. Vectorized hashing and the one-query recursion fragment are complete,
-FRI-backed univariate point openings are in place, and a first
-Gemini-style multilinear PCS exists (linear-size openings); compact
+FRI-backed univariate point and multi-point openings are in place, and a
+first Gemini-style multilinear PCS exists (one batched opening per layer,
+linear size); compact
 multilinear FRI/BaseFold, self-proving recursion, and a zkVM remain
 roadmap items. No
 external audit has yet been performed, for which the suites, gates,

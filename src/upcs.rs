@@ -11,17 +11,26 @@
 //! 3. the verifier samples the quotient's FRI query positions and checks
 //!    `(X - beta) * q = g - y` at each, opening `g` there with a Merkle path.
 //!
+//! [`open_multi`] generalises this to `g(p_j) = y_j` for `k` distinct
+//! points. Let `I` interpolate the claims and `Z = prod_j (X - p_j)`; the
+//! prover commits `q = (g - I) / Z` with degree bound `n - k - 1` and the
+//! verifier checks `g(z) = I(z) + Z(z) q(z)` at the quotient's query
+//! points. When `k = n`, `I` determines `g` and `q` is the zero polynomial.
+//! At most [`MAX_POINTS`] points and at most `n` points are accepted.
+//!
 //! # Soundness
 //!
 //! FRI certifies both `g` and `q` are low-degree (their commitments are
 //! bound to the transcript, and the `g` FRI base root is the statement
-//! commitment). The difference `(X - beta) * q - (g - y)` then has degree
-//! below `n`; it is checked at the quotient's `num_queries` random coset
-//! points, so a nonzero difference is missed with probability at most
-//! `(n - 1) / lde_len = 1 / blowup` per query. It is therefore the zero
-//! polynomial and `g(beta) = y`.
+//! commitment). The identity difference then has degree below `n`; it is
+//! checked at the quotient's `num_queries` random coset points, so a
+//! nonzero difference is missed with probability at most
+//! `(n - 1) / lde_len = 1 / blowup` per query. For multi-point openings the
+//! same bound holds: `g - I - Z q` has degree below `n`, because `q` has
+//! degree below `n - k`. It is therefore the zero polynomial and all
+//! claimed evaluations are correct.
 //!
-//! The commitment root, dimensions, point, and value are absorbed before
+//! The commitment root, dimensions, points, and values are absorbed before
 //! any challenge. Cap height must be `0` so the FRI base root (the
 //! statement) covers every leaf the opening paths touch.
 //!
@@ -29,7 +38,9 @@
 //!
 //! Transparent (hash-only) and **not hiding**: FRI is a low-degree test,
 //! not a zero-knowledge protocol. Proofs carry two FRI instances plus one
-//! Merkle path per query. Batch and multi-point openings are roadmap work.
+//! Merkle path per query. Single- and multi-point openings for one
+//! polynomial are implemented; batching across distinct polynomials is
+//! roadmap work.
 //!
 //! [`LDE_SHIFT`]: crate::fri::LDE_SHIFT
 
@@ -40,6 +51,9 @@ use crate::fri::{self, LDE_SHIFT};
 use crate::merkle::MerkleTree;
 use crate::ntt;
 use crate::transcript::Transcript;
+
+/// Maximum number of distinct points in one multi-point opening.
+pub const MAX_POINTS: usize = 16;
 
 /// Public commitment to a coefficient polynomial.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -299,6 +313,214 @@ fn open_with_quotient(
     })
 }
 
+/// Prove `g(point_j) = value_j` for several distinct points with one
+/// quotient and one FRI pair.
+///
+/// Values are computed from the committed polynomial and returned in point
+/// order. The quotient is `(g - I) / Z`, where `I` interpolates the claims
+/// and `Z = prod_j (X - point_j)`. When the point count equals the
+/// coefficient count, `I` determines `g` and the quotient is zero.
+///
+/// # Errors
+/// Returns [`Error::MalformedInput`] for an empty, duplicate, oversized, or
+/// too-long point set, [`Error::InvalidBlowup`] on parameter mismatch, and
+/// propagates FRI/Merkle errors.
+pub fn open_multi(
+    state: &ProverState,
+    points: &[Field],
+    params: fri::Params,
+    transcript: &mut Transcript,
+) -> Result<(Proof, Vec<Field>)> {
+    if state.commitment.blowup != params.blowup {
+        return Err(Error::InvalidBlowup {
+            factor: params.blowup,
+        });
+    }
+    if params.cap_height != 0 {
+        return Err(Error::MalformedInput {
+            reason: "upcs openings require cap_height = 0",
+        });
+    }
+    if points.is_empty() {
+        return Err(Error::EmptyInput);
+    }
+    if points.len() > MAX_POINTS {
+        return Err(Error::MalformedInput {
+            reason: "too many multi-point openings",
+        });
+    }
+    let values: Vec<Field> = points
+        .iter()
+        .map(|point| ntt::evaluate(&state.coeffs, *point))
+        .collect();
+    check_points(state.commitment.poly_len, points, &values)?;
+
+    let (quotient, degree_bound) = if points.len() == state.commitment.poly_len {
+        (vec![Field::ZERO], 0)
+    } else {
+        let interp = interpolate(points, &values)?;
+        let vanishing = interpolation_vanishing(points);
+        let mut numerator = state.coeffs.clone();
+        for (slot, coefficient) in numerator.iter_mut().zip(&interp) {
+            *slot -= *coefficient;
+        }
+        let quotient = divide_exact(&numerator, &vanishing)?;
+        let degree_bound = state.commitment.poly_len - points.len() - 1;
+        (quotient, degree_bound)
+    };
+
+    let proof = open_multi_with_quotient(
+        state,
+        points,
+        &values,
+        &quotient,
+        degree_bound,
+        params,
+        transcript,
+    )?;
+    Ok((proof, values))
+}
+
+/// Prover body with an explicit quotient, exposed to tests.
+fn open_multi_with_quotient(
+    state: &ProverState,
+    points: &[Field],
+    values: &[Field],
+    quotient: &[Field],
+    degree_bound: usize,
+    params: fri::Params,
+    transcript: &mut Transcript,
+) -> Result<Proof> {
+    check_points(state.commitment.poly_len, points, values)?;
+    if quotient.len() > state.commitment.poly_len {
+        return Err(Error::MalformedInput {
+            reason: "quotient is longer than the committed polynomial",
+        });
+    }
+    absorb_statement_multi(transcript, &state.commitment, points, values);
+
+    let g_state = fri::commit(&state.coeffs, params, transcript)?;
+    let g_commitment = fri::public_commitment(&g_state);
+    if g_commitment.caps.first().and_then(|cap| cap.first()) != Some(&state.commitment.root) {
+        return Err(Error::MalformedInput {
+            reason: "FRI base root does not match the commitment root",
+        });
+    }
+    let (g_fri, _) = fri::open(&g_state, transcript)?;
+
+    let mut padded = quotient.to_vec();
+    padded.resize(state.commitment.poly_len, Field::ZERO);
+    let q_lde = ntt::evaluate_on_coset(&padded, params.blowup, LDE_SHIFT)?;
+    let q_state = fri::commit_evals(&q_lde, degree_bound, params, transcript)?;
+    let q_commitment = fri::public_commitment(&q_state);
+    let (q_fri, indices) = fri::open(&q_state, transcript)?;
+
+    let mut openings = Vec::with_capacity(indices.len());
+    for index in indices {
+        openings.push(Opening {
+            value: state.lde[index],
+            path: state.tree.prove(index)?,
+        });
+    }
+    Ok(Proof {
+        g_commitment,
+        g_fri,
+        q_commitment,
+        q_fri,
+        openings,
+    })
+}
+
+/// Verify a multi-point opening.
+///
+/// # Errors
+/// Returns [`Error::MalformedInput`] for invalid point/value sets,
+/// [`Error::FriVerificationFailed`] when any check fails,
+/// [`Error::BadMerklePath`] for malformed openings, or dimension errors for
+/// invalid commitments or nonzero cap heights.
+pub fn verify_multi(
+    commitment: &Commitment,
+    points: &[Field],
+    values: &[Field],
+    proof: &Proof,
+    params: fri::Params,
+    transcript: &mut Transcript,
+) -> Result<()> {
+    let lde_len = check_dims(commitment.poly_len, commitment.blowup)?;
+    if commitment.blowup != params.blowup {
+        return Err(Error::InvalidBlowup {
+            factor: params.blowup,
+        });
+    }
+    if params.cap_height != 0 {
+        return Err(Error::MalformedInput {
+            reason: "upcs openings require cap_height = 0",
+        });
+    }
+    check_points(commitment.poly_len, points, values)?;
+    let degree_bound = if points.len() == commitment.poly_len {
+        0
+    } else {
+        commitment.poly_len - points.len() - 1
+    };
+
+    absorb_statement_multi(transcript, commitment, points, values);
+
+    fri::verify(&proof.g_commitment, &proof.g_fri, params, transcript)?;
+    let indices = fri::verify(&proof.q_commitment, &proof.q_fri, params, transcript)?;
+
+    if proof.g_commitment.lde_len != lde_len
+        || proof.g_commitment.poly_len != commitment.poly_len
+        || proof.g_commitment.degree_bound != commitment.poly_len - 1
+        || proof.g_commitment.caps.first().and_then(|cap| cap.first()) != Some(&commitment.root)
+        || proof.q_commitment.lde_len != lde_len
+        || proof.q_commitment.poly_len != lde_len
+        || proof.q_commitment.degree_bound != degree_bound
+        || proof.g_commitment.caps.len() < 2
+        || proof.q_commitment.caps.len() < 2
+        || proof.openings.len() != indices.len()
+    {
+        return Err(Error::FriVerificationFailed);
+    }
+    let depth = usize::try_from(lde_len.trailing_zeros())
+        .map_err(|_| Error::InvalidDomainSize { size: lde_len })?;
+    let interp = interpolate(points, values)?;
+    let vanishing = interpolation_vanishing(points);
+
+    for ((query, opening), &index) in proof
+        .q_fri
+        .queries
+        .iter()
+        .zip(&proof.openings)
+        .zip(&indices)
+    {
+        let Some(fold) = query.folds.first() else {
+            return Err(Error::FriVerificationFailed);
+        };
+        let base = index / 4 * 4;
+        let Some(q_value) = fold.values.get(index - base) else {
+            return Err(Error::FriVerificationFailed);
+        };
+        if opening.path.len() != depth {
+            return Err(Error::BadMerklePath);
+        }
+        if !MerkleTree::verify(
+            &commitment.root,
+            &opening.value.to_le_bytes(),
+            index,
+            &opening.path,
+        ) {
+            return Err(Error::BadMerklePath);
+        }
+        let z = fri::point_at(lde_len, 0, index)?;
+        let expected = eval_poly(&interp, z) + eval_poly(&vanishing, z) * *q_value;
+        if opening.value != expected {
+            return Err(Error::FriVerificationFailed);
+        }
+    }
+    Ok(())
+}
+
 /// Verify `g(beta) = value` against a commitment.
 ///
 /// # Errors
@@ -378,6 +600,145 @@ pub fn verify(
         }
     }
     Ok(())
+}
+
+/// Validate a multi-point statement.
+fn check_points(poly_len: usize, points: &[Field], values: &[Field]) -> Result<()> {
+    if points.is_empty() {
+        return Err(Error::EmptyInput);
+    }
+    if points.len() != values.len() {
+        return Err(Error::MalformedInput {
+            reason: "point and value counts differ",
+        });
+    }
+    if points.len() > MAX_POINTS {
+        return Err(Error::MalformedInput {
+            reason: "too many multi-point openings",
+        });
+    }
+    if points.len() > poly_len {
+        return Err(Error::MalformedInput {
+            reason: "more points than polynomial coefficients",
+        });
+    }
+    for (index, point) in points.iter().enumerate() {
+        if points[..index].contains(point) {
+            return Err(Error::MalformedInput {
+                reason: "duplicate multi-point opening point",
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Interpolate `(points, values)` into ascending coefficients.
+fn interpolate(points: &[Field], values: &[Field]) -> Result<Vec<Field>> {
+    if points.len() != values.len() || points.is_empty() {
+        return Err(Error::MalformedInput {
+            reason: "invalid interpolation statement",
+        });
+    }
+    let k = points.len();
+    let mut coefficients = vec![Field::ZERO; k];
+    for (j, &point_j) in points.iter().enumerate() {
+        let mut basis = vec![Field::ZERO; k];
+        basis[0] = Field::ONE;
+        let mut degree = 0;
+        let mut denominator = Field::ONE;
+        for (m, &point_m) in points.iter().enumerate() {
+            if m == j {
+                continue;
+            }
+            let mut next = vec![Field::ZERO; k];
+            for (i, &coefficient) in basis.iter().enumerate().take(degree + 1) {
+                next[i] -= point_m * coefficient;
+                next[i + 1] += coefficient;
+            }
+            basis = next;
+            degree += 1;
+            denominator *= point_j - point_m;
+        }
+        let scale = values[j] * denominator.inv();
+        for (coefficient, basis_coefficient) in coefficients.iter_mut().zip(&basis) {
+            *coefficient += *basis_coefficient * scale;
+        }
+    }
+    Ok(coefficients)
+}
+
+/// Vanishing polynomial `prod_j (X - point_j)` in ascending coefficients.
+fn interpolation_vanishing(points: &[Field]) -> Vec<Field> {
+    let mut polynomial = vec![Field::ONE];
+    for &point in points {
+        let mut next = vec![Field::ZERO; polynomial.len() + 1];
+        for (i, &coefficient) in polynomial.iter().enumerate() {
+            next[i] -= point * coefficient;
+            next[i + 1] += coefficient;
+        }
+        polynomial = next;
+    }
+    polynomial
+}
+
+/// Exact division by a monic vanishing polynomial.
+fn divide_exact(numerator: &[Field], divisor: &[Field]) -> Result<Vec<Field>> {
+    let Some(&leading) = divisor.last() else {
+        return Err(Error::MalformedInput {
+            reason: "empty divisor",
+        });
+    };
+    let k = divisor.len() - 1;
+    if k == 0 || leading != Field::ONE || numerator.len() < k {
+        return Err(Error::MalformedInput {
+            reason: "invalid vanishing polynomial",
+        });
+    }
+    let mut remainder = numerator.to_vec();
+    let mut quotient = vec![Field::ZERO; numerator.len() - k];
+    for i in (k..numerator.len()).rev() {
+        let coefficient = remainder[i];
+        quotient[i - k] = coefficient;
+        for (j, &divisor_coefficient) in divisor.iter().enumerate() {
+            remainder[i - k + j] -= coefficient * divisor_coefficient;
+        }
+    }
+    if remainder[..k].iter().any(|value| *value != Field::ZERO) {
+        return Err(Error::MalformedInput {
+            reason: "polynomial division is not exact",
+        });
+    }
+    Ok(quotient)
+}
+
+/// Horner evaluation of ascending coefficients.
+fn eval_poly(coefficients: &[Field], point: Field) -> Field {
+    let mut value = Field::ZERO;
+    for &coefficient in coefficients.iter().rev() {
+        value = value * point + coefficient;
+    }
+    value
+}
+
+/// Absorb a multi-point statement before deriving any challenge.
+fn absorb_statement_multi(
+    transcript: &mut Transcript,
+    commitment: &Commitment,
+    points: &[Field],
+    values: &[Field],
+) {
+    transcript.absorb(b"upcs-multi/root", &commitment.root);
+    let mut writer = Writer::new();
+    writer.u64_le(commitment.poly_len as u64);
+    writer.u64_le(commitment.blowup as u64);
+    writer.count(points.len());
+    for point in points {
+        writer.field(*point);
+    }
+    for value in values {
+        writer.field(*value);
+    }
+    transcript.absorb(b"upcs-multi/statement", &writer.finish());
 }
 
 /// Validate commitment dimensions and return the LDE length.
@@ -493,6 +854,35 @@ mod tests {
     ) -> Result<()> {
         let mut verifier_t = Transcript::new(b"upcs-test");
         verify(commitment, point, value, proof, params, &mut verifier_t)
+    }
+
+    fn multi_points(_poly_len: usize, k: usize) -> Vec<Field> {
+        (0..k)
+            .map(|i| Field::new(u32::try_from(i).unwrap() * 5 + 2))
+            .collect()
+    }
+
+    fn prove_multi_roundtrip(
+        coeffs: &[Field],
+        points: &[Field],
+    ) -> (Commitment, fri::Params, Vec<Field>, Proof) {
+        let params = params(coeffs.len());
+        let state = commit(coeffs, params.blowup).unwrap();
+        let commitment = state.commitment().clone();
+        let mut prover_t = Transcript::new(b"upcs-multi-test");
+        let (proof, values) = open_multi(&state, points, params, &mut prover_t).unwrap();
+        (commitment, params, values, proof)
+    }
+
+    fn verify_multi_with(
+        commitment: &Commitment,
+        points: &[Field],
+        values: &[Field],
+        proof: &Proof,
+        params: fri::Params,
+    ) -> Result<()> {
+        let mut verifier_t = Transcript::new(b"upcs-multi-test");
+        verify_multi(commitment, points, values, proof, params, &mut verifier_t)
     }
 
     #[test]
@@ -682,5 +1072,188 @@ mod tests {
         let (commitment, params, value, proof) = prove_roundtrip(&coeffs, point);
         let mut other_t = Transcript::new(b"upcs-other-domain");
         assert!(verify(&commitment, point, value, &proof, params, &mut other_t).is_err());
+    }
+
+    #[test]
+    fn honest_multi_openings_verify() {
+        for n in [2usize, 4, 8, 16] {
+            let coeffs = poly(n);
+            for k in 1..=n.min(MAX_POINTS) {
+                let points = multi_points(n, k);
+                let (commitment, params, values, proof) = prove_multi_roundtrip(&coeffs, &points);
+                verify_multi_with(&commitment, &points, &values, &proof, params).unwrap();
+                for (point, value) in points.iter().zip(&values) {
+                    assert_eq!(ntt::evaluate(&coeffs, *point), *value);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn multi_wrong_value_is_rejected() {
+        let coeffs = poly(8);
+        let points = multi_points(8, 3);
+        let (commitment, params, mut values, proof) = prove_multi_roundtrip(&coeffs, &points);
+        values[1] += Field::ONE;
+        assert!(verify_multi_with(&commitment, &points, &values, &proof, params).is_err());
+    }
+
+    #[test]
+    fn multi_wrong_point_is_rejected() {
+        let coeffs = poly(16);
+        let points = multi_points(16, 4);
+        let (commitment, params, values, proof) = prove_multi_roundtrip(&coeffs, &points);
+        let mut other = points;
+        other[2] += Field::ONE;
+        assert!(verify_multi_with(&commitment, &other, &values, &proof, params).is_err());
+    }
+
+    #[test]
+    fn multi_duplicate_points_are_rejected() {
+        let coeffs = poly(8);
+        let state = commit(&coeffs, 8).unwrap();
+        let points = [Field::new(3), Field::new(3)];
+        let mut transcript = Transcript::new(b"upcs-multi-test");
+        assert!(open_multi(&state, &points, params(8), &mut transcript).is_err());
+
+        let points = multi_points(8, 2);
+        let (commitment, params, values, proof) = prove_multi_roundtrip(&coeffs, &points);
+        let duplicated = [points[0], points[0]];
+        assert!(verify_multi_with(&commitment, &duplicated, &values, &proof, params).is_err());
+    }
+
+    #[test]
+    fn multi_point_count_limits_are_enforced() {
+        let coeffs = poly(32);
+        let state = commit(&coeffs, 8).unwrap();
+        let too_many = multi_points(32, MAX_POINTS + 1);
+        let mut transcript = Transcript::new(b"upcs-multi-test");
+        assert!(open_multi(&state, &too_many, params(32), &mut transcript).is_err());
+
+        let n = 8;
+        let points = multi_points(n, n);
+        let (commitment, params, values, proof) = prove_multi_roundtrip(&coeffs[..n], &points);
+        let mut too_many_points = points;
+        too_many_points.push(Field::new(100));
+        let mut too_many_values = values;
+        too_many_values.push(Field::ZERO);
+        assert!(verify_multi_with(
+            &commitment,
+            &too_many_points,
+            &too_many_values,
+            &proof,
+            params
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn multi_full_degree_point_set_uses_zero_quotient() {
+        let coeffs = poly(8);
+        let points = multi_points(8, 8);
+        let (commitment, params, values, proof) = prove_multi_roundtrip(&coeffs, &points);
+        assert_eq!(proof.q_commitment.degree_bound, 0);
+        verify_multi_with(&commitment, &points, &values, &proof, params).unwrap();
+    }
+
+    #[test]
+    fn multi_wrong_quotient_is_rejected() {
+        let coeffs = poly(8);
+        let points = multi_points(8, 3);
+        let params = params(8);
+        let state = commit(&coeffs, params.blowup).unwrap();
+        let values: Vec<Field> = points
+            .iter()
+            .map(|point| ntt::evaluate(&coeffs, *point))
+            .collect();
+        let interp = interpolate(&points, &values).unwrap();
+        let vanishing = interpolation_vanishing(&points);
+        let mut numerator = coeffs.clone();
+        for (slot, coefficient) in numerator.iter_mut().zip(&interp) {
+            *slot -= *coefficient;
+        }
+        let mut quotient = divide_exact(&numerator, &vanishing).unwrap();
+        quotient[0] += Field::ONE;
+        let mut prover_t = Transcript::new(b"upcs-multi-test");
+        let proof = open_multi_with_quotient(
+            &state,
+            &points,
+            &values,
+            &quotient,
+            8 - points.len() - 1,
+            params,
+            &mut prover_t,
+        )
+        .unwrap();
+        assert!(verify_multi_with(state.commitment(), &points, &values, &proof, params).is_err());
+    }
+
+    #[test]
+    fn multi_tampering_is_rejected() {
+        let coeffs = poly(8);
+        let points = multi_points(8, 3);
+        let (commitment, params, values, proof) = prove_multi_roundtrip(&coeffs, &points);
+
+        let mut bad = proof.clone();
+        bad.g_commitment.caps[0][0][0] ^= 1;
+        assert!(verify_multi_with(&commitment, &points, &values, &bad, params).is_err());
+
+        let mut bad = proof.clone();
+        bad.q_commitment.caps[0][0][0] ^= 1;
+        assert!(verify_multi_with(&commitment, &points, &values, &bad, params).is_err());
+
+        let mut bad = proof.clone();
+        bad.q_commitment.degree_bound += 1;
+        assert!(verify_multi_with(&commitment, &points, &values, &bad, params).is_err());
+
+        let mut bad = proof.clone();
+        bad.openings[0].value += Field::ONE;
+        assert!(verify_multi_with(&commitment, &points, &values, &bad, params).is_err());
+
+        let mut bad = proof;
+        bad.openings[0].path.pop();
+        assert!(verify_multi_with(&commitment, &points, &values, &bad, params).is_err());
+    }
+
+    #[test]
+    fn multi_proofs_roundtrip() {
+        let coeffs = poly(8);
+        let points = multi_points(8, 4);
+        let (commitment, params, values, proof) = prove_multi_roundtrip(&coeffs, &points);
+        let bytes = proof.to_bytes();
+        let decoded = Proof::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, proof);
+        verify_multi_with(&commitment, &points, &values, &decoded, params).unwrap();
+        assert!(Proof::from_bytes(&bytes[..bytes.len() - 1]).is_err());
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(Proof::from_bytes(&trailing).is_err());
+    }
+
+    #[test]
+    fn multi_statement_is_transcript_bound() {
+        let coeffs = poly(8);
+        let points = multi_points(8, 3);
+        let (commitment, params, values, proof) = prove_multi_roundtrip(&coeffs, &points);
+        let mut other_t = Transcript::new(b"upcs-multi-other-domain");
+        assert!(verify_multi(&commitment, &points, &values, &proof, params, &mut other_t).is_err());
+    }
+
+    #[test]
+    fn interpolation_matches_claims() {
+        let points = multi_points(8, 5);
+        let values: Vec<Field> = points
+            .iter()
+            .map(|point| *point * *point + Field::new(7))
+            .collect();
+        let interp = interpolate(&points, &values).unwrap();
+        for (point, value) in points.iter().zip(&values) {
+            assert_eq!(eval_poly(&interp, *point), *value);
+        }
+        let vanishing = interpolation_vanishing(&points);
+        for point in &points {
+            assert_eq!(eval_poly(&vanishing, *point), Field::ZERO);
+        }
+        assert_eq!(*vanishing.last().unwrap(), Field::ONE);
     }
 }

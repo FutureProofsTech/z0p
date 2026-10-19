@@ -68,7 +68,7 @@ Reed–Solomon proximity testing.
    explicitly (rate + queries + grinding) rather than implied. Bench
    shapes are fast and labeled weak (~18 bits); production shapes target
    ~100 bits via `Params::for_security(…, 100)`.
-5. **Evidence over claims.** 201 unit tests, three adversarial suites
+5. **Evidence over claims.** 213 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught
@@ -159,13 +159,15 @@ portable scalar-safe-Rust throughput with parallelism over
 3. **Point-evaluation commitments — done.** `upcs.rs` opens a committed
    univariate polynomial at an arbitrary field point: quotient commitment,
    two FRI low-degree checks, and Merkle-checked identity at the quotient's
-   query points. Transparent, non-hiding, cap height `0`; the opening
-   primitive for a multilinear PCS.
+   query points. `open_multi` batches up to 16 distinct points behind one
+   quotient and one FRI pair. Transparent, non-hiding, cap height `0`; the
+   opening primitive for a multilinear PCS.
 4. **Multilinear PCS — first version done.** `gemini.rs` commits the
    monomial-coefficient encoding and proves `f(r) = y` with Gemini-style
    fold-chain checks and `upcs` point openings; `commit_evals` applies the
-   Möbius transform. Proof size is `O(n)` openings, so compact multilinear
-   FRI (BaseFold/WHIR) is the next step.
+   Möbius transform. Each layer is opened once with a multi-point proof, so
+   the proof carries `n` openings (not `3n - 2`) and remains `O(n)`;
+   compact multilinear FRI (BaseFold/WHIR) is the next step.
 5. **Programs / zkVM** — compact multilinear PCS, large-table lookups, then
    general program execution proofs.
 6. **External audit** — procurement item; the evidence package is ready.

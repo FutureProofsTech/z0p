@@ -11,18 +11,22 @@
 //! [`open`] proves `f(r) = y` by folding the coefficient polynomial one
 //! variable at a time (least-significant coordinate first):
 //! `g_i(Y) = A_i(Y) + r_i B_i(Y)` where `g_{i-1}(X) = A_i(X^2) + X B_i(X^2)`.
-//! The prover commits `g_1, ..., g_{n-1}` and opens:
+//! The prover commits `g_1, ..., g_{n-1}` and checks, for each `i < n`, the
+//! fold identity at a nonzero random `beta_i`:
 //!
-//! - for each `i < n`, the fold identity at a nonzero random `beta_i`:
-//!   `g_i(beta^2) = (g_{i-1}(beta) + g_{i-1}(-beta)) / 2 + r_i (g_{i-1}(beta) - g_{i-1}(-beta)) / (2 beta)`;
-//!   zero coordinates need no special case (the odd part is multiplied by
-//!   `r_i = 0`);
-//! - the final public-point check `g_{n-1}(r_0) = y` (the last fold is
-//!   linear, so its value at `r_0` is the constant term).
+//! ```text
+//! g_i(beta^2) = (g_{i-1}(beta) + g_{i-1}(-beta)) / 2
+//!             + r_i (g_{i-1}(beta) - g_{i-1}(-beta)) / (2 beta)
+//! ```
 //!
-//! Layer commitments are absorbed before the `beta_i` are sampled. All
-//! point openings are [`upcs`] proofs, so this construction is transparent
-//! and hash-only.
+//! with the final public-point check `g_{n-1}(r_0) = y`. Zero coordinates
+//! need no special case (the odd part is multiplied by `r_i = 0`).
+//!
+//! Every layer is opened **once** with a multi-point [`upcs`] proof at all
+//! points its relations use: `g_0` at `beta_1, -beta_1`; interior `g_i` at
+//! `beta_i^2, beta_{i+1}, -beta_{i+1}`; and `g_{n-1}` at
+//! `beta_{n-1}^2, r_0`. Layer commitments are absorbed before the `beta_i`
+//! are sampled, so this construction is transparent and hash-only.
 //!
 //! # Soundness
 //!
@@ -36,11 +40,12 @@
 //! checks, which are roadmap work; treat the bit level as conjectured and
 //! size instances accordingly.
 //!
-//! For `n >= 1` the proof carries `3 n - 2` `upcs` openings and `n - 1`
-//! layer commitments (`n = 0` carries one opening and no layers), so it is
-//! `O(n)` openings and not constant-size.
-//! Batch/multilinear FRI (BaseFold/WHIR) is the roadmap replacement.
-//! Proofs are not hiding.
+//! For `n >= 1` the proof carries one multi-point `upcs` opening per layer
+//! and `n - 1` layer commitments (`n = 0` carries one opening and no
+//! layers), so it is `O(n)` openings and not constant-size. Each opening
+//! batches the two or three evaluation points of its layer behind one
+//! FRI pair and one quotient. Batch/multilinear FRI (BaseFold/WHIR) is the
+//! roadmap replacement. Proofs are not hiding.
 //!
 //! [`Mle`]: crate::mle::Mle
 
@@ -48,7 +53,6 @@ use crate::babybear::Field;
 use crate::codec::{Reader, Writer, MAX_QUERIES, VERSION};
 use crate::error::{Error, Result};
 use crate::fri;
-use crate::ntt;
 use crate::transcript::Transcript;
 use crate::upcs;
 
@@ -58,7 +62,9 @@ pub const MAX_VARS: usize = 20;
 #[allow(clippy::cast_possible_truncation)]
 const MAX_LAYERS: u32 = MAX_VARS as u32;
 #[allow(clippy::cast_possible_truncation)]
-const MAX_OPENINGS: u32 = 3 * MAX_VARS as u32;
+const MAX_VALUES: u32 = 3 * MAX_VARS as u32;
+#[allow(clippy::cast_possible_truncation)]
+const MAX_OPENINGS: u32 = MAX_VARS as u32;
 const MAX_PROOF_BYTES: u32 = 1 << 27;
 
 /// Prover/verifier parameters for Gemini openings.
@@ -225,9 +231,9 @@ impl ProverState {
 pub struct Proof {
     /// Commitments to the folded layers `g_1, ..., g_{n-1}`.
     pub layers: Vec<upcs::Commitment>,
-    /// Values used by the fold identities, in verification order.
+    /// Layer-opening values, layer by layer and point by point.
     pub values: Vec<Field>,
-    /// `upcs` openings, in verification order; the last opens `g_{n-1}`.
+    /// One multi-point `upcs` opening per layer, `g_0` first.
     pub openings: Vec<upcs::Proof>,
 }
 
@@ -274,7 +280,7 @@ impl Proof {
             });
         }
         let mut values = Vec::new();
-        for _ in 0..reader.count(MAX_OPENINGS)? {
+        for _ in 0..reader.count(MAX_VALUES)? {
             values.push(reader.field()?);
         }
         let mut openings = Vec::new();
@@ -388,56 +394,31 @@ pub fn open(
         betas.push(challenge_nonzero(transcript)?);
     }
 
-    let mut values = Vec::with_capacity(3 * n_vars.saturating_sub(1));
-    let mut openings = Vec::with_capacity(3 * n_vars.saturating_sub(1) + 1);
-    for i in 1..n_vars {
-        let beta = betas[i - 1];
-        let beta_sq = beta * beta;
-        let previous = if i == 1 {
-            &state.top
-        } else {
-            &layer_states[i - 2]
-        };
-        let next = &layer_states[i - 1];
-        let previous_params = params.layer(previous.coeffs().len())?;
-        let next_params = params.layer(next.coeffs().len())?;
-        let left = ntt::evaluate(previous.coeffs(), beta);
-        let left_neg = ntt::evaluate(previous.coeffs(), -beta);
-        let folded = ntt::evaluate(next.coeffs(), beta_sq);
-        openings.push(upcs::open(
-            previous,
-            beta,
-            left,
-            previous_params,
-            transcript,
-        )?);
-        openings.push(upcs::open(
-            previous,
-            -beta,
-            left_neg,
-            previous_params,
-            transcript,
-        )?);
-        openings.push(upcs::open(next, beta_sq, folded, next_params, transcript)?);
-        values.push(left);
-        values.push(left_neg);
-        values.push(folded);
-    }
-
-    let final_state = if n_vars <= 1 {
-        &state.top
-    } else {
-        &layer_states[n_vars - 2]
-    };
     let final_point = if n_vars == 0 { Field::ZERO } else { point[0] };
-    let final_params = params.layer(final_state.coeffs().len())?;
-    openings.push(upcs::open(
-        final_state,
-        final_point,
-        value,
-        final_params,
-        transcript,
-    )?);
+    let mut states = Vec::with_capacity(n_vars.max(1));
+    states.push(&state.top);
+    states.extend(layer_states.iter());
+
+    let mut values = Vec::with_capacity(if n_vars <= 1 { 1 } else { 3 * n_vars - 2 });
+    let mut openings = Vec::with_capacity(n_vars.max(1));
+    for (index, layer_state) in states.iter().enumerate() {
+        let points = layer_points(index, n_vars, &betas, final_point);
+        let layer_params = params.layer(layer_state.coeffs().len())?;
+        let (opening, layer_values) =
+            upcs::open_multi(layer_state, &points, layer_params, transcript)?;
+        values.extend(layer_values);
+        openings.push(opening);
+    }
+    let Some(&final_value) = values.last() else {
+        return Err(Error::MalformedInput {
+            reason: "empty layer values",
+        });
+    };
+    if final_value != value {
+        return Err(Error::MalformedInput {
+            reason: "claimed evaluation does not match the multilinear polynomial",
+        });
+    }
 
     Ok(Proof {
         layers: layer_commitments,
@@ -494,8 +475,9 @@ pub fn verify(
             });
         }
     }
-    let expected_values = 3 * expected_layers;
-    if proof.values.len() != expected_values || proof.openings.len() != expected_values + 1 {
+    let expected_values = if n_vars <= 1 { 1 } else { 3 * n_vars - 2 };
+    let expected_openings = n_vars.max(1);
+    if proof.values.len() != expected_values || proof.openings.len() != expected_openings {
         return Err(Error::MalformedInput {
             reason: "opening count does not match n_vars",
         });
@@ -510,67 +492,82 @@ pub fn verify(
     }
 
     let top = commitment.to_upcs();
+    let final_point = if n_vars == 0 { Field::ZERO } else { point[0] };
+    let mut commitments: Vec<&upcs::Commitment> = Vec::with_capacity(n_vars.max(1));
+    commitments.push(&top);
+    commitments.extend(proof.layers.iter());
+
+    let mut layer_values: Vec<Vec<Field>> = Vec::with_capacity(commitments.len());
     let mut cursor = 0;
+    for (index, layer) in commitments.iter().enumerate() {
+        let points = layer_points(index, n_vars, &betas, final_point);
+        let end = cursor + points.len();
+        if end > proof.values.len() {
+            return Err(Error::MalformedInput {
+                reason: "opening values are truncated",
+            });
+        }
+        let values = &proof.values[cursor..end];
+        let layer_params = params.layer(layer.poly_len)?;
+        upcs::verify_multi(
+            layer,
+            &points,
+            values,
+            &proof.openings[index],
+            layer_params,
+            transcript,
+        )?;
+        layer_values.push(values.to_vec());
+        cursor = end;
+    }
+    if cursor != proof.values.len() {
+        return Err(Error::MalformedInput {
+            reason: "opening values have trailing entries",
+        });
+    }
+
     for i in 1..n_vars {
         let coordinate = point[n_vars - i];
         let beta = betas[i - 1];
-        let beta_sq = beta * beta;
-        let previous = if i == 1 { &top } else { &proof.layers[i - 2] };
-        let next = &proof.layers[i - 1];
-        let previous_params = params.layer(previous.poly_len)?;
-        let next_params = params.layer(next.poly_len)?;
-        let left = proof.values[cursor];
-        let left_neg = proof.values[cursor + 1];
-        let folded = proof.values[cursor + 2];
-        upcs::verify(
-            previous,
-            beta,
-            left,
-            &proof.openings[cursor],
-            previous_params,
-            transcript,
-        )?;
-        upcs::verify(
-            previous,
-            -beta,
-            left_neg,
-            &proof.openings[cursor + 1],
-            previous_params,
-            transcript,
-        )?;
-        upcs::verify(
-            next,
-            beta_sq,
-            folded,
-            &proof.openings[cursor + 2],
-            next_params,
-            transcript,
-        )?;
+        let previous = &layer_values[i - 1];
+        let (plus, minus) = if i == 1 { (0, 1) } else { (1, 2) };
+        let left = previous[plus];
+        let left_neg = previous[minus];
+        let folded = layer_values[i][0];
         let half = Field::TWO.inv();
         let expected =
             (left + left_neg) * half + coordinate * (left - left_neg) * (Field::TWO * beta).inv();
         if folded != expected {
             return Err(Error::FriVerificationFailed);
         }
-        cursor += 3;
     }
 
-    let final_commitment = if n_vars <= 1 {
-        &top
-    } else {
-        &proof.layers[n_vars - 2]
-    };
-    let final_point = if n_vars == 0 { Field::ZERO } else { point[0] };
-    let final_params = params.layer(final_commitment.poly_len)?;
-    upcs::verify(
-        final_commitment,
-        final_point,
-        value,
-        &proof.openings[cursor],
-        final_params,
-        transcript,
-    )?;
+    let final_value = layer_values
+        .last()
+        .and_then(|values| values.last())
+        .copied()
+        .ok_or(Error::FriVerificationFailed)?;
+    if final_value != value {
+        return Err(Error::FriVerificationFailed);
+    }
     Ok(())
+}
+
+/// Points at which layer `index` is opened by the fold checks/final claim.
+fn layer_points(index: usize, n_vars: usize, betas: &[Field], final_point: Field) -> Vec<Field> {
+    if n_vars <= 1 {
+        return vec![final_point];
+    }
+    if index == 0 {
+        return vec![betas[0], -betas[0]];
+    }
+    if index == n_vars - 1 {
+        let beta = betas[n_vars - 2];
+        return vec![beta * beta, final_point];
+    }
+    let previous = betas[index - 1];
+    let next = betas[index];
+    vec![previous * previous, next, -next]
 }
 
 /// Validate a coefficient/evaluation length and return `log2(length)`.
@@ -806,6 +803,29 @@ mod tests {
         let (commitment, mut proof, value) = prove(&coeffs, &point);
         proof.values[0] += Field::ONE;
         assert!(verify_with(&commitment, &point, value, &proof).is_err());
+    }
+
+    #[test]
+    fn layer_openings_are_batched() {
+        let n_vars = 3;
+        let coeffs = coefficients(n_vars);
+        let evaluation_point = point(n_vars);
+        let (_, proof, _) = prove(&coeffs, &evaluation_point);
+        assert_eq!(proof.layers.len(), 2);
+        assert_eq!(proof.values.len(), 7);
+        assert_eq!(proof.openings.len(), 3);
+        assert_eq!(proof.openings[0].q_commitment.degree_bound, 5);
+        assert_eq!(proof.openings[1].q_commitment.degree_bound, 0);
+        assert_eq!(proof.openings[2].q_commitment.degree_bound, 0);
+
+        for n_vars in [0usize, 1] {
+            let coeffs = coefficients(n_vars);
+            let point = point(n_vars);
+            let (_, proof, _) = prove(&coeffs, &point);
+            assert_eq!(proof.layers.len(), 0);
+            assert_eq!(proof.values.len(), 1);
+            assert_eq!(proof.openings.len(), 1);
+        }
     }
 
     #[test]

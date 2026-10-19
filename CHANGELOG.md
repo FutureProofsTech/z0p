@@ -55,24 +55,33 @@ All notable changes to `z0p` are documented here. The format follows
 - **Multilinear PCS (`gemini`).** Gemini-style commitment to the
   monomial-coefficient encoding of an `n`-variable multilinear polynomial:
   `commit_evals` applies the Möbius transform, `open` folds one variable
-  at a time, commits the folded layers, and opens them with `upcs` at
-  random fold challenges (`g_i(beta^2) = (g_{i-1}(beta) +
-  g_{i-1}(-beta))/2 + r_i (g_{i-1}(beta) - g_{i-1}(-beta))/(2 beta)`),
-  plus the public final-point check `g_{n-1}(r_0) = y`. 15 tests:
+  at a time, commits the folded layers, and opens each layer **once** with
+  a multi-point `upcs` proof at the points of its fold checks:
+  `g_0` at `beta_1, -beta_1`, interior `g_i` at
+  `beta_i^2, beta_{i+1}, -beta_{i+1}`, and `g_{n-1}` at
+  `beta_{n-1}^2, r_0`. The fold identity
+  `g_i(beta^2) = (g_{i-1}(beta) + g_{i-1}(-beta))/2 +
+  r_i (g_{i-1}(beta) - g_{i-1}(-beta))/(2 beta)` and the public final-point
+  check `g_{n-1}(r_0) = y` are then checked from those openings. 16 tests:
   honest `n = 0..5`, Möbius vs `Mle`, zero coordinates, wrong
-  value/point, tampered layers/values/openings, dimension/codec/transcript
-  gates. Transparent, non-hiding v1; proof size is `O(n)` `upcs` openings,
-  and the 31-bit field bounds the fold-check error (`n 2^n / p`), so wide
-  instances await extension-field challenges or compact multilinear FRI.
+  value/point, tampered layers/values/openings, batched layer shapes,
+  dimension/codec/transcript gates. Transparent, non-hiding v1; proof size
+  is `n` `upcs` openings (down from `3n - 2`), and the 31-bit field bounds
+  the fold-check error (`n 2^n / p`), so wide instances await
+  extension-field challenges or compact multilinear FRI.
 - **Point-evaluation commitments (`upcs`).** FRI-backed univariate PCS:
   commit to coefficients over the bit-reversed LDE, open `g(beta) = y` by
   committing the quotient `(g - y)/(X - beta)`, FRI low-degree-testing both
   `g` and the quotient, and checking the quotient identity at the
-  quotient's random query points (Merkle-opening `g` there). 14 tests:
-  honest openings for `n = 1..64`, wrong value/point/commitment, tampered
-  leaves/paths/FRI values/commitments, wrong quotient, cap-height and
-  dimension gates, canonical encodings, transcript binding. Transparent,
-  non-hiding v1; cap height must be `0`.
+  quotient's random query points (Merkle-opening `g` there). `open_multi`
+  opens up to 16 distinct points with one interpolation polynomial `I`,
+  vanishing polynomial `Z`, quotient `(g - I)/Z`, and FRI pair; when the
+  point count equals `n`, `I` fixes `g` and the quotient is zero. 25 tests:
+  honest single- and multi-point openings (multi-point `k = 1..n`, up to
+  16), duplicate/oversized sets, wrong value/point/quotient/commitment,
+  tampered leaves/paths/FRI values/commitments, cap-height and dimension
+  gates, canonical encodings, transcript binding. Transparent, non-hiding
+  v1; cap height must be `0`.
 - **Recursion fragment (`recursion`).** A STARK re-checking one FRI query's
   fold chain. Public statement `(lde_len, leaf, fold challenges, initial
   quad, output)`; witness quads are committed and transitions read next-row

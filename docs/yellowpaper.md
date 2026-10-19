@@ -268,7 +268,7 @@ cap/path shape pins before hashing; `fri-dims` dimension binding
 (closes proof malleability of echoed dimensions); canonical-only
 decoding; PoW bound to history with queries sampled after.
 
-**Validation.** 201 unit tests (KATs, cross-checks against Horner/`%`,
+**Validation.** 213 unit tests (KATs, cross-checks against Horner/`%`,
 parallel-vs-sequential identity), 13-test security suite and 10-test
 red-team suite (~800 hostile attempts/run, zero acceptances, zero
 panics), wire-exact size assertions on every benchmark, and a
@@ -278,8 +278,9 @@ regression vs `tools/baseline.json`).
 **Out of scope / stated limits.** Bench shapes (~18 bits) are not
 production soundness; large-table lookups await a compact multilinear
 PCS; vectorized hashing, the one-query recursion fragment, FRI-backed
-univariate point openings, and a first Gemini-style multilinear PCS
-(`O(n)` openings) are done; compact multilinear FRI/BaseFold,
+univariate point and multi-point openings, and a first Gemini-style
+multilinear PCS (`O(n)` openings, one batched opening per layer) are done;
+compact multilinear FRI/BaseFold,
 self-proving recursion, and a zkVM are roadmap items; no
 external audit has yet been performed.
 

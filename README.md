@@ -24,7 +24,7 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
   (~4.4 µs/step, ~226k steps/s), verified in **~2.4 ms**, 186,961 bytes.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 201 unit tests plus three attack suites
+- **Adversarially tested** — 213 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -114,7 +114,7 @@ plus the size-optimal final layer and Merkle cap height.
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 201 tests across 21 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 213 tests across 21 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 8 vectors: hostile `Params`, decoder bit-flip fuzz, RNG uniformity | this README |
@@ -196,14 +196,16 @@ CHANGELOG.md     release history (Keep a Changelog)
 - **Point-evaluation commitments — done.** `upcs.rs` opens a committed
   univariate polynomial at an arbitrary field point: quotient commitment
   `(g - y)/(X - beta)`, two FRI low-degree proofs, and Merkle-checked
-  identity at the quotient's query points. Transparent, non-hiding (`v1`);
-  cap height must be `0`. This is the opening primitive for a multilinear
-  PCS.
+  identity at the quotient's query points. `open_multi` batches up to 16
+  distinct points behind one quotient (`(g - I)/Z`) and one FRI pair.
+  Transparent, non-hiding (`v1`); cap height must be `0`. This is the
+  opening primitive for a multilinear PCS.
 - **Multilinear commitments — first version done.** `gemini.rs` commits
   the monomial-coefficient encoding and proves `f(r) = y` with Gemini-style
-  fold-chain checks; `commit_evals` applies the Möbius transform. The `v1`
-  proof carries `O(n)` `upcs` openings, so compact multilinear FRI
-  (BaseFold/WHIR) is the next step.
+  fold-chain checks; `commit_evals` applies the Möbius transform. Each
+  layer is opened once with a multi-point `upcs` proof, so the `v1` proof
+  carries `n` openings rather than `3n - 2`; it remains `O(n)`, so compact
+  multilinear FRI (BaseFold/WHIR) is the next step.
 - **Programs / zkVM.** Compact multilinear PCS (unlocks large-table
   lookups), then program execution.
 - **External audit.** The suite, gates, versioned wire format, and pinned

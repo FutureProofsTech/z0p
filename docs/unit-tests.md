@@ -1,7 +1,7 @@
 # Unit tests — breakdown
 
 `cargo test --lib` (also run with `--release` by `tools/check.py`).
-Measured: 2026-10-20 — **201 passed, 0 failed.**
+Measured: 2026-10-20 — **213 passed, 0 failed.**
 
 ## Per-module counts
 
@@ -21,8 +21,8 @@ Measured: 2026-10-20 — **201 passed, 0 failed.**
 | `ntt` | 6 | Horner cross-checks (incl. parallel path at 2¹⁶/2¹⁷), determinism, roundtrips, RS extension |
 | `par` | 2 | parallel-vs-sequential identity, sequential thresholds |
 | `range` | 16 | honest/out-of-range/boundary, bit columns, ZK masking, caps, encodings |
-| `upcs` | 14 | honest openings (n=1..64, four points), wrong value/point/commitment, leaf/path/commitment/FRI tampering, wrong quotient, caps/dim gates, encodings |
-| `gemini` | 15 | honest n=0..5, Möbius vs `Mle`, wrong value/point, tampered layers/values/openings, shape/codec/transcript, zero coordinates |
+| `upcs` | 25 | honest openings (n=1..64, four points), multi-point batches (k=1..n, up to 16), duplicate/oversized sets, wrong value/point/quotient, leaf/path/commitment/FRI tampering, caps/dim gates, encodings |
+| `gemini` | 16 | honest n=0..5, Möbius vs `Mle`, per-layer multi-point shape, wrong value/point, tampered layers/values/openings, shape/codec/transcript, zero coordinates |
 | `recursion` | 12 | honest fold chains (2/3 folds, padding), wrong output, broken chain, opening/shift tampering, caps, encoding, degree bound |
 | `rng` | 7 | ChaCha20 vectors, determinism, key sensitivity, key-material redaction |
 | `sumcheck` | 6 | product sums, tampered rounds/finals, transcript binding, shapes |
@@ -33,5 +33,5 @@ Measured: 2026-10-20 — **201 passed, 0 failed.**
 
 ```sh
 cargo test --lib              # debug
-cargo test --lib --release    # optimized (same 186, also gated)
+cargo test --lib --release    # optimized (same 213, also gated)
 ```

@@ -331,6 +331,244 @@ pub fn blake3_256(data: &[u8]) -> [u8; 32] {
     hasher.finalize()
 }
 
+/// Scalar leaf digest: BLAKE3 of `0x00 || data` (any length).
+///
+/// Mirrors [`crate::merkle::hash_leaf`]; both call this so the scalar and
+/// batch paths cannot drift.
+pub(crate) fn leaf_digest(data: &[u8]) -> [u8; 32] {
+    if data.len() < CHUNK_LEN {
+        let mut buf = [0u8; CHUNK_LEN];
+        buf[0] = 0x00;
+        let end = 1 + data.len();
+        buf[1..end].copy_from_slice(data);
+        blake3_256_small(&buf[..end])
+    } else {
+        let mut prefixed = Vec::with_capacity(1 + data.len());
+        prefixed.push(0x00);
+        prefixed.extend_from_slice(data);
+        blake3_256(&prefixed)
+    }
+}
+
+/// Scalar node digest: BLAKE3 of `0x01 || left || right`.
+pub(crate) fn node_digest(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    let mut prefixed = [0u8; 65];
+    prefixed[0] = 0x01;
+    prefixed[1..33].copy_from_slice(left);
+    prefixed[33..65].copy_from_slice(right);
+    blake3_256_small(&prefixed)
+}
+
+/// Batch leaf digests for `flat` tiled into `leaf_len`-byte leaves.
+///
+/// `flat.len() == leaf_len * out.len()`. Uses the `simd` 8-lane path when
+/// the preimage fits one compression block (`leaf_len + 1 <= 64`), otherwise
+/// the scalar path. Byte-identical either way.
+pub(crate) fn leaf_digests(flat: &[u8], leaf_len: usize, out: &mut [[u8; 32]]) {
+    debug_assert!(leaf_len > 0);
+    debug_assert_eq!(flat.len(), leaf_len * out.len());
+    #[cfg(feature = "simd")]
+    if leaf_len < BLOCK_LEN {
+        simd::leaf_digests(flat, leaf_len, out);
+        return;
+    }
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = leaf_digest(&flat[i * leaf_len..(i + 1) * leaf_len]);
+    }
+}
+
+/// Batch parent digests: `out[i] = H(0x01 || prev[2i] || prev[2i+1])`.
+///
+/// `prev.len() == 2 * out.len()`. Uses the `simd` 8-lane path when enabled.
+pub(crate) fn node_digests(prev: &[[u8; 32]], out: &mut [[u8; 32]]) {
+    debug_assert_eq!(prev.len(), 2 * out.len());
+    #[cfg(feature = "simd")]
+    {
+        simd::node_digests(prev, out);
+    }
+    #[cfg(not(feature = "simd"))]
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = node_digest(&prev[2 * i], &prev[2 * i + 1]);
+    }
+}
+
+#[cfg(feature = "simd")]
+mod simd {
+    //! 8-lane portable-SIMD BLAKE3 compression over independent messages.
+    //!
+    //! Each lane runs one complete compression (one leaf preimage or one
+    //! parent preimage), so lane outputs are the same 256-bit digests the
+    //! scalar code produces; only the instruction schedule differs.
+    use super::{
+        chaining_bytes, leaf_digest, node_digest, words_from_block, BLOCK_LEN, BLOCK_LEN_U32,
+        CHUNK_END, CHUNK_START, IV, PERMUTATION, ROOT,
+    };
+    use core::simd::u32x8;
+
+    /// Bit-rotate right by `n` (1..=31); `Simd` integer ops wrap.
+    #[inline]
+    fn rot(x: u32x8, n: u32) -> u32x8 {
+        (x >> u32x8::splat(n)) | (x << u32x8::splat(32 - n))
+    }
+
+    #[inline]
+    fn quarter_round(
+        state: &mut [u32x8; 16],
+        a: usize,
+        b: usize,
+        c: usize,
+        d: usize,
+        first: u32x8,
+        second: u32x8,
+    ) {
+        state[a] += state[b] + first;
+        state[d] ^= state[a];
+        state[d] = rot(state[d], 16);
+        state[c] += state[d];
+        state[b] ^= state[c];
+        state[b] = rot(state[b], 12);
+        state[a] += state[b] + second;
+        state[d] ^= state[a];
+        state[d] = rot(state[d], 8);
+        state[c] += state[d];
+        state[b] ^= state[c];
+        state[b] = rot(state[b], 7);
+    }
+
+    #[inline]
+    fn round(state: &mut [u32x8; 16], message: &[u32x8; 16]) {
+        quarter_round(state, 0, 4, 8, 12, message[0], message[1]);
+        quarter_round(state, 1, 5, 9, 13, message[2], message[3]);
+        quarter_round(state, 2, 6, 10, 14, message[4], message[5]);
+        quarter_round(state, 3, 7, 11, 15, message[6], message[7]);
+        quarter_round(state, 0, 5, 10, 15, message[8], message[9]);
+        quarter_round(state, 1, 6, 11, 12, message[10], message[11]);
+        quarter_round(state, 2, 7, 8, 13, message[12], message[13]);
+        quarter_round(state, 3, 4, 9, 14, message[14], message[15]);
+    }
+
+    #[inline]
+    fn permute(message: &mut [u32x8; 16]) {
+        let old = *message;
+        for (i, &slot) in PERMUTATION.iter().enumerate() {
+            message[i] = old[slot];
+        }
+    }
+
+    /// 8-lane compression; lane `l` yields the full 16-word state.
+    fn compress_x8(
+        chaining: [u32x8; 8],
+        blocks: &[[u32; 16]; 8],
+        counter: u64,
+        block_len: u32,
+        flags: u32,
+    ) -> [[u32; 16]; 8] {
+        let counter_bytes = counter.to_le_bytes();
+        let low = u32::from_le_bytes([
+            counter_bytes[0],
+            counter_bytes[1],
+            counter_bytes[2],
+            counter_bytes[3],
+        ]);
+        let high = u32::from_le_bytes([
+            counter_bytes[4],
+            counter_bytes[5],
+            counter_bytes[6],
+            counter_bytes[7],
+        ]);
+        let mut state: [u32x8; 16] = core::array::from_fn(|i| match i {
+            0..=7 => chaining[i],
+            8..=11 => u32x8::splat(IV[i - 8]),
+            12 => u32x8::splat(low),
+            13 => u32x8::splat(high),
+            14 => u32x8::splat(block_len),
+            _ => u32x8::splat(flags),
+        });
+        let mut message: [u32x8; 16] = core::array::from_fn(|w| {
+            u32x8::from_array(core::array::from_fn(|lane| blocks[lane][w]))
+        });
+        for _ in 0..7 {
+            round(&mut state, &message);
+            permute(&mut message);
+        }
+        for i in 0..8 {
+            state[i] ^= state[i + 8];
+        }
+        for (i, chain) in chaining.iter().enumerate() {
+            state[i + 8] ^= *chain;
+        }
+        let lanes: [[u32; 8]; 16] = core::array::from_fn(|w| state[w].to_array());
+        core::array::from_fn(|lane| core::array::from_fn(|w| lanes[w][lane]))
+    }
+
+    /// Root lane digests for `0x00 || leaf` preimages of `leaf_len + 1`
+    /// bytes (`<= 64`).
+    pub(super) fn leaf_digests(flat: &[u8], leaf_len: usize, out: &mut [[u8; 32]]) {
+        let count = out.len();
+        let mut i = 0;
+        while i + 8 <= count {
+            let blocks: [[u32; 16]; 8] = core::array::from_fn(|lane| {
+                let leaf = &flat[(i + lane) * leaf_len..(i + lane + 1) * leaf_len];
+                let mut buf = [0u8; BLOCK_LEN];
+                buf[0] = 0x00;
+                buf[1..=leaf_len].copy_from_slice(leaf);
+                words_from_block(&buf)
+            });
+            let outputs = compress_x8(
+                core::array::from_fn(|i| u32x8::splat(IV[i])),
+                &blocks,
+                0,
+                u32::try_from(leaf_len + 1).unwrap_or(u32::MAX),
+                CHUNK_START | CHUNK_END | ROOT,
+            );
+            for (lane, output) in outputs.iter().enumerate() {
+                out[i + lane] = chaining_bytes(output);
+            }
+            i += 8;
+        }
+        for (k, slot) in out[i..].iter_mut().enumerate() {
+            *slot = leaf_digest(&flat[(i + k) * leaf_len..(i + k + 1) * leaf_len]);
+        }
+    }
+
+    /// Parent digests for `0x01 || left || right` preimages (65 bytes: a
+    /// `CHUNK_START` block, then a 1-byte `CHUNK_END | ROOT` block).
+    pub(super) fn node_digests(prev: &[[u8; 32]], out: &mut [[u8; 32]]) {
+        let count = out.len();
+        let mut i = 0;
+        while i + 8 <= count {
+            let first_blocks: [[u32; 16]; 8] = core::array::from_fn(|lane| {
+                let left = &prev[2 * (i + lane)];
+                let right = &prev[2 * (i + lane) + 1];
+                let mut buf = [0u8; BLOCK_LEN];
+                buf[0] = 0x01;
+                buf[1..33].copy_from_slice(left);
+                buf[33..].copy_from_slice(&right[..31]);
+                words_from_block(&buf)
+            });
+            let iv = core::array::from_fn(|i| u32x8::splat(IV[i]));
+            let first = compress_x8(iv, &first_blocks, 0, BLOCK_LEN_U32, CHUNK_START);
+            let second_blocks: [[u32; 16]; 8] = core::array::from_fn(|lane| {
+                let right = &prev[2 * (i + lane) + 1];
+                let mut buf = [0u8; BLOCK_LEN];
+                buf[0] = right[31];
+                words_from_block(&buf)
+            });
+            let chaining: [u32x8; 8] = core::array::from_fn(|w| {
+                u32x8::from_array(core::array::from_fn(|lane| first[lane][w]))
+            });
+            let outputs = compress_x8(chaining, &second_blocks, 0, 1, CHUNK_END | ROOT);
+            for (lane, output) in outputs.iter().enumerate() {
+                out[i + lane] = chaining_bytes(output);
+            }
+            i += 8;
+        }
+        for (k, slot) in out[i..].iter_mut().enumerate() {
+            *slot = node_digest(&prev[2 * (i + k)], &prev[2 * (i + k) + 1]);
+        }
+    }
+}
+
 /// One-shot digest for short inputs (`<= 1024` bytes).
 ///
 /// Allocation-free: inputs of at most one chunk root directly through one

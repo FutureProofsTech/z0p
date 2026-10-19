@@ -46,6 +46,7 @@
 //! ```
 
 #![forbid(unsafe_code)]
+#![cfg_attr(feature = "simd", feature(portable_simd))]
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
 #![warn(clippy::all, clippy::pedantic)]

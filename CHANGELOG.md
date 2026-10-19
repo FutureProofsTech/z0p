@@ -33,6 +33,12 @@ All notable changes to `z0p` are documented here. The format follows
 - **`range::build_columns` guards the shift** for `n_bits > 32`.
 
 ### Added
+- **`simd` feature (Tier 4).** 8-lane portable-SIMD BLAKE3 for Merkle
+  leaf/node batches (`src/hash.rs` `simd` module), byte-identical to the
+  scalar path (pinned by `merkle::tests::batch_digests_match_reference`).
+  Nightly-only (`std::simd` is unstable on Rust 1.99); default builds stay
+  scalar and MSRV 1.74. Up to ~2.6× on the Merkle primitive (box-load
+  dependent); end-to-end AIR 1M-step prove ~11% faster.
 - `tests/hardening.rs`: 8 tests for hostile `Params` structs, decoder
   single-bit-flip fuzzing across every proof type, the field invariant, and
   RNG uniformity.

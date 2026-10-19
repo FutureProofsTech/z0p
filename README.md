@@ -177,9 +177,12 @@ CHANGELOG.md     release history (Keep a Changelog)
 
 ## Roadmap
 
-- **Tier 4 — vectorized hashing.** The current ceiling is scalar BLAKE3 in
-  Merkle levels (~60% of large proves). Requires a `rust-version` policy
-  decision (portable SIMD needs 1.89+); scalar-equivalence fuzz included.
+- **Tier 4 — vectorized hashing (done).** `--features simd` (nightly)
+  runs 8-lane portable-SIMD BLAKE3 over Merkle leaf/node batches,
+  byte-identical to the scalar path (pinned by
+  `batch_digests_match_reference`), up to ~2.6× on the Merkle primitive
+  and ~11% end-to-end at 1M steps. The default build stays scalar, stable,
+  and MSRV 1.74; the feature is additive with a scalar fallback.
 - **Recursion.** Arithmetized verifier fragment (one-query check as AIR)
   first, then self-proving — the path to L1-sized proofs.
 - **Programs / zkVM.** Multilinear PCS first (unlocks large-table

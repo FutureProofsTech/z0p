@@ -6,7 +6,6 @@
 //! panic.
 
 use crate::error::{Error, Result};
-use crate::hash::{blake3_256, blake3_256_small, CHUNK_LEN};
 
 /// Hash a leaf preimage with the leaf domain separator.
 ///
@@ -14,32 +13,15 @@ use crate::hash::{blake3_256, blake3_256_small, CHUNK_LEN};
 /// crate): the prefix goes on a stack buffer down the single-chunk path.
 #[must_use]
 pub fn hash_leaf(data: &[u8]) -> [u8; 32] {
-    if data.len() < CHUNK_LEN {
-        let mut buf = [0u8; CHUNK_LEN];
-        buf[0] = 0x00;
-        let end = 1 + data.len();
-        buf[1..end].copy_from_slice(data);
-        blake3_256_small(&buf[..end])
-    } else {
-        let mut prefixed = Vec::with_capacity(1 + data.len());
-        prefixed.push(0x00);
-        prefixed.extend_from_slice(data);
-        blake3_256(&prefixed)
-    }
+    crate::hash::leaf_digest(data)
 }
 
 /// Hash two child digests with the node domain separator.
 ///
-/// The 65-byte preimage is a single chunk, so this roots directly through
-/// the allocation-free path — byte-identical to the buffered [`blake3_256`]
-/// (pinned by `small_matches_oneshot` at length 65 in [`crate::hash`]).
+/// Exactly BLAKE3 of the 65-byte preimage `0x01 || left || right`.
 #[must_use]
 pub fn hash_node(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut prefixed = [0u8; 65];
-    prefixed[0] = 0x01;
-    prefixed[1..33].copy_from_slice(left);
-    prefixed[33..65].copy_from_slice(right);
-    blake3_256_small(&prefixed)
+    crate::hash::node_digest(left, right)
 }
 
 /// Binary Merkle tree. Leaves are padded by duplicating the last leaf up to a
@@ -89,10 +71,9 @@ impl MerkleTree {
         let count = flat.len() / leaf_len;
         let mut current = vec![[0u8; 32]; count];
         crate::par::for_each_indexed(&mut current, 1024, |base, piece| {
-            for (j, slot) in piece.iter_mut().enumerate() {
-                let i = base + j;
-                *slot = hash_leaf(&flat[i * leaf_len..(i + 1) * leaf_len]);
-            }
+            let start = base * leaf_len;
+            let end = start + piece.len() * leaf_len;
+            crate::hash::leaf_digests(&flat[start..end], leaf_len, piece);
         });
         Ok(finish(current))
     }
@@ -290,16 +271,16 @@ fn finish(mut current: Vec<[u8; 32]>) -> MerkleTree {
 }
 /// Hash one Merkle level: `next[i] = H(prev[2i] || prev[2i + 1])`.
 ///
-/// Parallel across parent nodes when worthwhile; bit-identical either way
-/// (each parent is a pure function of its pair).
+/// Parallel across parent nodes and (with the `simd` feature) 8-lane
+/// vectorized within each chunk; bit-identical either way (each parent is a
+/// pure function of its pair).
 fn hash_level(prev: &[[u8; 32]]) -> Vec<[u8; 32]> {
     debug_assert_eq!(prev.len() % 2, 0);
     let mut next = vec![[0u8; 32]; prev.len() / 2];
     crate::par::for_each_indexed(&mut next, 1024, |base, piece| {
-        for (j, slot) in piece.iter_mut().enumerate() {
-            let i = base + j;
-            *slot = hash_node(&prev[2 * i], &prev[2 * i + 1]);
-        }
+        let start = 2 * base;
+        let end = start + 2 * piece.len();
+        crate::hash::node_digests(&prev[start..end], piece);
     });
     next
 }
@@ -311,6 +292,44 @@ mod tests {
     #[test]
     fn rejects_empty() {
         assert_eq!(MerkleTree::new(&[]), Err(Error::EmptyInput));
+    }
+
+    #[test]
+    fn batch_digests_match_reference() {
+        // Independent reference: full buffered BLAKE3 over the prefixed
+        // preimage. Odd counts exercise the scalar tail of the 8-lane path;
+        // `leaf_len == 64` exercises the non-SIMD fallback.
+        for leaf_len in [1usize, 4, 16, 32, 63, 64] {
+            let count = 37usize;
+            let flat: Vec<u8> = (0..count * leaf_len)
+                .map(|i| u8::try_from(i % 251).unwrap())
+                .collect();
+            let mut out = vec![[0u8; 32]; count];
+            crate::hash::leaf_digests(&flat, leaf_len, &mut out);
+            for (i, digest) in out.iter().enumerate() {
+                let mut pre = Vec::with_capacity(1 + leaf_len);
+                pre.push(0x00);
+                pre.extend_from_slice(&flat[i * leaf_len..(i + 1) * leaf_len]);
+                assert_eq!(
+                    *digest,
+                    crate::hash::blake3_256(&pre),
+                    "leaf {leaf_len}/{i}"
+                );
+            }
+        }
+        let count = 19usize;
+        let prev: Vec<[u8; 32]> = (0..2 * count)
+            .map(|i| hash_leaf(&[u8::try_from(i % 251).unwrap(); 8]))
+            .collect();
+        let mut out = vec![[0u8; 32]; count];
+        crate::hash::node_digests(&prev, &mut out);
+        for (i, digest) in out.iter().enumerate() {
+            let mut pre = Vec::with_capacity(65);
+            pre.push(0x01);
+            pre.extend_from_slice(&prev[2 * i]);
+            pre.extend_from_slice(&prev[2 * i + 1]);
+            assert_eq!(*digest, crate::hash::blake3_256(&pre), "node {i}");
+        }
     }
 
     #[test]

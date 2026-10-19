@@ -43,6 +43,20 @@ jobs:
       - name: Test
         run: cargo test --lib
 
+  simd:
+    name: portable SIMD (nightly)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (nightly) with clippy
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy
+      - name: Clippy (--features simd)
+        run: cargo clippy --all-targets --features simd -- -D warnings
+      - name: Test (--features simd)
+        run: cargo test --features simd
+
   docs:
     name: rustdoc (deny warnings)
     runs-on: ubuntu-latest

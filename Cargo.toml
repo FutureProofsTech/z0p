@@ -11,6 +11,14 @@ keywords = ["zero-knowledge", "fri", "stark", "cryptography", "blake3"]
 categories = ["cryptography"]
 rust-version = "1.74"
 
+[features]
+default = []
+# 8-lane portable-SIMD BLAKE3 for Merkle leaf/node batches. `std::simd` is
+# unstable on Rust 1.99, so this feature needs a nightly toolchain; the
+# default build stays scalar and MSRV 1.74. Outputs are byte-identical to
+# the scalar path (pinned by tests under `--features simd`).
+simd = []
+
 [profile.release]
 opt-level = 3
 lto = "thin"

@@ -61,6 +61,24 @@ building that table.
 | `ntt forward 2^14` | 0.37 ms |
 | `merkle 64k leaves` | 3.47 ms |
 
+## Vectorized hashing (`--features simd`, nightly)
+
+Tier 4 batches Merkle leaf/node BLAKE3 eight lanes at a time with
+`std::simd` (`u32x8`), byte-identical to the scalar path. Same-session
+paired runs on this box (which is not idle), nightly:
+
+| Row | Scalar | `--features simd` |
+|---|---|---|
+| `merkle 64k leaves` (quiet) | 8.5 ms | **3.2 ms** (~2.6×) |
+| `merkle 64k leaves` (loaded) | 9–14 ms | **5–10 ms** (~1.4–1.9×) |
+| `air prod N1048576` prove | 6,523 ms | **5,831 ms** (~11%) |
+
+SIMD is faster in every paired run; absolute gains depend heavily on box
+load (the scalar baseline row itself ranged 3.3–13.9 ms across sessions).
+End-to-end gains are bounded because NTT, composition, and the transcript
+are the other large prove costs. Builds without the feature are unaffected
+(scalar fallback, stable MSRV 1.74).
+
 ## Reproduce
 
 ```sh
@@ -69,4 +87,6 @@ BENCH_ROW=N1048576 cargo bench       # single scaled row
 BENCH_ROW="air prod" cargo bench     # all production AIR rows
 python3 tools/check.py               # full gates incl. bench regression
 python3 tools/check.py --update      # re-record baseline (review diffs first)
+cargo +nightly test --features simd  # SIMD/scalar byte-equivalence
+cargo +nightly bench --features simd # SIMD rows (nightly toolchain)
 ```

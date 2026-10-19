@@ -1,7 +1,7 @@
 # Unit tests — breakdown
 
 `cargo test --lib` (also run with `--release` by `tools/check.py`).
-Measured: 2026-10-20 — **219 passed, 0 failed.**
+Measured: 2026-10-20 — **220 passed, 0 failed.**
 
 ## Per-module counts
 
@@ -15,7 +15,7 @@ Measured: 2026-10-20 — **219 passed, 0 failed.**
 | `fri` | 20 | roundtrips, tampering, rate gates both directions, grinding, caps, dimensions, encodings |
 | `gf2` | 7 | F8/F64/F128 arithmetic, inverses, distributivity |
 | `hash` | 6 | BLAKE3 KATs (empty/`abc`/multi-chunk), single-chunk identity, incremental/split inputs, chunk boundaries |
-| `lookup` | 6 | membership, non-members, tampered multiplicities |
+| `lookup` | 7 | membership, non-members, tampered multiplicities, forged fractional multiplicities |
 | `merkle` | 7 | prove/verify, padding, flat-vs-nested, capped roundtrips, oversized paths, SIMD batch equivalence |
 | `mle` | 5 | evaluation corners, variable fixing, eq-polynomial sums |
 | `ntt` | 6 | Horner cross-checks (incl. parallel path at 2¹⁶/2¹⁷), determinism, roundtrips, RS extension |
@@ -33,5 +33,5 @@ Measured: 2026-10-20 — **219 passed, 0 failed.**
 
 ```sh
 cargo test --lib              # debug
-cargo test --lib --release    # optimized (same 219, also gated)
+cargo test --lib --release    # optimized (same 220, also gated)
 ```

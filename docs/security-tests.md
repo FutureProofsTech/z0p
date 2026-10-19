@@ -65,6 +65,22 @@ opening; sizes re-recorded). Regression tests:
 `air::tests::shifted_opening_tamper_fails`,
 `fold::tests::shifted_opening_tamper_fails`.
 
+## Finding closed by internal audit: unbound lookup multiplicities
+
+`lookup` sends multiplicities as proof data and only checked that they sum
+to the padded witness length. Field-valued multiplicities need not be
+integer counts: a non-member could solve the two rational-sum constraints
+with fractional values, derive consistent quotient columns, and pass all
+four sumchecks. An adversarial regression constructed exactly this proof
+for witness `[99]` and table `[1,2,3,4]`; it verified before the fix.
+
+Fix: `lookup::verify` has the witness and table in clear, so it recomputes
+the canonical first-index counts and requires exact equality with
+`proof.multiplicities`. The fractional construction now fails closed.
+Regression: `lookup::tests::forged_multiplicities_rejected`. This does not
+make the API zero-knowledge; multiplicities and quotient columns remain
+public.
+
 ## Findings closed by internal audit: parameter binding and panic surfaces
 
 - **FRI commitment parameter binding.** AIR, range, table, fold, and

@@ -72,7 +72,7 @@ Reed–Solomon proximity testing.
    finite-field algebraic term: with 31-bit challenges, effective
    conjectured soundness is at most ~31 bits until extension-field
    challenges or repeated independent checks are implemented.
-5. **Evidence over claims.** 219 unit tests, three adversarial suites
+5. **Evidence over claims.** 220 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught

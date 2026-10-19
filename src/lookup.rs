@@ -5,6 +5,9 @@
 //! verifier challenge `beta`. Four [`sumcheck`] invocations
 //! establish the two sums plus the two well-formedness (`read-check`)
 //! identities `q * (beta + v) = 1` / `= m` via randomized equality polynomials.
+//! Because the verifier receives the witness and table in clear, it recomputes
+//! the canonical first-index multiplicities and rejects any other vector; the
+//! multiplicities are not free proof data.
 //!
 //! # Transcript discipline
 //! All Fiat-Shamir steps run on one caller-provided [`Transcript`] with fixed
@@ -29,7 +32,8 @@ use crate::transcript::Transcript;
 pub struct Proof {
     /// Verifier challenge for the rational identity.
     pub beta: Field,
-    /// Multiplicities over the padded table (`sum == padded N`).
+    /// Canonical first-index counts over the padded table; the verifier
+    /// recomputes and requires an exact match.
     pub multiplicities: Vec<Field>,
     /// `1 / (beta + w_i)` over the padded witness.
     pub quot_w: Vec<Field>,
@@ -69,17 +73,7 @@ pub fn prove(witness: &[Field], table: &[Field], transcript: &mut Transcript) ->
     let beta = sample_beta(transcript, &w_pad, &t_pad);
 
     // Multiplicities: first-index matching over the original table.
-    let mut counts = vec![0u64; t_pad.len()];
-    for &w in &w_pad {
-        let pos = table
-            .iter()
-            .position(|&t| t == w)
-            .ok_or(Error::MalformedInput {
-                reason: "witness value missing from table",
-            })?;
-        counts[pos] += 1;
-    }
-    let multiplicities: Vec<Field> = counts.iter().map(|&c| Field::from_u64(c)).collect();
+    let multiplicities = canonical_multiplicities(&w_pad, table, t_pad.len())?;
 
     // Quotient columns.
     let mut quot_w = Vec::with_capacity(w_pad.len());
@@ -140,8 +134,9 @@ pub fn prove(witness: &[Field], table: &[Field], transcript: &mut Transcript) ->
 
 /// Verify a membership [`Proof`] against the original witness and table.
 ///
-/// Replays the prover transcript exactly, then checks multiplicities,
-/// rational-sum equality, and the four sumchecks.
+/// Replays the prover transcript exactly, then recomputes the canonical
+/// multiplicities, checks rational-sum equality, and verifies the four
+/// sumchecks.
 ///
 /// # Errors
 /// Returns [`Error::FriVerificationFailed`] on any failed check.
@@ -168,9 +163,13 @@ pub fn verify(
     {
         return Err(Error::FriVerificationFailed);
     }
-    // Multiplicities sum to the padded witness length.
-    let m_sum = proof.multiplicities.iter().fold(Field::ZERO, |a, &v| a + v);
-    if m_sum != Field::from_u64(w_pad.len() as u64) {
+    // The verifier knows the witness and table here, so multiplicities are
+    // not free proof data: recompute the canonical first-index counts and
+    // require an exact match. Without this, arbitrary field "multiplicities"
+    // can satisfy the two rational-sum constraints for a non-member.
+    let expected = canonical_multiplicities(&w_pad, table, t_pad.len())
+        .map_err(|_| Error::FriVerificationFailed)?;
+    if proof.multiplicities != expected {
         return Err(Error::FriVerificationFailed);
     }
     if proof.sum_w != proof.sum_t {
@@ -233,6 +232,25 @@ pub fn verify(
         &proof.sc_read_t,
     )?;
     Ok(())
+}
+
+/// Canonical first-index multiplicity vector over the padded table.
+fn canonical_multiplicities(
+    witness: &[Field],
+    table: &[Field],
+    padded_table_len: usize,
+) -> Result<Vec<Field>> {
+    let mut counts = vec![0u64; padded_table_len];
+    for &w in witness {
+        let pos = table
+            .iter()
+            .position(|&t| t == w)
+            .ok_or(Error::MalformedInput {
+                reason: "witness value missing from table",
+            })?;
+        counts[pos] += 1;
+    }
+    Ok(counts.iter().map(|&c| Field::from_u64(c)).collect())
 }
 
 /// Pad witness and table to powers of two by repeating the last element.
@@ -384,6 +402,94 @@ mod tests {
         assert_eq!(proof.sum_w, proof.sum_t);
         let mut vt = Transcript::new(b"lookup-e2e");
         verify(&witness, &table, &proof, &mut vt).unwrap();
+    }
+
+    /// Construct a proof for a non-member by solving for fractional
+    /// multiplicities that satisfy the two sum constraints. This must be
+    /// rejected: multiplicities are witness counts, not free field elements.
+    fn forge_nonmember(witness: &[Field], table: &[Field], transcript: &mut Transcript) -> Proof {
+        let (w_pad, t_pad) = pad_inputs(witness, table);
+        transcript.absorb(b"lookup/witness", &encode_fields(witness));
+        transcript.absorb(b"lookup/table", &encode_fields(table));
+        let beta = sample_beta(transcript, &w_pad, &t_pad);
+
+        let quot_w: Vec<Field> = w_pad.iter().map(|&w| (beta + w).inv()).collect();
+        let sum_w = quot_w.iter().fold(Field::ZERO, |a, &v| a + v);
+        let n = Field::from_u64(w_pad.len() as u64);
+
+        let a0 = beta + t_pad[0];
+        let a1 = beta + t_pad[1];
+        let m0 = a0 * (sum_w * a1 - n) * (a1 - a0).inv();
+        let mut multiplicities = vec![Field::ZERO; t_pad.len()];
+        multiplicities[0] = m0;
+        multiplicities[1] = n - m0;
+
+        let quot_t: Vec<Field> = t_pad
+            .iter()
+            .enumerate()
+            .map(|(j, &t)| multiplicities[j] * (beta + t).inv())
+            .collect();
+        let sum_t = quot_t.iter().fold(Field::ZERO, |a, &v| a + v);
+
+        transcript.absorb(b"lookup/beta", &beta.to_le_bytes());
+        transcript.absorb(b"lookup/m", &encode_fields(&multiplicities));
+        transcript.absorb(b"lookup/qw", &encode_fields(&quot_w));
+        transcript.absorb(b"lookup/qt", &encode_fields(&quot_t));
+        transcript.absorb(b"lookup/sums", &encode_fields(&[sum_w, sum_t]));
+
+        transcript.absorb(b"lookup/ctx", b"sum-w");
+        let sc_sum_w = sumcheck::prove(
+            &[Mle::new(quot_w.clone()).unwrap()],
+            &[Term::new(Field::ONE, vec![0])],
+            transcript,
+        )
+        .unwrap();
+
+        transcript.absorb(b"lookup/ctx", b"read-w");
+        let r1 = sample_point(transcript, b"lookup/r1", n_vars_of(&quot_w));
+        let sc_read_w = prove_read(transcript, &r1, &quot_w, &shifted(&w_pad, beta), None).unwrap();
+
+        transcript.absorb(b"lookup/ctx", b"sum-t");
+        let sc_sum_t = sumcheck::prove(
+            &[Mle::new(quot_t.clone()).unwrap()],
+            &[Term::new(Field::ONE, vec![0])],
+            transcript,
+        )
+        .unwrap();
+
+        transcript.absorb(b"lookup/ctx", b"read-t");
+        let r2 = sample_point(transcript, b"lookup/r2", n_vars_of(&quot_t));
+        let sc_read_t = prove_read(
+            transcript,
+            &r2,
+            &quot_t,
+            &shifted(&t_pad, beta),
+            Some(&multiplicities),
+        )
+        .unwrap();
+
+        Proof {
+            beta,
+            multiplicities,
+            quot_w,
+            quot_t,
+            sum_w,
+            sum_t,
+            sc_sum_w,
+            sc_read_w,
+            sc_sum_t,
+            sc_read_t,
+        }
+    }
+
+    #[test]
+    fn forged_multiplicities_rejected() {
+        let witness = fields(&[99]);
+        let table = fields(&[1, 2, 3, 4]);
+        let mut pt = Transcript::new(b"lookup-forge");
+        let proof = forge_nonmember(&witness, &table, &mut pt);
+        let mut vt = Transcript::new(b"lookup-forge");
+        assert!(verify(&witness, &table, &proof, &mut vt).is_err());
     }
 
     #[test]

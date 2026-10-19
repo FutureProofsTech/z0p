@@ -6,8 +6,9 @@
 //!
 //! 1. FRI proves the committed `g` low-degree (bound `n - 1`,
 //!    `n = poly_len`); its base Merkle root must equal the commitment root;
-//! 2. the prover commits the quotient `q = (g - y) / (X - beta)` and proves
-//!    it low-degree with a second FRI instance;
+//! 2. the prover commits the quotient `q = (g - y) / (X - beta)` with
+//!    degree bound `n - 2` and proves it low-degree with a second FRI
+//!    instance;
 //! 3. the verifier samples the quotient's FRI query positions and checks
 //!    `(X - beta) * q = g - y` at each, opening `g` there with a Merkle path.
 //!
@@ -292,8 +293,13 @@ fn open_with_quotient(
     let (g_fri, _) = fri::open(&g_state, transcript)?;
 
     // Low-degree proof for the quotient; its query points drive the
-    // evaluation check.
-    let q_state = fri::commit(quotient, params, transcript)?;
+    // evaluation check. The true quotient has degree at most `n - 2`, so
+    // declare that tight bound rather than the commitment default `n - 1`.
+    let mut padded = quotient.to_vec();
+    padded.resize(state.commitment.poly_len, Field::ZERO);
+    let q_lde = ntt::evaluate_on_coset(&padded, params.blowup, LDE_SHIFT)?;
+    let degree_bound = state.commitment.poly_len.saturating_sub(2);
+    let q_state = fri::commit_evals(&q_lde, degree_bound, params, transcript)?;
     let q_commitment = fri::public_commitment(&q_state);
     let (q_fri, indices) = fri::open(&q_state, transcript)?;
 
@@ -558,8 +564,8 @@ pub fn verify(
         || proof.g_commitment.degree_bound != commitment.poly_len - 1
         || proof.g_commitment.caps.first().and_then(|cap| cap.first()) != Some(&commitment.root)
         || proof.q_commitment.lde_len != lde_len
-        || proof.q_commitment.poly_len != commitment.poly_len
-        || proof.q_commitment.degree_bound != commitment.poly_len - 1
+        || proof.q_commitment.poly_len != lde_len
+        || proof.q_commitment.degree_bound != commitment.poly_len.saturating_sub(2)
         || proof.g_commitment.caps.len() < 2
         || proof.q_commitment.caps.len() < 2
         || proof.openings.len() != indices.len()
@@ -891,6 +897,7 @@ mod tests {
             let coeffs = poly(n);
             for point in [Field::ZERO, Field::ONE, Field::new(7), Field::new(123_456)] {
                 let (commitment, params, value, proof) = prove_roundtrip(&coeffs, point);
+                assert_eq!(proof.q_commitment.degree_bound, n.saturating_sub(2));
                 verify_with(&commitment, point, value, &proof, params).unwrap();
             }
         }

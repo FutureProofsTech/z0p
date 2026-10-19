@@ -7,6 +7,14 @@ All notable changes to `z0p` are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **Lookup multiplicity forgery closed.** The verifier accepted arbitrary
+  field-valued `multiplicities` constrained only by their sum equalling the
+  padded witness length. A non-member could solve the two rational-sum
+  constraints with fractional multiplicities, build consistent quotient
+  columns and all four sumchecks, and pass verification. Since this API's
+  verifier has the witness and table in clear, it now recomputes canonical
+  first-index counts and requires exact equality. Regression:
+  `lookup::tests::forged_multiplicities_rejected`.
 - **FRI commitment parameter binding (air, range, table, fold, recursion).**
   Verifiers previously took `proof.fri_commitment.lde_len` and
   `degree_bound` from the proof without pinning them to protocol parameters.
@@ -65,6 +73,12 @@ All notable changes to `z0p` are documented here. The format follows
   independent of trace size). Bench baseline re-recorded.
 
 ### Changed
+- **Tightened single-point `upcs` quotient degree.** The quotient
+  `(g - y)/(X - beta)` has degree at most `n - 2`, but it was committed with
+  the default `n - 1` bound. It is now committed from its LDE with the tight
+  bound (and `poly_len = lde_len`), matching the documented fact that the
+  identity difference has degree below `n`. `upcs::tests::honest_openings_verify`
+  pins the bound.
 - **Field invariant hardened.** `babybear::Field`'s inner value is now private;
   the only public constructors reduce, so safe code cannot create an
   out-of-range element. A read accessor `as_u32` was added. `new_unchecked` is

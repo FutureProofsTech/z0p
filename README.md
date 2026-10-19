@@ -25,7 +25,7 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
   (~4.4 µs/step, ~226k steps/s), verified in **~2.4 ms**, 186,961 bytes.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 219 unit tests plus three attack suites
+- **Adversarially tested** — 220 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -127,7 +127,7 @@ widely folded instances.
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 219 tests across 21 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 220 tests across 21 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 8 vectors: hostile `Params`, decoder bit-flip fuzz, RNG uniformity | this README |

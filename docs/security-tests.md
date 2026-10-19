@@ -65,6 +65,14 @@ opening; sizes re-recorded). Regression tests:
 `air::tests::shifted_opening_tamper_fails`,
 `fold::tests::shifted_opening_tamper_fails`.
 
+## Finding closed by internal audit: zero-grind nonce malleability
+
+With `grinding_bits == 0`, the FRI prover wrote `pow_nonce = 0` but the
+verifier ignored the field. Changing only the nonce therefore produced a
+second valid encoding of the same proof. Verification now requires the
+canonical zero nonce when grinding is disabled; the proof-of-work path is
+unchanged. Regression: `fri::tests::grinding_roundtrip_and_tamper`.
+
 ## Finding closed by internal audit: fold A-boundary jump
 
 Each fold segment constrained `A`/`B` at row 0 and `B` at the last row,

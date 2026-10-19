@@ -646,10 +646,14 @@ pub fn verify(
 
     // Proof-of-work gate: the nonce must meet the difficulty under the
     // replayed history, and later queries absorb it exactly as the prover
-    // did, so they bind to the work.
-    if params.grinding_bits > 0
-        && !transcript.verify_grind(b"fri-pow", proof.pow_nonce, params.grinding_bits)
-    {
+    // did, so they bind to the work. With grinding disabled the proof
+    // format fixes the nonce at zero; accepting any other value would leave
+    // proof bytes malleable without changing the statement.
+    if params.grinding_bits == 0 {
+        if proof.pow_nonce != 0 {
+            return Err(Error::FriVerificationFailed);
+        }
+    } else if !transcript.verify_grind(b"fri-pow", proof.pow_nonce, params.grinding_bits) {
         return Err(Error::FriVerificationFailed);
     }
 
@@ -1363,6 +1367,18 @@ mod tests {
         impossible.grinding_bits = 300;
         let mut verifier_t = Transcript::new(b"fri-grind");
         assert!(verify(&commitment, &proof, impossible, &mut verifier_t).is_err());
+
+        // With grinding disabled the nonce is canonical zero; a mutated
+        // nonce must not leave the proof byte-malleable.
+        let plain = Params::new(4, 8, 4).unwrap();
+        let mut prover_t = Transcript::new(b"fri-zero-pow");
+        let state = commit(&poly, plain, &mut prover_t).unwrap();
+        let plain_commitment = public_commitment(&state);
+        let (plain_proof, _) = open(&state, &mut prover_t).unwrap();
+        let mut bad = plain_proof;
+        bad.pow_nonce = 1;
+        let mut verifier_t = Transcript::new(b"fri-zero-pow");
+        assert!(verify(&plain_commitment, &bad, plain, &mut verifier_t).is_err());
     }
 
     #[test]

@@ -7,6 +7,11 @@ All notable changes to `z0p` are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **FRI zero-grind nonce is canonical.** With grinding disabled, `open`
+  emitted `pow_nonce = 0` but `verify` never checked it, so mutating only
+  the nonce left a valid proof (byte malleability, not statement forgery).
+  Verification now rejects a nonzero nonce when `grinding_bits == 0`;
+  `fri::tests::grinding_roundtrip_and_tamper` covers it.
 - **Fold/IVC cross-segment A jump closed.** The fold composition bound
   `A` at the first row and `B` at the last row of each segment, but not
   `A` at the last row. A multi-segment prover could therefore set a

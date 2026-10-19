@@ -15,6 +15,7 @@
 //! - [`air`]: minimal Fibonacci AIR/STARK end-to-end over [`fri`].
 //! - [`range`]: range-check AIR (bit decomposition over committed columns).
 //! - [`recursion`]: STARK re-checking one FRI query's fold chain (recursion fragment).
+//! - [`upcs`]: FRI-backed univariate polynomial commitments with point openings.
 //! - [`fold`]: hash-based folding/IVC accumulation with one batched FRI.
 //! - [`rng`]: `ChaCha20` (RFC 8439) CSPRNG plus OS seeding.
 //! - [`blind`]: hiding layer — vanishing-multiple masking for ZK proofs.
@@ -85,5 +86,6 @@ pub mod rng;
 pub mod sumcheck;
 pub mod table;
 pub mod transcript;
+pub mod upcs;
 
 pub use error::{Error, Result};

@@ -12,9 +12,11 @@
 //! [`prove`] and [`verify`] replay identical absorb/squeeze sequences.
 //!
 //! # Oracle model (`v1`)
-//! [`verify`] evaluates the [`Mle`]s directly as the polynomial oracle. Wiring
-//! these evaluations to FRI opening proofs is the scheduled next milestone;
-//! sumcheck soundness below assumes a binding oracle.
+//! [`verify`] evaluates the [`Mle`]s directly as the polynomial oracle.
+//! [`crate::upcs`] now supplies FRI-backed point openings for committed
+//! univariate polynomials; a multilinear PCS (the remaining step for
+//! committed oracles) is roadmap work. Sumcheck soundness below assumes a
+//! binding oracle.
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};

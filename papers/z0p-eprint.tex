@@ -31,7 +31,7 @@ post-quantum. Production parameters target $\approx 100$ conjectured
 soundness bits (rate $1/16$, 40 queries, 20-bit grinding). Measured on a
 16-core machine, a 1,048,576-step computation proves in 4.6~s
 ($\approx 4.4\,\mu$s/step), verifies in 2.4~ms, with a 186,961-byte proof.
-Validation combines 172 unit tests with three adversarial suites
+Validation combines 186 unit tests with three adversarial suites
 ($\approx 800$ hostile attempts per run, zero acceptances, zero panics),
 wire-exact size assertions on every benchmark, and machine-checked
 regression gates.
@@ -219,7 +219,7 @@ check at true folded points; cap/path shape pins before hashing;
 \texttt{fri-dims} dimension binding; canonical-only decoding; PoW
 bound to history with queries sampled after.
 
-\paragraph{Adversarial validation.} Three layers: 172 unit tests
+\paragraph{Adversarial validation.} Three layers: 186 unit tests
 (KATs, Horner cross-checks, parallel-vs-sequential identity); a
 13-vector security suite (tampering of every query/fold/value/path/
 digest, 300 single-bit-flip fuzz trials, PoW forgery, rate gates both
@@ -266,11 +266,12 @@ from $1{,}024$ to $1{,}048{,}576$ steps. Primitives: BLAKE3 1\,MiB in
 \section{Limitations and future work}
 
 Bench defaults are fast but weak and must not be mistaken for
-production soundness; large-table lookups await a multilinear PCS;
-vectorized hashing (pending a \texttt{rust-version} policy decision),
-recursion, and a zkVM are roadmap items; no external audit has yet
-been performed, for which the suites, gates, versioned wire format,
-and pinned baselines are the evidence package.
+production soundness; large-table lookups await a multilinear PCS.
+Vectorized hashing and the one-query recursion fragment are complete,
+and FRI-backed univariate point openings are in place; a multilinear
+PCS, self-proving recursion, and a zkVM remain roadmap items. No
+external audit has yet been performed, for which the suites, gates,
+versioned wire format, and pinned baselines are the evidence package.
 
 \bibliographystyle{plain}
 \begin{thebibliography}{9}

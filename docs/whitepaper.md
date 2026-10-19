@@ -68,7 +68,7 @@ Reed–Solomon proximity testing.
    explicitly (rate + queries + grinding) rather than implied. Bench
    shapes are fast and labeled weak (~18 bits); production shapes target
    ~100 bits via `Params::for_security(…, 100)`.
-5. **Evidence over claims.** 172 unit tests, three adversarial suites
+5. **Evidence over claims.** 186 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught
@@ -154,9 +154,14 @@ portable scalar-safe-Rust throughput with parallelism over
    fold chain in a STARK (committed quads, shifted-index transitions,
    FRI over the composition). Self-proving needs BLAKE3 path checks,
    the final-degree check, and transcript derivation inside the AIR.
-3. **Programs / zkVM** — multilinear PCS, large-table lookups, then
+3. **Point-evaluation commitments — done.** `upcs.rs` opens a committed
+   univariate polynomial at an arbitrary field point: quotient commitment,
+   two FRI low-degree checks, and Merkle-checked identity at the quotient's
+   query points. Transparent, non-hiding, cap height `0`; the opening
+   primitive for a multilinear PCS.
+4. **Programs / zkVM** — multilinear PCS, large-table lookups, then
    general program execution proofs.
-4. **External audit** — procurement item; the evidence package is ready.
+5. **External audit** — procurement item; the evidence package is ready.
 
 ## 8. License
 

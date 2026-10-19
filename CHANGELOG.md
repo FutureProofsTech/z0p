@@ -52,6 +52,15 @@ All notable changes to `z0p` are documented here. The format follows
   1M-step AIR proof 160,401 → 186,961 B, prove 6.35 → 4.65 s.
 
 ### Added
+- **Point-evaluation commitments (`upcs`).** FRI-backed univariate PCS:
+  commit to coefficients over the bit-reversed LDE, open `g(beta) = y` by
+  committing the quotient `(g - y)/(X - beta)`, FRI low-degree-testing both
+  `g` and the quotient, and checking the quotient identity at the
+  quotient's random query points (Merkle-opening `g` there). 14 tests:
+  honest openings for `n = 1..64`, wrong value/point/commitment, tampered
+  leaves/paths/FRI values/commitments, wrong quotient, cap-height and
+  dimension gates, canonical encodings, transcript binding. Transparent,
+  non-hiding v1; cap height must be `0`.
 - **Recursion fragment (`recursion`).** A STARK re-checking one FRI query's
   fold chain. Public statement `(lde_len, leaf, fold challenges, initial
   quad, output)`; witness quads are committed and transitions read next-row

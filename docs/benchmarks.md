@@ -19,16 +19,16 @@ layer and Merkle cap height.
 
 | Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
 |---|---|---|---|---|
-| `fri prod B16Q40G20C4F16` (poly-256) | 48.72 | 0.68 | 21,506 | 21.0 |
-| `air prod B16Q40G20C4F16` (fib-64) | 34.57 | 0.67 | 21,829 | 21.3 |
-| `fri prod P1024 B16Q40G20C4F16` | 38.09 | 0.90 | 33,382 | 32.6 |
-| `air prod N1024 B16Q40G20C4F16` | 37.51 | 1.04 | 48,221 | 47.1 |
-| `air prod N8192 B16Q40G20C4F32` | 81.22 | 1.55 | 74,809 | 73.1 |
-| `air prod N65536 B16Q40G20C4F16` | 368.10 | 1.81 | 107,609 | 105.1 |
-| `air prod N1048576 B16Q40G20C4F16` | 6,348.85 | 2.27 | 160,401 | 156.6 |
+| `fri prod B16Q40G20C4F16` (poly-256) | 50.99 | 0.66 | 21,506 | 21.0 |
+| `air prod B16Q40G20C4F16` (fib-64) | 36.99 | 0.69 | 29,909 | 29.2 |
+| `fri prod P1024 B16Q40G20C4F16` | 37.58 | 0.84 | 33,382 | 32.6 |
+| `air prod N1024 B16Q40G20C4F16` | 24.51 | 1.11 | 61,581 | 60.1 |
+| `air prod N8192 B16Q40G20C4F32` | 77.43 | 1.83 | 92,129 | 90.0 |
+| `air prod N65536 B16Q40G20C4F16` | 324.11 | 1.84 | 128,889 | 125.9 |
+| `air prod N1048576 B16Q40G20C4F16` | 4,648.54 | 2.39 | 186,961 | 182.6 |
 
-Marginal cost per step (1M row): `6348.85 / 1048576 ≈ 6.1 µs/step`
-(≈165k steps/s). The 20-bit PoW grind is amortized over the trace at
+Marginal cost per step (1M row): `4648.54 / 1048576 ≈ 4.4 µs/step`
+(≈226k steps/s). The 20-bit PoW grind is amortized over the trace at
 scale; on small production rows it dominates run-to-run variance
 (the N8192 row fluctuates ~75–100 ms between runs).
 
@@ -43,23 +43,23 @@ building that table.
 
 | Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
 |---|---|---|---|---|
-| `fri poly256 B4 Q12` | 0.89 | 0.13 | 9,170 | 9.0 |
-| `air fib64` | 0.92 | 0.15 | 10,869 | 10.6 |
-| `range 16-bit` | 0.43 | 0.09 | 4,401 | 4.3 |
-| `table 4-entry` | 0.35 | 0.06 | 3,857 | 3.8 |
-| `lookup 64-in-16` | 0.12 | 0.11 | 688 | 0.7 |
-| `fold 4x8 fib` | 0.79 | 0.18 | 9,565 | 9.3 |
-| `air fib1024` | 6.48 | 0.25 | 20,925 | 20.4 |
+| `fri poly256 B4 Q12` | 0.79 | 0.12 | 9,170 | 9.0 |
+| `air fib64` | 0.81 | 0.15 | 14,481 | 14.1 |
+| `range 16-bit` | 0.38 | 0.08 | 4,401 | 4.3 |
+| `table 4-entry` | 0.32 | 0.05 | 3,857 | 3.8 |
+| `lookup 64-in-16` | 0.11 | 0.10 | 688 | 0.7 |
+| `fold 4x8 fib` | 0.70 | 0.19 | 16,029 | 15.7 |
+| `air fib1024` | 6.36 | 0.28 | 26,121 | 25.5 |
 
 ## Primitives
 
 | Row | Result |
 |---|---|
-| `blake3 1MiB` | 1.57 ms (~668 MB/s) |
-| `gf2 F64 mul` | 300.85 ms for 1M ops (3.3 Mops/s) |
-| `bb field mul` | 7.39 ms for 1M ops (~135 Mops/s) |
-| `ntt forward 2^14` | 0.37 ms |
-| `merkle 64k leaves` | 3.47 ms |
+| `blake3 1MiB` | 1.45 ms (~690 MB/s) |
+| `gf2 F64 mul` | 283.13 ms for 1M ops (3.5 Mops/s) |
+| `bb field mul` | 6.60 ms for 1M ops (~151 Mops/s) |
+| `ntt forward 2^14` | 0.33 ms |
+| `merkle 64k leaves` | 4.03 ms |
 
 ## Vectorized hashing (`--features simd`, nightly)
 
@@ -70,8 +70,8 @@ paired runs on this box (which is not idle), nightly:
 | Row | Scalar | `--features simd` |
 |---|---|---|
 | `merkle 64k leaves` (quiet) | 8.5 ms | **3.2 ms** (~2.6×) |
-| `merkle 64k leaves` (loaded) | 9–14 ms | **5–10 ms** (~1.4–1.9×) |
-| `air prod N1048576` prove | 6,523 ms | **5,831 ms** (~11%) |
+| `merkle 64k leaves` (loaded) | 9.9 ms | **8.5 ms** (~1.2×) |
+| `air prod N1048576` prove | 4,558 ms | **3,980 ms** (~13%) |
 
 SIMD is faster in every paired run; absolute gains depend heavily on box
 load (the scalar baseline row itself ranged 3.3–13.9 ms across sessions).

@@ -46,6 +46,15 @@ and adversarial test suites (`tests/security.rs`, `tests/redteam.rs`,
 *conjectured* (Fiat–Shamir + FRI in the QROM, Johnson-radius heuristic). Do
 not deploy in production for high-value statements before an external audit.
 
+Internal adversarial review has already closed two findings with fixes and
+regression tests: the FRI verifier allocation DoS (an `O(lde_len)` table
+built from a tiny forged commitment) and unbound next-row trace columns in
+`air`/`fold` (a malicious prover could decouple the transition relation
+from the committed trace and prove a false output claim). Both are recorded
+in `CHANGELOG.md` and `docs/security-tests.md`, including reproducer
+descriptions; neither affected the honest path silently — old-format
+proofs are rejected by the new verifier.
+
 ## Supported versions
 
 The project is pre-1.0: only the latest `main` (or latest tagged release) is

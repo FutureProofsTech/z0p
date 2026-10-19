@@ -20,11 +20,11 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
 - **Production soundness on demand** — `Params::for_security(steps, …, 100)`
   sizes blowup 16, queries, grinding, final size, and cap height for
   ~100 conjectured bits (see [Soundness](#soundness)).
-- **Fast at scale** — 1,048,576-step production proof in ~6.35 s
-  (~6.1 µs/step, ~165k steps/s), verified in **~2.3 ms**, 160,401 bytes.
+- **Fast at scale** — 1,048,576-step production proof in ~4.65 s
+  (~4.4 µs/step, ~226k steps/s), verified in **~2.4 ms**, 186,961 bytes.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 156 unit tests plus three attack suites
+- **Adversarially tested** — 160 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -79,18 +79,18 @@ Full table with methodology: [docs/benchmarks.md](docs/benchmarks.md).
 
 | Proof (production shape, ~100 bits) | Prove | Verify | Size |
 |---|---|---|---|
-| AIR Fibonacci, 1,024 steps | 38 ms | 1.0 ms | 48,221 B |
-| AIR Fibonacci, 8,192 steps | 81 ms | 1.6 ms | 74,809 B |
-| AIR Fibonacci, 65,536 steps | 368 ms | 1.8 ms | 107,609 B |
-| AIR Fibonacci, **1,048,576 steps** | **6.35 s** | **2.3 ms** | **160,401 B** |
-| FRI poly-1024 | 38 ms | 0.9 ms | 33,382 B |
+| AIR Fibonacci, 1,024 steps | 25 ms | 1.1 ms | 61,581 B |
+| AIR Fibonacci, 8,192 steps | 77 ms | 1.8 ms | 92,129 B |
+| AIR Fibonacci, 65,536 steps | 324 ms | 1.8 ms | 128,889 B |
+| AIR Fibonacci, **1,048,576 steps** | **4.65 s** | **2.4 ms** | **186,961 B** |
+| FRI poly-1024 | 38 ms | 0.8 ms | 33,382 B |
 
 | Primitive | Result |
 |---|---|
-| BLAKE3 1 MiB | 1.57 ms (~668 MB/s) |
-| BabyBear mul | ~135 Mops/s |
-| NTT forward 2¹⁴ | 0.37 ms |
-| Merkle 65,536 leaves | 3.5 ms |
+| BLAKE3 1 MiB | 1.45 ms (~690 MB/s) |
+| BabyBear mul | ~151 Mops/s |
+| NTT forward 2¹⁴ | 0.33 ms |
+| Merkle 65,536 leaves | 4.0 ms |
 
 Proof sizes are deterministic and asserted byte-for-byte against the wire
 format on every benchmark run.
@@ -114,7 +114,7 @@ plus the size-optimal final layer and Merkle cap height.
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 156 tests across 18 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 160 tests across 18 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 8 vectors: hostile `Params`, decoder bit-flip fuzz, RNG uniformity | this README |

@@ -80,7 +80,8 @@ fn air_proof_bytes(proof: &air::Proof) -> usize {
         + fri_commitment_body_bytes(&proof.fri_commitment)
         + fri_proof_body_bytes(&proof.fri_proof);
     for opening in &proof.openings {
-        total += 8 + 16 + 4 + path_bytes(&opening.path);
+        // Index, four fields, base path, shifted path (both counted).
+        total += 8 + 16 + 4 + path_bytes(&opening.path) + 4 + path_bytes(&opening.shift_path);
     }
     total
 }
@@ -140,7 +141,7 @@ fn fold_proof_bytes(proof: &fold::IvcProof) -> usize {
     for step in &proof.steps {
         total += 16 + 4 + 32 * step.column_cap.len() + 4;
         for opening in &step.openings {
-            total += 8 + 16 + 4 + path_bytes(&opening.path);
+            total += 8 + 16 + 4 + path_bytes(&opening.path) + 4 + path_bytes(&opening.shift_path);
         }
     }
     total

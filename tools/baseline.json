@@ -1,89 +1,89 @@
 {
   "rows": {
     "blake3 1MiB": {
-      "prove_ms": 1.57
+      "prove_ms": 1.45
     },
     "gf2 F64 mul": {
-      "prove_ms": 300.85
+      "prove_ms": 283.13
     },
     "bb field mul": {
-      "prove_ms": 7.39
+      "prove_ms": 6.6
     },
     "ntt forward 2^14": {
-      "prove_ms": 0.37
+      "prove_ms": 0.33
     },
     "fri poly256 B4 Q12": {
-      "prove_ms": 0.89,
-      "verify_ms": 0.13,
+      "prove_ms": 0.79,
+      "verify_ms": 0.12,
       "bytes": 9170
     },
     "air fib64": {
-      "prove_ms": 0.92,
+      "prove_ms": 0.81,
       "verify_ms": 0.15,
-      "bytes": 10869
+      "bytes": 14481
     },
     "range 16-bit": {
-      "prove_ms": 0.43,
-      "verify_ms": 0.09,
+      "prove_ms": 0.38,
+      "verify_ms": 0.08,
       "bytes": 4401
     },
     "table 4-entry": {
-      "prove_ms": 0.35,
-      "verify_ms": 0.06,
+      "prove_ms": 0.32,
+      "verify_ms": 0.05,
       "bytes": 3857
     },
     "lookup 64-in-16": {
-      "prove_ms": 0.12,
-      "verify_ms": 0.11,
+      "prove_ms": 0.11,
+      "verify_ms": 0.1,
       "bytes": 688
     },
     "fold 4x8 fib": {
-      "prove_ms": 0.79,
-      "verify_ms": 0.18,
-      "bytes": 9565
+      "prove_ms": 0.7,
+      "verify_ms": 0.19,
+      "bytes": 16029
     },
     "merkle 64k leaves": {
-      "prove_ms": 3.47
+      "prove_ms": 4.03
     },
     "air fib1024": {
-      "prove_ms": 6.48,
-      "verify_ms": 0.25,
-      "bytes": 20925
+      "prove_ms": 6.36,
+      "verify_ms": 0.28,
+      "bytes": 26121
     },
     "fri prod B16Q40G20C4F16": {
-      "prove_ms": 48.72,
-      "verify_ms": 0.68,
+      "prove_ms": 50.99,
+      "verify_ms": 0.66,
       "bytes": 21506
     },
     "air prod B16Q40G20C4F16": {
-      "prove_ms": 34.57,
-      "verify_ms": 0.67,
-      "bytes": 21829
+      "prove_ms": 36.99,
+      "verify_ms": 0.69,
+      "bytes": 29909
     },
     "fri prod P1024 B16Q40G20C4F16": {
-      "prove_ms": 38.09,
-      "verify_ms": 0.9,
+      "prove_ms": 37.58,
+      "verify_ms": 0.84,
       "bytes": 33382
     },
     "air prod N1024 B16Q40G20C4F16": {
-      "prove_ms": 37.51,
-      "verify_ms": 1.04,
-      "bytes": 48221
+      "prove_ms": 24.51,
+      "verify_ms": 1.11,
+      "bytes": 61581
     },
     "air prod N8192 B16Q40G20C4F32": {
-      "prove_ms": 81.22,
-      "verify_ms": 1.55,
-      "bytes": 74809
+      "prove_ms": 77.43,
+      "verify_ms": 1.83,
+      "bytes": 92129
     },
     "air prod N65536 B16Q40G20C4F16": {
-      "prove_ms": 368.1,
-      "verify_ms": 1.81,
-      "bytes": 107609
+      "prove_ms": 324.11,
+      "verify_ms": 1.84,
+      "bytes": 128889
     },
     "air prod N1048576 B16Q40G20C4F16": {
-      "prove_ms": 6348.85,
-      "verify_ms": 2.27,
-      "bytes": 160401
+      "prove_ms": 4648.54,
+      "verify_ms": 2.39,
+      "bytes": 186961
     }
   }
 }

@@ -2,12 +2,15 @@
 //!
 //! Trace columns `A`, `B` with `A[0] = a0`, `B[0] = b0`,
 //! `A[i+1] = B[i]`, `B[i+1] = A[i] + B[i]`, and output claim
-//! `B[N-1] = b_last`. Columns (plus next-row columns) are interpolated,
-//! extended on the [`LDE_SHIFT`](crate::fri::LDE_SHIFT) coset, and Merkle
-//! committed; transition quotients (divided by the transition vanishing
-//! polynomial) and boundary quotients are combined with five Fiat-Shamir
-//! challenges into a composition polynomial of degree `< N`, committed with
-//! [`crate::fri::commit_evals`].
+//! `B[N-1] = b_last`. Columns are interpolated, extended on the
+//! [`LDE_SHIFT`](crate::fri::LDE_SHIFT) coset, and Merkle committed;
+//! transition quotients (divided by the transition vanishing polynomial)
+//! and boundary quotients are combined with five Fiat-Shamir challenges
+//! into a composition polynomial of degree `< N`, committed with
+//! [`crate::fri::commit_evals`]. Next-row values are the *same* committed
+//! columns opened at the omega-shifted LDE index ([`TraceOpening`]); no
+//! separate, unauthenticated "next" witness column exists, so transitions
+//! cannot be decoupled from the trace by a malicious prover.
 //!
 //! Verification replays the transcript, checks [`crate::fri`] (including its
 //! final low-degree check, which is what rejects false traces), opens the
@@ -200,6 +203,13 @@ impl Params {
 }
 
 /// One trace opening at an LDE position.
+///
+/// `a_next`/`b_next` are the same committed columns opened at the shifted
+/// LDE index `index + lde_len / n_steps` (mod `lde_len`), i.e. at
+/// `omega_base * x`: the transition constraint never trusts a separate,
+/// unauthenticated "next row" witness column. Both openings are Merkle
+/// paths into the one trace tree, so the shift relation is enforced by the
+/// commitment itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TraceOpening {
     /// Natural-order LDE index.
@@ -208,12 +218,14 @@ pub struct TraceOpening {
     pub a: Field,
     /// Column values at `index`.
     pub b: Field,
-    /// Next-row columns at `index`.
+    /// Columns at the shifted index `index + lde_len / n_steps`.
     pub a_next: Field,
-    /// Next-row columns at `index`.
+    /// Columns at the shifted index `index + lde_len / n_steps`.
     pub b_next: Field,
-    /// Merkle path of the joint row leaf (`A || B || A_next || B_next`).
+    /// Merkle path of the joint row leaf (`A || B`) at `index`.
     pub path: Vec<([u8; 32], bool)>,
+    /// Merkle path of the joint row leaf (`A || B`) at the shifted index.
+    pub shift_path: Vec<([u8; 32], bool)>,
 }
 
 /// AIR proof: trace roots, FRI commitment/proof, trace openings.
@@ -232,7 +244,7 @@ pub struct Proof {
 
 impl Proof {
     /// Canonical bytes: version, column cap, FRI commitment/proof, then
-    /// openings (index, four fields, path each).
+    /// openings (index, four fields, both paths each).
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut writer = crate::codec::Writer::new();
@@ -248,6 +260,7 @@ impl Proof {
             writer.field(opening.a_next);
             writer.field(opening.b_next);
             writer.path(&opening.path);
+            writer.path(&opening.shift_path);
         }
         writer.finish()
     }
@@ -274,13 +287,14 @@ impl Proof {
                 a_next: reader.field()?,
                 b_next: reader.field()?,
                 path: reader.path()?,
+                shift_path: reader.path()?,
             });
         }
         reader.end()?;
         Ok(Self {
             column_cap,
-            fri_commitment,
-            fri_proof,
+            fri_commitment: fri_commitment.clone(),
+            fri_proof: fri_proof.clone(),
             openings,
         })
     }
@@ -395,29 +409,28 @@ fn prove_from_coeffs(
     absorb_params(params, transcript);
 
     let omega_base = Field::primitive_root(n)?;
-    let coeff_cols = [coeff_a.to_vec(), coeff_b.to_vec()];
-    let coeff_next = [
-        shift_coeffs(&coeff_cols[0], omega_base),
-        shift_coeffs(&coeff_cols[1], omega_base),
-    ];
-
     let lde_cols = [
-        evaluate_on_coset(&coeff_cols[0], params.blowup, crate::fri::LDE_SHIFT)?,
-        evaluate_on_coset(&coeff_cols[1], params.blowup, crate::fri::LDE_SHIFT)?,
+        evaluate_on_coset(coeff_a, params.blowup, crate::fri::LDE_SHIFT)?,
+        evaluate_on_coset(coeff_b, params.blowup, crate::fri::LDE_SHIFT)?,
     ];
-    let lde_next = [
-        evaluate_on_coset(&coeff_next[0], params.blowup, crate::fri::LDE_SHIFT)?,
-        evaluate_on_coset(&coeff_next[1], params.blowup, crate::fri::LDE_SHIFT)?,
-    ];
-    let all_lde = [&lde_cols[0], &lde_cols[1], &lde_next[0], &lde_next[1]];
     let m = lde_cols[0].len();
-    // One joint tree over interleaved rows: a single path opens every
-    // column at a position instead of four parallel paths. Rows pack flat
-    // (one allocation) into `from_flat`.
-    let row_len = 4 * all_lde.len();
+    // Shift offset in LDE index space: `omega_base * x_i = x_{(i + offset)}`
+    // because `omega_m^offset = omega_base` for `offset = m / n`. Masked
+    // proofs use a larger (padded) LDE; `m / n` stays exact (both powers
+    // of two) and the verifier computes the same offset from the echoed
+    // commitment, so the honest construction is unchanged.
+    if m % n != 0 {
+        return Err(Error::MalformedInput {
+            reason: "LDE length must be a multiple of n_steps",
+        });
+    }
+    let offset = m / n;
+    // One joint tree over interleaved rows: a single path opens both
+    // columns at a position. Rows pack flat (one allocation).
+    let row_len = 4 * lde_cols.len();
     let mut flat = vec![0u8; m * row_len];
     for (i, chunk) in flat.chunks_exact_mut(row_len).enumerate() {
-        for (lde, slot) in all_lde.iter().zip(chunk.chunks_exact_mut(4)) {
+        for (lde, slot) in lde_cols.iter().zip(chunk.chunks_exact_mut(4)) {
             slot.copy_from_slice(&lde[i].to_le_bytes());
         }
     }
@@ -438,13 +451,13 @@ fn prove_from_coeffs(
     let w_last = omega_base.pow((n - 1) as u64);
     let composition = compose(
         &lde_cols,
-        &lde_next,
         &points,
         w_last,
         params.a0,
         params.b0,
         params.b_last,
         n,
+        offset,
         &alphas,
     );
 
@@ -459,16 +472,17 @@ fn prove_from_coeffs(
     let mut openings = Vec::with_capacity(params.num_queries);
     for &leaf in &fri_indices {
         let index = bit_reverse_index(leaf, log_m);
-        let cols = [lde_cols[0][index], lde_cols[1][index]];
-        let next = [lde_next[0][index], lde_next[1][index]];
+        let shifted = (index + offset) % m;
         let path = tree.prove_capped(index, drop)?;
+        let shift_path = tree.prove_capped(shifted, drop)?;
         openings.push(TraceOpening {
             index,
-            a: cols[0],
-            b: cols[1],
-            a_next: next[0],
-            b_next: next[1],
+            a: lde_cols[0][index],
+            b: lde_cols[1][index],
+            a_next: lde_cols[0][shifted],
+            b_next: lde_cols[1][shifted],
             path,
+            shift_path,
         });
     }
 
@@ -491,6 +505,10 @@ pub fn verify(params: Params, proof: &Proof, transcript: &mut Transcript) -> Res
     // Domain size comes from the commitment: ZK proofs use larger (masked)
     // LDEs than `params.lde_len()`. FRI binding keeps this sound.
     let m = proof.fri_commitment.lde_len;
+    if m == 0 || !m.is_power_of_two() || m % n != 0 {
+        return Err(Error::FriVerificationFailed);
+    }
+    let offset = m / n;
     absorb_params(params, transcript);
 
     if proof.openings.len() != params.num_queries {
@@ -528,24 +546,40 @@ pub fn verify(params: Params, proof: &Proof, transcript: &mut Transcript) -> Res
         if opening.index != index {
             return Err(Error::FriVerificationFailed);
         }
-        // Authenticate the joint row against the cap entry covering it.
+        // Authenticate both joint rows (the query point and its
+        // `omega_base`-shift) against the cap entries covering them.
         // Shapes are pinned first: the cap holds exactly `2^drop`
         // digests and every path is exactly `depth - drop` steps, so
-        // malformed proofs fail before any hashing.
-        let values = [opening.a, opening.b, opening.a_next, opening.b_next];
-        let mut row = Vec::with_capacity(16);
-        for value in &values {
-            row.extend_from_slice(&value.to_le_bytes());
-        }
+        // malformed proofs fail before any hashing. The shifted index is
+        // recomputed here, so `a_next`/`b_next` can only be the committed
+        // columns at that position, never an independent witness.
         let (drop, depth) = crate::merkle::capped_shape(m, params.cap_height);
-        if proof.column_cap.len() != 1usize << drop || opening.path.len() != depth - drop {
+        if proof.column_cap.len() != 1usize << drop
+            || opening.path.len() != depth - drop
+            || opening.shift_path.len() != depth - drop
+        {
             return Err(Error::BadMerklePath);
         }
+        let mut row = [0u8; 8];
+        row[..4].copy_from_slice(&opening.a.to_le_bytes());
+        row[4..].copy_from_slice(&opening.b.to_le_bytes());
         let entry = proof
             .column_cap
             .get(index >> (depth - drop))
             .ok_or(Error::BadMerklePath)?;
         if !MerkleTree::verify_capped(entry, &row, index, depth, &opening.path) {
+            return Err(Error::BadMerklePath);
+        }
+        let shifted = (index + offset) % m;
+        let mut shift_row = [0u8; 8];
+        shift_row[..4].copy_from_slice(&opening.a_next.to_le_bytes());
+        shift_row[4..].copy_from_slice(&opening.b_next.to_le_bytes());
+        let shift_entry = proof
+            .column_cap
+            .get(shifted >> (depth - drop))
+            .ok_or(Error::BadMerklePath)?;
+        if !MerkleTree::verify_capped(shift_entry, &shift_row, shifted, depth, &opening.shift_path)
+        {
             return Err(Error::BadMerklePath);
         }
         // Re-evaluate the composition identity at this point. The point
@@ -591,16 +625,6 @@ fn absorb_params(params: Params, transcript: &mut Transcript) {
 }
 
 /// Multiply coefficient `k` by `omega^k`: the next-row polynomial.
-fn shift_coeffs(coeffs: &[Field], omega: Field) -> Vec<Field> {
-    let mut out = Vec::with_capacity(coeffs.len());
-    let mut power = Field::ONE;
-    for &c in coeffs {
-        out.push(c * power);
-        power *= omega;
-    }
-    out
-}
-
 /// Natural-order coset points `SHIFT * omega^i`.
 fn lde_points(m: usize) -> Result<Vec<Field>> {
     let omega = Field::primitive_root(m)?;
@@ -627,18 +651,24 @@ fn lde_point_at(m: usize, index: usize) -> Result<Field> {
 }
 
 /// Full composition vector on the LDE domain.
+///
+/// `offset = lde_len / n_steps`; next-row values are the same committed
+/// columns at index `(i + offset) mod lde_len` (the `omega_base * x` point
+/// in index space), never a separate witness column.
 #[allow(clippy::too_many_arguments)]
 fn compose(
     cols: &[Vec<Field>; 2],
-    next: &[Vec<Field>; 2],
     points: &[Field],
     w_last: Field,
     a0: Field,
     b0: Field,
     b_last: Field,
     n: usize,
+    offset: usize,
     alphas: &[Field; 5],
 ) -> Vec<Field> {
+    let m = cols[0].len();
+    let shifted = |j: usize, i: usize| cols[j][(i + offset) % m];
     if points.len() < 2 {
         // Degenerate (unreachable at real domain sizes): scalar fallback.
         return points
@@ -647,7 +677,7 @@ fn compose(
             .map(|(i, &point)| {
                 composition_at(
                     [cols[0][i], cols[1][i]],
-                    [next[0][i], next[1][i]],
+                    [shifted(0, i), shifted(1, i)],
                     point,
                     w_last,
                     a0,
@@ -690,8 +720,8 @@ fn compose(
         // math has no rounding), so the vector is bit-identical.
         for (j, slot) in piece.iter_mut().enumerate() {
             let i = base + j;
-            let trans1 = (next[0][i] - cols[1][i]) * inv_z[j];
-            let trans2 = (next[1][i] - (cols[0][i] + cols[1][i])) * inv_z[j];
+            let trans1 = (shifted(0, i) - cols[1][i]) * inv_z[j];
+            let trans2 = (shifted(1, i) - (cols[0][i] + cols[1][i])) * inv_z[j];
             let bound_a = (cols[0][i] - a0) * inv_b[j];
             let bound_b = (cols[1][i] - b0) * inv_b[j];
             let bound_out = (cols[1][i] - b_last) * inv_a[j];
@@ -804,6 +834,56 @@ mod tests {
     }
 
     #[test]
+    fn false_claim_with_forged_trace_rejected() {
+        // Regression for the historical attack: a prover committed a trace
+        // with a false output claim plus a separate, unauthenticated "next"
+        // column pinned to the transitions on rows `0..n-2`. The transition
+        // now reads next-row values from the same committed tree opened at
+        // the shifted index, so the only remaining freedom is the trace
+        // itself: arbitrary columns with `b(w_last) = lie` are a plain
+        // transition violation and FRI's low-degree check rejects them.
+        let n = 16usize;
+        let lie = Field::new(999_999);
+        let params = Params::new(n, 8, 8, 8, Field::ONE, Field::ONE, lie).unwrap();
+        let mut col_a = vec![Field::ZERO; n];
+        let mut col_b = vec![Field::ZERO; n];
+        col_a[0] = Field::ONE;
+        col_b[0] = Field::ONE;
+        col_b[n - 1] = lie;
+        let mut prover_t = Transcript::new(b"fib-forged-trace");
+        let proof = prove_with_trace(params, &col_a, &col_b, &mut prover_t).unwrap();
+        let mut verifier_t = Transcript::new(b"fib-forged-trace");
+        assert!(verify(params, &proof, &mut verifier_t).is_err());
+    }
+
+    #[test]
+    fn shifted_opening_tamper_fails() {
+        // `a_next`/`b_next` are authenticated at the recomputed shifted
+        // index; tampering either value or its path must fail.
+        let params = test_params();
+        for tamper in 0..4 {
+            let mut prover_t = Transcript::new(b"fib-shift-tamper");
+            let mut proof = prove(params, &mut prover_t).unwrap();
+            match tamper {
+                0 => proof.openings[0].a_next += Field::ONE,
+                1 => proof.openings[0].b_next += Field::ONE,
+                2 => {
+                    let last = proof.openings[0].shift_path.len() - 1;
+                    proof.openings[0].shift_path[last].1 = !proof.openings[0].shift_path[last].1;
+                }
+                _ => {
+                    proof.openings[0].shift_path.pop();
+                }
+            }
+            let mut verifier_t = Transcript::new(b"fib-shift-tamper");
+            assert!(
+                verify(params, &proof, &mut verifier_t).is_err(),
+                "tamper {tamper}"
+            );
+        }
+    }
+
+    #[test]
     fn tampered_opening_fails() {
         let params = test_params();
         let mut prover_t = Transcript::new(b"fib-tamper");
@@ -855,20 +935,18 @@ mod tests {
         let omega_base = Field::primitive_root(n).unwrap();
         let w_last = omega_base.pow((n - 1) as u64);
         let mut cols = [vec![Field::ZERO; m], vec![Field::ZERO; m]];
-        let mut next = [vec![Field::ZERO; m], vec![Field::ZERO; m]];
         let mut state = 0x1234_5678_9abc_def1u64;
         let mut draw = || {
             state = crate::gf2::splitmix64(&mut state);
             Field::from_u64(state)
         };
-        for i in 0..m {
-            cols[0][i] = draw();
-            cols[1][i] = draw();
-            next[0][i] = draw();
-            next[1][i] = draw();
+        let [col_a, col_b] = &mut cols;
+        for (a, b) in col_a.iter_mut().zip(col_b.iter_mut()) {
+            *a = draw();
+            *b = draw();
         }
         cols[0][0] = Field::ZERO;
-        next[1][m - 1] = Field::ZERO;
+        let offset = 5; // not a divisor of `m`: wrap-around is exercised
         let alphas = [
             Field::ONE,
             Field::TWO,
@@ -878,20 +956,20 @@ mod tests {
         ];
         let batched = compose(
             &cols,
-            &next,
             &points,
             w_last,
             Field::ONE,
             Field::ONE,
             Field::TWO,
             n,
+            offset,
             &alphas,
         );
         let scalar: Vec<Field> = (0..m)
             .map(|i| {
                 composition_at(
                     [cols[0][i], cols[1][i]],
-                    [next[0][i], next[1][i]],
+                    [cols[0][(i + offset) % m], cols[1][(i + offset) % m]],
                     points[i],
                     w_last,
                     Field::ONE,

@@ -29,9 +29,9 @@ by a single crate under \texttt{\#![forbid(unsafe\_code)]}. The system is
 transparent (no trusted setup) and hash-based, hence plausibly
 post-quantum. Production parameters target $\approx 100$ conjectured
 soundness bits (rate $1/16$, 40 queries, 20-bit grinding). Measured on a
-16-core machine, a 1,048,576-step computation proves in 6.4~s
-($\approx 6.1\,\mu$s/step), verifies in 2.3~ms, with a 160,401-byte proof.
-Validation combines 155 unit tests with two adversarial suites
+16-core machine, a 1,048,576-step computation proves in 4.6~s
+($\approx 4.4\,\mu$s/step), verifies in 2.4~ms, with a 186,961-byte proof.
+Validation combines 160 unit tests with three adversarial suites
 ($\approx 800$ hostile attempts per run, zero acceptances, zero panics),
 wire-exact size assertions on every benchmark, and machine-checked
 regression gates.
@@ -219,7 +219,7 @@ check at true folded points; cap/path shape pins before hashing;
 \texttt{fri-dims} dimension binding; canonical-only decoding; PoW
 bound to history with queries sampled after.
 
-\paragraph{Adversarial validation.} Three layers: 155 unit tests
+\paragraph{Adversarial validation.} Three layers: 160 unit tests
 (KATs, Horner cross-checks, parallel-vs-sequential identity); a
 13-vector security suite (tampering of every query/fold/value/path/
 digest, 300 single-bit-flip fuzz trials, PoW forgery, rate gates both
@@ -245,16 +245,16 @@ domain points, Merkle caps. Measured 2026-10-19, release, medians,
 \toprule
 Workload (production, $\approx 100$ bits) & Prove & Verify & Size \\
 \midrule
-AIR 1,024 steps & 38\,ms & 1.0\,ms & 48,221\,B \\
-AIR 8,192 steps & 81\,ms & 1.6\,ms & 74,809\,B \\
-AIR 65,536 steps & 368\,ms & 1.8\,ms & 107,609\,B \\
-AIR \textbf{1,048,576} steps & \textbf{6.35\,s} & \textbf{2.3\,ms} & \textbf{160,401\,B} \\
-FRI poly-1024 & 38\,ms & 0.9\,ms & 33,382\,B \\
+AIR 1,024 steps & 25\,ms & 1.1\,ms & 61,581\,B \\
+AIR 8,192 steps & 77\,ms & 1.8\,ms & 92,129\,B \\
+AIR 65,536 steps & 324\,ms & 1.8\,ms & 128,889\,B \\
+AIR \textbf{1,048,576} steps & \textbf{4.65\,s} & \textbf{2.4\,ms} & \textbf{186,961\,B} \\
+FRI poly-1024 & 38\,ms & 0.8\,ms & 33,382\,B \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Marginal cost $\approx 6.1\,\mu$s/step ($\approx 165$k steps/s);
+Marginal cost $\approx 4.4\,\mu$s/step ($\approx 226$k steps/s);
 proof sizes are deterministic and asserted byte-for-byte every run.
 Verification is size-independent: each FRI domain point is derived on
 demand in $O(\log)$ field operations rather than from a materialized

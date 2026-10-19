@@ -7,6 +7,19 @@ All notable changes to `z0p` are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **Unbound next-row trace columns fixed (air, fold).** `a_next`/`b_next`
+  were committed as separate trace columns, but the verifier never tied
+  them to the trace: a malicious prover could choose them to satisfy the
+  transition relation on its own, decoupled from `A`/`B`, and prove a false
+  output claim (reproduced by an adversarial probe test before the fix;
+  composition degree and FRI replay accepted it). Next-row values are now
+  the same committed `A`/`B` columns opened at the omega-shifted LDE index
+  `(index + lde_len / n_steps) mod lde_len`; the verifier recomputes that
+  index and authenticates both Merkle paths against the one trace cap. No
+  separate, unauthenticated next-row witness exists. Regression tests:
+  `air::tests::false_claim_with_forged_trace_rejected`,
+  `air::tests::shifted_opening_tamper_fails`,
+  `fold::tests::shifted_opening_tamper_fails`.
 - **FRI verifier allocation DoS fixed.** `verify` no longer materializes an
   `O(lde_len)` table of folded domain points (up to ~715 MB from a ~6.6 KB
   forged commitment). Points are derived on demand in `O(log)` field ops. The
@@ -31,6 +44,12 @@ All notable changes to `z0p` are documented here. The format follows
   uniform masking randomness.
 - **`air::build_trace` no longer panics** for `n_steps == 0` (returns empty).
 - **`range::build_columns` guards the shift** for `n_bits > 32`.
+- **Trace wire format (air, fold).** Trace rows are now 8-byte `A || B`
+  leaves (previously 16-byte `A || B || A_next || B_next`) and each opening
+  carries a second Merkle path for the shifted row. Proving is faster (the
+  trace LDE halves and no next-column NTT runs); proofs are slightly larger
+  (one extra ~33-byte path step per query). Bench baseline re-recorded;
+  1M-step AIR proof 160,401 → 186,961 B, prove 6.35 → 4.65 s.
 
 ### Added
 - **`simd` feature (Tier 4).** 8-lane portable-SIMD BLAKE3 for Merkle

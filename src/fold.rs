@@ -218,14 +218,21 @@ pub struct StepClaims {
 }
 
 /// One step opening at an LDE position.
+///
+/// `cols[2..]` are the same committed columns opened at the shifted LDE
+/// index `index + lde_len / seg_steps` (mod `lde_len`), i.e. at
+/// `omega_base * x`; they are authenticated by `shift_path` like the
+/// primary row, so transitions never trust a separate witness column.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepOpening {
     /// Natural-order LDE index (shared across steps per query).
     pub index: usize,
-    /// Columns `[A, B, A_next, B_next]` at `index`.
+    /// Columns `[A, B, A_next, B_next]` at `index` and the shifted index.
     pub cols: [Field; 4],
-    /// Merkle path of the joint row leaf.
+    /// Merkle path of the joint row leaf (`A || B`) at `index`.
     pub path: Vec<([u8; 32], bool)>,
+    /// Merkle path of the joint row leaf (`A || B`) at the shifted index.
+    pub shift_path: Vec<([u8; 32], bool)>,
 }
 
 /// One folded step: claims, commitments, and query openings.
@@ -272,6 +279,7 @@ impl IvcProof {
                     writer.field(*value);
                 }
                 writer.path(&opening.path);
+                writer.path(&opening.shift_path);
             }
         }
         self.fri_commitment.write_body(&mut writer);
@@ -308,7 +316,13 @@ impl IvcProof {
                     reader.field()?,
                 ];
                 let path = reader.path()?;
-                openings.push(StepOpening { index, cols, path });
+                let shift_path = reader.path()?;
+                openings.push(StepOpening {
+                    index,
+                    cols,
+                    path,
+                    shift_path,
+                });
             }
             steps.push(StepProof {
                 claims,
@@ -338,7 +352,7 @@ pub struct Accumulator {
 #[derive(Debug)]
 struct StepData {
     claims: StepClaims,
-    ldes: [Vec<Field>; 4],
+    ldes: [Vec<Field>; 2],
     tree: MerkleTree,
     composition: Vec<Field>,
 }
@@ -399,21 +413,22 @@ impl Accumulator {
         absorb_step(&claims, transcript);
 
         let omega_base = Field::primitive_root(s)?;
-        let coeff_cols = [interpolate(col_a)?, interpolate(col_b)?];
-        let coeff_next = [
-            shift_coeffs(&coeff_cols[0], omega_base),
-            shift_coeffs(&coeff_cols[1], omega_base),
-        ];
         let lde_cols = [
-            evaluate_on_coset(&coeff_cols[0], self.params.blowup, crate::fri::LDE_SHIFT)?,
-            evaluate_on_coset(&coeff_cols[1], self.params.blowup, crate::fri::LDE_SHIFT)?,
+            evaluate_on_coset(
+                &interpolate(col_a)?,
+                self.params.blowup,
+                crate::fri::LDE_SHIFT,
+            )?,
+            evaluate_on_coset(
+                &interpolate(col_b)?,
+                self.params.blowup,
+                crate::fri::LDE_SHIFT,
+            )?,
         ];
-        let lde_next = [
-            evaluate_on_coset(&coeff_next[0], self.params.blowup, crate::fri::LDE_SHIFT)?,
-            evaluate_on_coset(&coeff_next[1], self.params.blowup, crate::fri::LDE_SHIFT)?,
-        ];
-        let all_refs = [&lde_cols[0], &lde_cols[1], &lde_next[0], &lde_next[1]];
         let m_step = lde_cols[0].len();
+        // `omega_base * x_i = x_{(i + offset)}` in LDE index space.
+        let offset = m_step / s;
+        let all_refs = [&lde_cols[0], &lde_cols[1]];
         let row_len = 4 * all_refs.len();
         let mut flat = vec![0u8; m_step * row_len];
         for (i, chunk) in flat.chunks_exact_mut(row_len).enumerate() {
@@ -439,22 +454,16 @@ impl Accumulator {
         let w_last = omega_base.pow((s - 1) as u64);
         let composition = compose_step(
             &[&lde_cols[0][..], &lde_cols[1][..]],
-            &[&lde_next[0][..], &lde_next[1][..]],
             &points,
             w_last,
             claims,
             s,
+            offset,
             &alphas,
         );
-        let ldes = [
-            lde_cols[0].clone(),
-            lde_cols[1].clone(),
-            lde_next[0].clone(),
-            lde_next[1].clone(),
-        ];
         self.steps.push(StepData {
             claims,
-            ldes,
+            ldes: lde_cols,
             tree,
             composition,
         });
@@ -495,6 +504,7 @@ impl Accumulator {
         let (fri_proof, fri_indices) = fri::open(&fri_state, transcript)?;
 
         let log_m = m.trailing_zeros();
+        let offset = m / self.params.seg_steps;
         let (drop, _) = crate::merkle::capped_shape(m, self.params.cap_height);
         let mut steps = Vec::with_capacity(self.steps.len());
         for step in &self.steps {
@@ -502,14 +512,21 @@ impl Accumulator {
             let mut openings = Vec::with_capacity(self.params.num_queries);
             for &leaf in &fri_indices {
                 let index = bit_reverse_index(leaf, log_m);
+                let shifted = (index + offset) % m;
                 let cols = [
                     step.ldes[0][index],
                     step.ldes[1][index],
-                    step.ldes[2][index],
-                    step.ldes[3][index],
+                    step.ldes[0][shifted],
+                    step.ldes[1][shifted],
                 ];
                 let path = step.tree.prove_capped(index, drop)?;
-                openings.push(StepOpening { index, cols, path });
+                let shift_path = step.tree.prove_capped(shifted, drop)?;
+                openings.push(StepOpening {
+                    index,
+                    cols,
+                    path,
+                    shift_path,
+                });
             }
             steps.push(StepProof {
                 claims: step.claims,
@@ -538,24 +555,14 @@ pub fn verify(params: Params, proof: &IvcProof, transcript: &mut Transcript) -> 
     }
     let s = params.seg_steps;
     let m = params.lde_len();
+    if m % s != 0 {
+        return Err(Error::FriVerificationFailed);
+    }
+    // Shift offset in LDE index space: `omega_base * x_i = x_{(i+offset)}`.
+    let offset = m / s;
     absorb_params(params, transcript);
 
-    // Chain links against the global claims.
-    let first = &proof.steps[0];
-    if first.claims.in_a != params.in_a || first.claims.in_b != params.in_b {
-        return Err(Error::FriVerificationFailed);
-    }
-    for pair in proof.steps.windows(2) {
-        if pair[0].claims.out_a != pair[1].claims.in_a
-            || pair[0].claims.out_b != pair[1].claims.in_b
-        {
-            return Err(Error::FriVerificationFailed);
-        }
-    }
-    let last = &proof.steps[proof.steps.len() - 1];
-    if last.claims.out_b != params.out_b {
-        return Err(Error::FriVerificationFailed);
-    }
+    check_chain(params, proof)?;
 
     // Replay per-step commitments and challenges.
     let omega_base = Field::primitive_root(s)?;
@@ -603,25 +610,7 @@ pub fn verify(params: Params, proof: &IvcProof, transcript: &mut Transcript) -> 
             if opening.index != index {
                 return Err(Error::FriVerificationFailed);
             }
-            // Authenticate the joint row against the cap entry covering
-            // it. Shapes are pinned first: the cap holds exactly
-            // `2^drop` digests and every path is exactly `depth - drop`
-            // steps, so malformed proofs fail before any hashing.
-            let mut row = Vec::with_capacity(16);
-            for value in &opening.cols {
-                row.extend_from_slice(&value.to_le_bytes());
-            }
-            let (drop, depth) = crate::merkle::capped_shape(m, params.cap_height);
-            if step.column_cap.len() != 1usize << drop || opening.path.len() != depth - drop {
-                return Err(Error::BadMerklePath);
-            }
-            let entry = step
-                .column_cap
-                .get(index >> (depth - drop))
-                .ok_or(Error::BadMerklePath)?;
-            if !MerkleTree::verify_capped(entry, &row, index, depth, &opening.path) {
-                return Err(Error::BadMerklePath);
-            }
+            check_step_openings(step, opening, index, m, offset, params.cap_height)?;
             combined += gamma
                 * composition_at(
                     [opening.cols[0], opening.cols[1]],
@@ -640,6 +629,72 @@ pub fn verify(params: Params, proof: &IvcProof, transcript: &mut Transcript) -> 
         if qval != combined {
             return Err(Error::FriVerificationFailed);
         }
+    }
+    Ok(())
+}
+
+/// Authenticate both joint rows of one step opening (the query point and
+/// its `omega_base`-shift). Shapes are pinned first: the cap holds exactly
+/// `2^drop` digests and every path is exactly `depth - drop` steps, so
+/// malformed proofs fail before any hashing. The shifted index is
+/// recomputed here, so the transition's next-row values can only be the
+/// committed columns at that position.
+fn check_step_openings(
+    step: &StepProof,
+    opening: &StepOpening,
+    index: usize,
+    m: usize,
+    offset: usize,
+    cap_height: usize,
+) -> Result<()> {
+    let (drop, depth) = crate::merkle::capped_shape(m, cap_height);
+    if step.column_cap.len() != 1usize << drop
+        || opening.path.len() != depth - drop
+        || opening.shift_path.len() != depth - drop
+    {
+        return Err(Error::BadMerklePath);
+    }
+    let mut row = [0u8; 8];
+    row[..4].copy_from_slice(&opening.cols[0].to_le_bytes());
+    row[4..].copy_from_slice(&opening.cols[1].to_le_bytes());
+    let entry = step
+        .column_cap
+        .get(index >> (depth - drop))
+        .ok_or(Error::BadMerklePath)?;
+    if !MerkleTree::verify_capped(entry, &row, index, depth, &opening.path) {
+        return Err(Error::BadMerklePath);
+    }
+    let shifted = (index + offset) % m;
+    let mut shift_row = [0u8; 8];
+    shift_row[..4].copy_from_slice(&opening.cols[2].to_le_bytes());
+    shift_row[4..].copy_from_slice(&opening.cols[3].to_le_bytes());
+    let shift_entry = step
+        .column_cap
+        .get(shifted >> (depth - drop))
+        .ok_or(Error::BadMerklePath)?;
+    if !MerkleTree::verify_capped(shift_entry, &shift_row, shifted, depth, &opening.shift_path) {
+        return Err(Error::BadMerklePath);
+    }
+    Ok(())
+}
+
+/// Chain-link check: segment boundaries against each other and the global
+/// claims.
+fn check_chain(params: Params, proof: &IvcProof) -> Result<()> {
+    let first = &proof.steps[0];
+    if first.claims.in_a != params.in_a || first.claims.in_b != params.in_b {
+        return Err(Error::FriVerificationFailed);
+    }
+    for pair in proof.steps.windows(2) {
+        if pair[0].claims.out_a != pair[1].claims.in_a
+            || pair[0].claims.out_b != pair[1].claims.in_b
+        {
+            return Err(Error::FriVerificationFailed);
+        }
+    }
+    let last = &proof.steps[proof.steps.len() - 1];
+    if last.claims.out_b != params.out_b {
+        return Err(Error::FriVerificationFailed);
     }
     Ok(())
 }
@@ -665,17 +720,6 @@ fn absorb_step(claims: &StepClaims, transcript: &mut Transcript) {
     buf.extend_from_slice(&claims.out_a.to_le_bytes());
     buf.extend_from_slice(&claims.out_b.to_le_bytes());
     transcript.absorb(b"fold/step", &buf);
-}
-
-/// Multiply coefficient `k` by `omega^k`: the next-row polynomial.
-fn shift_coeffs(coeffs: &[Field], omega: Field) -> Vec<Field> {
-    let mut out = Vec::with_capacity(coeffs.len());
-    let mut power = Field::ONE;
-    for &c in coeffs {
-        out.push(c * power);
-        power *= omega;
-    }
-    out
 }
 
 /// Natural-order coset points `SHIFT * omega^i`.
@@ -707,15 +751,21 @@ fn lde_point_at(m: usize, index: usize) -> Result<Field> {
 ///
 /// Batched like [`crate::air`] composition: vanishing geometric plus
 /// Montgomery inversions per chunk, bit-identical to [`composition_at`].
+/// Next-row values come from the same committed columns at
+/// `(i + offset) mod lde_len` (see [`StepOpening`]), never a separate
+/// witness column.
+#[allow(clippy::too_many_arguments)]
 fn compose_step(
     cols: &[&[Field]],
-    next: &[&[Field]],
     points: &[Field],
     w_last: Field,
     claims: StepClaims,
     s: usize,
+    offset: usize,
     alphas: &[Field; 5],
 ) -> Vec<Field> {
+    let m = cols[0].len();
+    let shifted = |j: usize, i: usize| cols[j][(i + offset) % m];
     if points.len() < 2 {
         // Degenerate (unreachable at real domain sizes): scalar fallback.
         return points
@@ -724,7 +774,7 @@ fn compose_step(
             .map(|(i, &point)| {
                 composition_at(
                     [cols[0][i], cols[1][i]],
-                    [next[0][i], next[1][i]],
+                    [shifted(0, i), shifted(1, i)],
                     point,
                     w_last,
                     claims,
@@ -758,8 +808,8 @@ fn compose_step(
         let inv_z = crate::babybear::batch_invert(&z_trans);
         for (j, slot) in piece.iter_mut().enumerate() {
             let i = base + j;
-            let trans1 = (next[0][i] - cols[1][i]) * inv_z[j];
-            let trans2 = (next[1][i] - (cols[0][i] + cols[1][i])) * inv_z[j];
+            let trans1 = (shifted(0, i) - cols[1][i]) * inv_z[j];
+            let trans2 = (shifted(1, i) - (cols[0][i] + cols[1][i])) * inv_z[j];
             let bound_in_a = (cols[0][i] - claims.in_a) * inv_b[j];
             let bound_in_b = (cols[1][i] - claims.in_b) * inv_b[j];
             let bound_out = (cols[1][i] - claims.out_b) * inv_a[j];
@@ -1042,6 +1092,40 @@ mod tests {
         proof.steps[0].openings[0].cols[1] += Field::ONE;
         let mut verifier_t = Transcript::new(b"fold-tamper");
         assert!(verify(params, &proof, &mut verifier_t).is_err());
+    }
+
+    #[test]
+    fn shifted_opening_tamper_fails() {
+        // The transition reads next-row values from the same committed
+        // tree at the recomputed shifted index; tampering the shifted
+        // values or their path must fail.
+        let traces = chained_traces(8, 2);
+        let params = test_params(last_b(8, 2));
+        for tamper in 0..4 {
+            let mut prover_t = Transcript::new(b"fold-shift-tamper");
+            let mut acc = Accumulator::new(params);
+            for (ca, cb) in &traces {
+                acc.add_segment(ca, cb, &mut prover_t).unwrap();
+            }
+            let mut proof = acc.finalize(&mut prover_t).unwrap();
+            let opening = &mut proof.steps[0].openings[0];
+            match tamper {
+                0 => opening.cols[2] += Field::ONE,
+                1 => opening.cols[3] += Field::ONE,
+                2 => {
+                    let last = opening.shift_path.len() - 1;
+                    opening.shift_path[last].1 = !opening.shift_path[last].1;
+                }
+                _ => {
+                    opening.shift_path.pop();
+                }
+            }
+            let mut verifier_t = Transcript::new(b"fold-shift-tamper");
+            assert!(
+                verify(params, &proof, &mut verifier_t).is_err(),
+                "tamper {tamper}"
+            );
+        }
     }
 
     #[test]

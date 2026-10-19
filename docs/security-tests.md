@@ -42,3 +42,25 @@ the bar. Fix: prover and verifier now absorb
 `(lde_len, poly_len, degree_bound)` under a `fri-dims` label before any
 challenge (`src/fri.rs`, protocol docs updated). Since the fix, fuzzing
 is at 200/200 and 100/100 with proof sizes byte-identical.
+
+## Finding closed by internal adversarial review: unbound next-row columns
+
+An adversarial probe against the AIR prover (constructing proofs with
+`compose` directly, bypassing the honest trace path) showed that
+`a_next`/`b_next` were committed but never bound to the shift of the
+committed `A`/`B` columns. A malicious prover could set them to satisfy
+the transition relation on their own — free at the last row — and the
+verifier accepted a proof of a **false** output claim (composition degree
+and FRI replay were all consistent). `fold` used the same pattern and was
+affected identically.
+
+Fix: next-row values are the *same* committed columns opened at the
+omega-shifted LDE index `(index + lde_len / n_steps) mod lde_len`; the
+verifier recomputes that index, authenticates a second Merkle path
+against the one trace cap, and rejects commitments where the shift is
+undefined (`lde_len % n_steps != 0`, non-power-of-two `lde_len`). Trace
+rows shrank to 8-byte `A || B` leaves (proofs carry one extra path per
+opening; sizes re-recorded). Regression tests:
+`air::tests::false_claim_with_forged_trace_rejected`,
+`air::tests::shifted_opening_tamper_fails`,
+`fold::tests::shifted_opening_tamper_fails`.

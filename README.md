@@ -24,7 +24,7 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
   (~4.4 µs/step, ~226k steps/s), verified in **~2.4 ms**, 186,961 bytes.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 160 unit tests plus three attack suites
+- **Adversarially tested** — 172 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -114,7 +114,7 @@ plus the size-optimal final layer and Merkle cap height.
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 160 tests across 18 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 172 tests across 19 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 8 vectors: hostile `Params`, decoder bit-flip fuzz, RNG uniformity | this README |
@@ -145,6 +145,7 @@ src/
   lookup.rs     LogUp-style table membership via sumcheck
   air.rs        Fibonacci AIR/STARK (+ ZK)
   range.rs      range-check AIR (+ ZK)
+  recursion.rs  one-query FRI fold-chain AIR (recursion fragment)
   table.rs      table-membership AIR (+ ZK)
   fold.rs       hash-folded IVC accumulation, one batched FRI
   blind.rs      vanishing-multiple ZK masking
@@ -183,8 +184,13 @@ CHANGELOG.md     release history (Keep a Changelog)
   `batch_digests_match_reference`), up to ~2.6× on the Merkle primitive
   and ~11% end-to-end at 1M steps. The default build stays scalar, stable,
   and MSRV 1.74; the feature is additive with a scalar fallback.
-- **Recursion.** Arithmetized verifier fragment (one-query check as AIR)
-  first, then self-proving — the path to L1-sized proofs.
+- **Recursion — fragment done.** `recursion.rs` proves one FRI query's
+  fold chain as a STARK: public `(lde_len, leaf, challenges, initial quad,
+  output)`, committed quads, shifted-index transition openings, FRI over
+  the composition at degree bound `4n - 5`; honest chains verify and
+  tampered chains/outputs/openings fail. Remaining for self-proving:
+  Merkle/BLAKE3 path checks, final-degree check, and transcript
+  derivation inside the AIR — the path to L1-sized proofs.
 - **Programs / zkVM.** Multilinear PCS first (unlocks large-table
   lookups), then program execution.
 - **External audit.** The suite, gates, versioned wire format, and pinned

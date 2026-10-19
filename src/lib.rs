@@ -14,6 +14,7 @@
 //! - [`lookup`]: `LogUp`-style table-membership argument via [`sumcheck`].
 //! - [`air`]: minimal Fibonacci AIR/STARK end-to-end over [`fri`].
 //! - [`range`]: range-check AIR (bit decomposition over committed columns).
+//! - [`recursion`]: STARK re-checking one FRI query's fold chain (recursion fragment).
 //! - [`fold`]: hash-based folding/IVC accumulation with one batched FRI.
 //! - [`rng`]: `ChaCha20` (RFC 8439) CSPRNG plus OS seeding.
 //! - [`blind`]: hiding layer — vanishing-multiple masking for ZK proofs.
@@ -79,6 +80,7 @@ pub mod mle;
 pub mod ntt;
 pub mod par;
 pub mod range;
+pub mod recursion;
 pub mod rng;
 pub mod sumcheck;
 pub mod table;

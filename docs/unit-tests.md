@@ -1,7 +1,7 @@
 # Unit tests — breakdown
 
 `cargo test --lib` (also run with `--release` by `tools/check.py`).
-Measured: 2026-10-19 — **160 passed, 0 failed.**
+Measured: 2026-10-19 — **172 passed, 0 failed.**
 
 ## Per-module counts
 
@@ -21,6 +21,7 @@ Measured: 2026-10-19 — **160 passed, 0 failed.**
 | `ntt` | 6 | Horner cross-checks (incl. parallel path at 2¹⁶/2¹⁷), determinism, roundtrips, RS extension |
 | `par` | 2 | parallel-vs-sequential identity, sequential thresholds |
 | `range` | 16 | honest/out-of-range/boundary, bit columns, ZK masking, caps, encodings |
+| `recursion` | 12 | honest fold chains (2/3 folds, padding), wrong output, broken chain, opening/shift tampering, caps, encoding, degree bound |
 | `rng` | 7 | ChaCha20 vectors, determinism, key sensitivity, key-material redaction |
 | `sumcheck` | 6 | product sums, tampered rounds/finals, transcript binding, shapes |
 | `table` | 16 | membership/non-membership, claims, ZK masking, caps, bound formula, encodings |
@@ -30,5 +31,5 @@ Measured: 2026-10-19 — **160 passed, 0 failed.**
 
 ```sh
 cargo test --lib              # debug
-cargo test --lib --release    # optimized (same 160, also gated)
+cargo test --lib --release    # optimized (same 172, also gated)
 ```

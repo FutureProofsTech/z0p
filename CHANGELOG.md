@@ -52,6 +52,19 @@ All notable changes to `z0p` are documented here. The format follows
   1M-step AIR proof 160,401 → 186,961 B, prove 6.35 → 4.65 s.
 
 ### Added
+- **Recursion fragment (`recursion`).** A STARK re-checking one FRI query's
+  fold chain. Public statement `(lde_len, leaf, fold challenges, initial
+  quad, output)`; witness quads are committed and transitions read next-row
+  values from the same columns at the omega-shifted LDE index (authenticated
+  second path, the same scheme as the soundness fix). Constraints: fold
+  identity (`out_d = fold_values(q_d, 1/x_d, c_d)`), chain
+  (`q_{d+1}[j_d] = out_d`), row-0 initial-quad boundary, and the one-hot
+  last-real-row output boundary; composition degree bound `4n - 5`, committed
+  with FRI. 12 tests: honest 2/3-fold chains (incl. padding), wrong output,
+  broken chain, tampered base/shifted openings and paths, caps, encoding,
+  statement mismatch, and degree-bound tightness. Module docs state the
+  remaining self-proving scope (BLAKE3 path checks, final-degree check,
+  transcript derivation in-AIR).
 - **`simd` feature (Tier 4).** 8-lane portable-SIMD BLAKE3 for Merkle
   leaf/node batches (`src/hash.rs` `simd` module), byte-identical to the
   scalar path (pinned by `merkle::tests::batch_digests_match_reference`).

@@ -905,7 +905,7 @@ fn coset_points(len: usize) -> Result<Vec<Field>> {
 ///
 /// # Errors
 /// Returns [`Error::InvalidDomainSize`] for invalid `lde_len`.
-fn point_at(lde_len: usize, depth: usize, j: usize) -> Result<Field> {
+pub(crate) fn point_at(lde_len: usize, depth: usize, j: usize) -> Result<Field> {
     let log_m = lde_len.trailing_zeros() as usize;
     let bits = log_m - 2 * depth;
     let omega = Field::primitive_root(lde_len)?;
@@ -1112,7 +1112,12 @@ fn fold_layer(
 /// from the odd/even differences against `unit = j0`, `C` from the
 /// diagonal difference; divisions use `halve` plus the caller-supplied
 /// `x` inverse (batch-inverted once per layer).
-fn fold_values(quad: [Field; 4], inv_point: Field, challenges: [Field; 3], unit: Field) -> Field {
+pub(crate) fn fold_values(
+    quad: [Field; 4],
+    inv_point: Field,
+    challenges: [Field; 3],
+    unit: Field,
+) -> Field {
     let even_sum = (quad[0] + quad[1]) + (quad[2] + quad[3]);
     let odd_diff = quad[0] - quad[1];
     let skew_diff = quad[2] - quad[3];

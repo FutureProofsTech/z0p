@@ -278,14 +278,21 @@ $3n$ extension-field sumcheck evaluations, and $Q$ queries with one pair
 and one Merkle path per layer per query; paths make the prototype
 $O(Qn^2)$ bytes, not $O(n)$.
 
-At 1,024 coefficients with blowup 16, 40 queries, and 20-bit grinding,
-the prototype proves in about 56 ms, verifies in 1.1 ms, and carries
-127,654 bytes; Gemini on the same shape takes 604 ms / 55 ms and carries
-888,672 bytes. The prototype is not wired into the AIR/STARK stack, has
-no Merkle caps or hiding, and has no end-to-end soundness proof; it must
-not be treated as production-ready.
+Optional Merkle caps store the top $h$ levels of every committed layer as
+a frontier of $2^h$ digests. Each query path drops $h$ steps, and the
+verifier hashes the frontier back to the layer root (top: the commitment
+root; lower layers: the proof's layer roots). The cap is part of the
+proof, not the commitment, so no commitment API changes are needed.
 
-## 5. Encodings (normative wire format, `VERSION = 3`)
+At 1,024 coefficients with blowup 16, 40 queries, and 20-bit grinding,
+the prototype proves in about 44 ms, verifies in 1.1 ms, and carries
+127,658 bytes; cap height 4 gives about 36 ms / 0.9 ms and 80,018 bytes.
+Gemini on the same shape takes 693 ms / 54 ms and carries 888,672 bytes.
+The prototype is not wired into the AIR/STARK stack, has no hiding, and
+has no end-to-end soundness proof; it must not be treated as
+production-ready.
+
+## 5. Encodings (normative wire format, `VERSION = 4`)
 
 ```
 proof      := VERSION || body
@@ -330,7 +337,7 @@ cap/path shape pins before hashing; `fri-dims` dimension binding
 (closes proof malleability of echoed dimensions); canonical-only
 decoding; PoW bound to history with queries sampled after.
 
-**Validation.** 240 unit tests (KATs, cross-checks against Horner/`%`,
+**Validation.** 244 unit tests (KATs, cross-checks against Horner/`%`,
 parallel-vs-sequential identity), 13-test security suite and 10-test
 red-team suite (~800 hostile attempts/run, zero acceptances, zero
 panics), wire-exact size assertions on every benchmark, and a
@@ -344,8 +351,8 @@ fragment, FRI-backed univariate point and multi-point openings, a
 Gemini-style multilinear PCS (`O(n)` openings, one batched opening per
 layer), and a compact BaseFold-style prototype (one root, sumcheck plus
 Möbius FRI folds) are done. The BaseFold module is experimental and not
-wired into AIR/STARK; Merkle caps/WHIR batching, self-proving recursion,
-and a zkVM are roadmap items. No external audit has yet been performed.
+wired into AIR/STARK; WHIR-style batching, self-proving recursion, and a
+zkVM are roadmap items. No external audit has yet been performed.
 
 ## 8. License
 

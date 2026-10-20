@@ -423,8 +423,7 @@ fn pcs_value(coeffs: &[Field], point: &[Ext4]) -> Ext4 {
     total
 }
 
-fn bench_basefold() {
-    let params = basefold::Params::new(16, 40, 20).expect("params");
+fn bench_basefold_case(name: &str, params: basefold::Params) {
     let coeffs: Vec<Field> = (0..1024u32)
         .map(|i| Field::new(i.wrapping_mul(0x9e37_79b9) + 17))
         .collect();
@@ -451,11 +450,17 @@ fn bench_basefold() {
     });
     let bytes = commitment.to_bytes().len() + proof.to_bytes().len();
     println!(
-        "basefold P1024 B{}Q{}G{}: prove {prove_ms:8.2} ms  verify {verify_ms:8.2} ms  proof {bytes} B ({:.1} KiB)",
-        params.blowup,
-        params.num_queries,
-        params.grinding_bits,
+        "{name}: prove {prove_ms:8.2} ms  verify {verify_ms:8.2} ms  proof {bytes} B ({:.1} KiB)",
         kb(bytes)
+    );
+}
+
+fn bench_basefold() {
+    let params = basefold::Params::new(16, 40, 20).expect("params");
+    bench_basefold_case("basefold P1024 B16Q40G20", params);
+    bench_basefold_case(
+        "basefold-capped P1024 B16Q40G20C4",
+        params.with_cap_height(4),
     );
 }
 

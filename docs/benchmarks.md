@@ -45,19 +45,24 @@ Both rows open a 10-variable polynomial with blowup 16, 40 queries, and
 20-bit grinding. Gemini is the `O(n)`-opening v1 path with one multi-point
 `upcs` proof per layer. The BaseFold-style prototype commits one root,
 reduces `f(r)` to `c(rho)` with sumcheck, and reuses the sumcheck
-challenges for Möbius FRI folds. It carries no Merkle caps and is not wired
-into the AIR stack; each query still opens one Merkle path per layer, so
-paths dominate its wire size.
+challenges for Möbius FRI folds. Optional Merkle caps replace the top path
+steps of every committed layer with one cap frontier; the cap root is
+hashed back to the commitment (top layer) or the proof's layer roots (lower
+layers). It is not wired into the AIR stack; full paths still make each
+query open one Merkle path per layer.
 
 | Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
 |---|---|---|---|---|
-| `basefold P1024 B16Q40G20` | 56.37 | 1.13 | 127,654 | 124.7 |
-| `gemini P1024 B16Q40G20` | 604.24 | 55.34 | 888,672 | 867.8 |
+| `basefold P1024 B16Q40G20` | 44.09 | 1.14 | 127,658 | 124.7 |
+| `basefold-capped P1024 B16Q40G20C4` | 35.88 | 0.90 | 80,018 | 78.1 |
+| `gemini P1024 B16Q40G20` | 693.04 | 54.42 | 888,672 | 867.8 |
 
-BaseFold is ~10× faster to prove, ~49× faster to verify, and ~7× smaller
-on this shape. The comparison is a prototype result, not an audit: the
-sumcheck/FRI composition needs a written soundness argument, and caps or
-WHIR-style batching are required before large tables.
+Cap height 4 shrinks the BaseFold proof by ~37% on this shape. Against
+Gemini the uncapped prototype is ~16× faster to prove, ~48× faster to
+verify, and ~7× smaller; capped is ~19× faster to prove, ~60× faster to
+verify, and ~11× smaller. The comparison is a prototype result, not an
+audit: the sumcheck/FRI composition needs a written soundness argument,
+and WHIR-style batching is required before large tables.
 
 ## Bench shapes (fast, ~18 conjectured bits)
 
@@ -71,7 +76,7 @@ WHIR-style batching are required before large tables.
 | `fold 4x8 fib` | 0.74 | 0.22 | 16,845 | 16.5 |
 | `air fib1024` | 6.45 | 0.32 | 29,097 | 28.4 |
 
-Lookup's v3 proof is larger than its former base-field form: multiplicities,
+Lookup's v4 extension-field proof is larger than its former base-field form: multiplicities,
 quotients, and four sumcheck proofs now carry 16-byte `Fp4` values
 (688 -> 2,897 B). Tower-norm `Fp4` inversion brings prove/verify back to
 ~0.29/0.19 ms. Proof sizes now come from the real canonical codec rather

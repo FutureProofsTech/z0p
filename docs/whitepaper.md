@@ -73,7 +73,7 @@ Reed–Solomon proximity testing.
    extension-field (`Fp4`) challenges, raising per-challenge algebraic
    bounds to ~124 bits. This is still a conjectured query/PoW schedule,
    not an end-to-end soundness proof.
-5. **Evidence over claims.** 240 unit tests, three adversarial suites
+5. **Evidence over claims.** 244 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught
@@ -149,9 +149,9 @@ portable scalar-safe-Rust throughput with parallelism over
   weak — production callers must use `for_security`. Table lookups are
   small-table. A first Gemini-style multilinear PCS (`gemini.rs`) and a
   compact BaseFold-style prototype (`basefold.rs`) exist; the latter is
-  ~7× smaller and ~49× faster to verify at 1,024 coefficients, but it has
-  no Merkle caps, is not wired into the AIR stack, and is unaudited.
-  Production large-table openings still need caps/WHIR-style batching.
+  ~11× smaller and ~60× faster to verify with cap height 4 at 1,024
+  coefficients, but it is not wired into the AIR stack and is unaudited.
+  Production large-table openings still need WHIR-style batching.
   The system has not yet had an external audit; the test suites, gates,
   versioned wire format, and pinned baselines are the pre-audit package.
 
@@ -177,9 +177,11 @@ portable scalar-safe-Rust throughput with parallelism over
    (not `3n - 2`) and remains `O(n)`. `basefold.rs` adds the compact
    recipe: one root, sumcheck reduces `f(r)` to `c(rho)`, and Möbius FRI
    folds reuse the sumcheck challenges. At 1,024 coefficients it is
-   ~127.7 KB / ~56 ms / ~1.1 ms, versus Gemini's ~888.7 KB / ~604 ms /
-   ~55 ms. It needs Merkle caps, AIR/STARK wiring, and an audit before
-   production use; WHIR-style batching is the next PCS step.
+   ~127.7 KB / ~44 ms / ~1.1 ms, or ~80.0 KB / ~36 ms / ~0.9 ms with cap
+   height 4, versus Gemini's ~888.7 KB / ~693 ms / ~54 ms. Optional Merkle
+   caps and decoder fuzzing are in place; AIR/STARK wiring and an audit
+   remain before production use, and WHIR-style batching is the next PCS
+   step.
 5. **Programs / zkVM** — wire the compact PCS into large-table lookups,
    then general program execution proofs.
 6. **External audit** — procurement item; the evidence package is ready.

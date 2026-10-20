@@ -24,27 +24,35 @@ All notable changes to `z0p` are documented here. The format follows
   `n - 1` layer roots, capped sumcheck rounds, and one pair plus Merkle
   path per layer per query, with canonical `to_bytes`/`from_bytes`.
   At 1,024 coefficients on the production-shaped `B16 Q40 G20` schedule:
-  127,654 B, ~56 ms prove, ~1.1 ms verify, versus Gemini v1's 888,672 B,
-  ~604 ms, and ~55 ms. This is an experimental prototype: no Merkle caps,
-  no AIR/STARK wiring, no end-to-end soundness proof, and not audited.
-- **Test count 226 -> 240.** Fourteen `basefold` tests cover honest
+  127,658 B, ~44 ms prove, ~1.1 ms verify, versus Gemini v1's 888,672 B,
+  ~693 ms, and ~54 ms. This is an experimental prototype: no AIR/STARK
+  wiring, no end-to-end soundness proof, and not audited.
+- **Optional BaseFold Merkle caps.** `Params::with_cap_height(h)` stores
+  the top `h` levels of every committed layer in the proof as a digest
+  frontier. Query paths drop `h` steps; the verifier hashes each frontier
+  back to the commitment root (top) or the proof's layer roots (lower
+  layers), pinning cap shapes before hashing. Cap height 4 on the same
+  shape gives 80,018 B, ~36 ms prove, and ~0.9 ms verify (~37% smaller
+  than full paths). Cap height is capped at 8; malformed, forged, and
+  mismatched cap proofs fail closed, and decoder fuzzing now covers both
+  plain and capped BaseFold proofs.
+- **Test count 226 -> 244.** Eighteen `basefold` tests cover honest
   openings at 1/2/5/8 variables, wrong value/point/commitment, tampered
-  sumcheck/layer/query data, grinding and canonical nonce handling,
+  sumcheck/layer/query data, capped and uncapped paths, forged/mis-shaped
+  caps, cap-height limits and clamping, grinding and canonical nonce handling,
   parameter/domain caps, and codec version/trailer rejection. The
-  benchmark baseline now pins 21 rows (adding `basefold` and a Gemini
-  comparison), and docs report the new numbers.
+  benchmark baseline now pins 22 rows (adding plain/capped `basefold` and
+  a Gemini comparison), and docs report the new numbers.
 
 ### Changed
-- **Wire format v3.** FRI fold values and final-layer values, `upcs`
-  opening values/points, and Gemini proofs are `Fp4` (16 bytes per
-  element); `upcs`/FRI Merkle leaves are 16-byte extension values.
-  `codec::VERSION` is `3`; older proofs are rejected. Small proof sizes
-  grew in v2 (FRI poly-256 9,170 -> 11,522 B) and the 1M-step AIR proof
-  grew 186,961 -> 206,353 B; PCS and lookup proofs grow again in v3.
-  `tools/baseline.json` was re-recorded after review. The 1M-step
-  release prove remains ~5.2 s on this box.
+- **Wire format v4.** The unreleased v3 work moved FRI fold values,
+  final-layer values, `upcs` opening values/points, and Gemini proofs to
+  `Fp4` (16 bytes per element), with 16-byte extension leaves. This
+  increment adds the optional BaseFold cap vector after the layer roots
+  and bumps `codec::VERSION` to `4`; v3 and older proofs are rejected.
+  `tools/baseline.json` was re-recorded after review (22 rows).
 - **Canonical sumcheck/lookup codecs.** `sumcheck::Proof` and
-  `lookup::Proof` now expose `to_bytes`/`from_bytes` under wire version 3,
+  `lookup::Proof` now expose `to_bytes`/`from_bytes` under the shared wire version,
   with capped nested sumcheck bodies, canonical `Fp4` values, and
   fail-closed truncation/trailing/version checks. Benchmark sizes for
   lookup are now measured from the real codec rather than estimated.

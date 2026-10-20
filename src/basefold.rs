@@ -10,16 +10,19 @@
 //! `E(X) + r O(X)`, so the final constant is the multilinear evaluation of
 //! the coefficient table. The result is one commitment, `O(log n)` layer
 //! roots, and one pair plus one Merkle path per layer per query instead of
-//! the `O(n)` openings used by [`crate::gemini`].
+//! the `O(n)` openings used by [`crate::gemini`]. Optional Merkle caps
+//! (see [`Params::with_cap_height`]) replace the top path steps of every
+//! committed layer with one frontier of digests, so each query path shrinks
+//! by up to `cap_height` steps.
 //!
 //! # Status
 //!
 //! This is a prototype, not an audited construction: it is not wired into
-//! the AIR/STARK stack, has no hiding layer, no Merkle caps, and no
-//! end-to-end soundness proof. The query/proof-of-work schedule follows the
-//! FRI heuristic in [`crate::fri`]. Treat the query bits as conjectured,
-//! size instances with [`Params::for_security`], and do not deploy this as a
-//! production commitment without review.
+//! the AIR/STARK stack, has no hiding layer, and no end-to-end soundness
+//! proof. The query/proof-of-work schedule follows the FRI heuristic in
+//! [`crate::fri`]. Treat the query bits as conjectured, size instances with
+//! [`Params::for_security`], and do not deploy this as a production
+//! commitment without review.
 //!
 //! Polynomials have at least one variable. Coefficients are base-field
 //! values in multilinear (Möbius) order, matching [`crate::mle::Mle`] and
@@ -30,7 +33,9 @@
 //! Callers must start the transcript with a unique context before
 //! [`open`]/[`verify`]. Both functions absorb the commitment dimensions,
 //! statement, sumcheck rounds, layer roots, proof-of-work nonce, and query
-//! positions in the same order.
+//! positions in the same order. Caps are authenticated by hashing their
+//! frontier back to the commitment root (top layer) or to the proof's layer
+//! roots (lower layers); they add no transcript messages beyond those roots.
 
 use crate::babybear::Field;
 use crate::codec::{Reader, Writer, MAX_FOLDS, MAX_QUERIES, VERSION};
@@ -50,6 +55,8 @@ const MAX_ROUNDS: u32 = 32;
 const MAX_ROUND_EVALS: u32 = 3;
 /// Maximum layer roots in one proof (`MAX_VARS - 1`).
 const MAX_LAYER_ROOTS: u32 = 32;
+/// Maximum Merkle cap height (`2^8` digests per cap, matching codec caps).
+pub const MAX_CAP_HEIGHT: usize = 8;
 /// Largest supported expanded domain.
 const MAX_DOMAIN: usize = 1 << 27;
 
@@ -62,6 +69,14 @@ pub struct Params {
     pub num_queries: usize,
     /// Proof-of-work difficulty in leading-zero bits (`0` disables).
     pub grinding_bits: u32,
+    /// Merkle cap height: `2^cap_height` digests per layer stay in the
+    /// proof instead of one root plus a longer path (`0` disables caps).
+    ///
+    /// Each query path shrinks by up to `cap_height` steps; the proof gains
+    /// one cap frontier per committed layer. The effective height is clamped
+    /// per layer to `depth - 1` (pair openings start at the parent digest).
+    /// See [`Params::with_cap_height`].
+    pub cap_height: usize,
 }
 
 impl Params {
@@ -76,9 +91,19 @@ impl Params {
             blowup,
             num_queries,
             grinding_bits,
+            cap_height: 0,
         };
         params.validate()?;
         Ok(params)
+    }
+
+    /// Set the Merkle cap height (builder; default `0` = full paths).
+    ///
+    /// Values above [`MAX_CAP_HEIGHT`] are rejected by [`open`]/[`verify`].
+    #[must_use]
+    pub const fn with_cap_height(mut self, height: usize) -> Self {
+        self.cap_height = height;
+        self
     }
 
     /// Production-shaped parameters: blowup 16, FRI queries plus grinding
@@ -121,6 +146,11 @@ impl Params {
         if self.grinding_bits > 32 {
             return Err(Error::MalformedInput {
                 reason: "grinding_bits above 32",
+            });
+        }
+        if self.cap_height > MAX_CAP_HEIGHT {
+            return Err(Error::MalformedInput {
+                reason: "cap_height above 8",
             });
         }
         Ok(())
@@ -224,6 +254,7 @@ impl Commitment {
             blowup: self.blowup,
             num_queries: 1,
             grinding_bits: 0,
+            cap_height: 0,
         }
         .lde_len(self.n_vars)
     }
@@ -308,7 +339,7 @@ pub struct SumcheckProof {
 pub struct FoldWitness {
     /// The two adjacent bit-reversed evaluations in the fold pair.
     pub values: [Ext4; 2],
-    /// Path from the pair parent to the layer root.
+    /// Path from the pair parent to the layer root or selected cap entry.
     pub path: Vec<([u8; 32], bool)>,
 }
 
@@ -326,6 +357,13 @@ pub struct Proof {
     pub sumcheck: SumcheckProof,
     /// Roots of layers `1..n_vars` (the top root is in the commitment).
     pub layer_roots: Vec<[u8; 32]>,
+    /// One cap frontier per committed layer, top first; empty when
+    /// [`Params::cap_height`] is zero.
+    ///
+    /// Each cap holds `2^drop` digests and hashes back to the corresponding
+    /// layer root, so the top cap binds to the commitment and lower caps
+    /// bind to [`Self::layer_roots`].
+    pub caps: Vec<Vec<[u8; 32]>>,
     /// Proof-of-work nonce (`0` when grinding is disabled).
     pub pow_nonce: u64,
     /// Query openings.
@@ -333,7 +371,7 @@ pub struct Proof {
 }
 
 impl Proof {
-    /// Canonical bytes: version, sumcheck, roots, nonce, queries.
+    /// Canonical bytes: version, sumcheck, roots, caps, nonce, queries.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut writer = Writer::new();
@@ -349,6 +387,10 @@ impl Proof {
         writer.count(self.layer_roots.len());
         for root in &self.layer_roots {
             writer.bytes(root);
+        }
+        writer.count(self.caps.len());
+        for cap in &self.caps {
+            writer.cap(cap);
         }
         writer.u64_le(self.pow_nonce);
         writer.count(self.queries.len());
@@ -383,6 +425,10 @@ impl Proof {
         for _ in 0..reader.count(MAX_LAYER_ROOTS)? {
             layer_roots.push(reader.digest()?);
         }
+        let mut caps = Vec::new();
+        for _ in 0..reader.count(MAX_LAYER_ROOTS)? {
+            caps.push(reader.cap()?);
+        }
         let pow_nonce = reader.u64_le()?;
         let mut queries = Vec::new();
         for _ in 0..reader.count(MAX_QUERIES)? {
@@ -401,6 +447,7 @@ impl Proof {
         let proof = Self {
             sumcheck: SumcheckProof { sum, rounds },
             layer_roots,
+            caps,
             pow_nonce,
             queries,
         };
@@ -413,6 +460,18 @@ impl Proof {
             return Err(Error::MalformedInput {
                 reason: "too many layer roots",
             });
+        }
+        if self.caps.len() > MAX_VARS {
+            return Err(Error::MalformedInput {
+                reason: "too many caps",
+            });
+        }
+        for cap in &self.caps {
+            if cap.len() > (1usize << MAX_CAP_HEIGHT) {
+                return Err(Error::MalformedInput {
+                    reason: "cap height above protocol cap",
+                });
+            }
         }
         for round in &self.sumcheck.rounds {
             if round.len() != 3 {
@@ -493,6 +552,10 @@ pub fn open(
     trees.push(state.tree.clone());
     let mut points = bit_reversed_points(lde_len)?;
     let mut layer_roots = Vec::with_capacity(n_vars.saturating_sub(1));
+    let mut caps = Vec::with_capacity(n_vars);
+    if params.cap_height > 0 {
+        caps.push(layer_cap(&state.tree, params.cap_height));
+    }
 
     for i in 0..n_vars {
         let (next, next_points) = fold_layer(&layers[i], &points, fold_challenges[i], half)?;
@@ -501,6 +564,9 @@ pub fn open(
             let root = tree.root();
             transcript.absorb(b"basefold/layer-root", &root);
             layer_roots.push(root);
+            if params.cap_height > 0 {
+                caps.push(layer_cap(&tree, params.cap_height));
+            }
             trees.push(tree);
         }
         layers.push(next);
@@ -523,7 +589,7 @@ pub fn open(
         let q = transcript
             .challenge_index(b"basefold/query", pair_count)
             .ok_or(Error::FriVerificationFailed)?;
-        queries.push(open_query(&layers, &trees, n_vars, q)?);
+        queries.push(open_query(&layers, &trees, n_vars, q, params.cap_height)?);
     }
 
     Ok(Proof {
@@ -532,6 +598,7 @@ pub fn open(
             rounds: sc.round_evals,
         },
         layer_roots,
+        caps,
         pow_nonce,
         queries,
     })
@@ -565,8 +632,10 @@ pub fn verify(
     }
     let lde_len = params.lde_len(n_vars)?;
     proof.check_shape()?;
+    let expected_caps = if params.cap_height > 0 { n_vars } else { 0 };
     if proof.sumcheck.rounds.len() != n_vars
         || proof.layer_roots.len() != n_vars.saturating_sub(1)
+        || proof.caps.len() != expected_caps
         || proof.queries.len() != params.num_queries
     {
         return Err(Error::MalformedInput {
@@ -604,6 +673,22 @@ pub fn verify(
     for root in &roots[1..] {
         transcript.absorb(b"basefold/layer-root", root);
     }
+    if params.cap_height > 0 {
+        for (i, cap) in proof.caps.iter().enumerate() {
+            let layer_len = lde_len
+                .checked_shr(u32::try_from(i).map_err(|_| Error::MalformedInput {
+                    reason: "cap layer index exceeds u32",
+                })?)
+                .ok_or(Error::BadMerklePath)?;
+            let drop = cap_drop(layer_len, params.cap_height);
+            if cap.len() != 1usize << drop {
+                return Err(Error::BadMerklePath);
+            }
+            if cap_root(cap) != Some(roots[i]) {
+                return Err(Error::BadMerklePath);
+            }
+        }
+    }
 
     if params.grinding_bits > 0 {
         if !transcript.verify_grind(b"basefold/pow", proof.pow_nonce, params.grinding_bits) {
@@ -635,7 +720,21 @@ pub fn verify(
             let first = hash_leaf(&fold.values[0].to_le_bytes());
             let second = hash_leaf(&fold.values[1].to_le_bytes());
             let parent = hash_node(&first, &second);
-            if !MerkleTree::verify_digest(&roots[i], &parent, branch, &fold.path) {
+            #[allow(clippy::cast_possible_truncation)]
+            let depth = layer_len.trailing_zeros() as usize;
+            let drop = cap_drop(layer_len, params.cap_height);
+            if fold.path.len() != depth.saturating_sub(1).saturating_sub(drop) {
+                return Err(Error::BadMerklePath);
+            }
+            let authenticated = if params.cap_height == 0 {
+                MerkleTree::verify_digest(&roots[i], &parent, branch, &fold.path)
+            } else {
+                let entry = proof.caps[i]
+                    .get(branch >> fold.path.len())
+                    .ok_or(Error::BadMerklePath)?;
+                verify_capped_digest(entry, &parent, &fold.path)
+            };
+            if !authenticated {
                 return Err(Error::BadMerklePath);
             }
             if i > 0 {
@@ -808,6 +907,44 @@ fn reverse_bits(value: usize, bits: usize) -> usize {
     value.reverse_bits() >> (width - bits)
 }
 
+fn cap_drop(layer_len: usize, cap_height: usize) -> usize {
+    #[allow(clippy::cast_possible_truncation)]
+    let depth = layer_len.trailing_zeros() as usize;
+    cap_height.min(depth.saturating_sub(1))
+}
+
+fn layer_cap(tree: &MerkleTree, cap_height: usize) -> Vec<[u8; 32]> {
+    let layer_len = tree.num_leaves();
+    tree.cap(cap_drop(layer_len, cap_height))
+}
+
+fn cap_root(cap: &[[u8; 32]]) -> Option<[u8; 32]> {
+    if cap.is_empty() || !cap.len().is_power_of_two() {
+        return None;
+    }
+    let mut level = cap.to_vec();
+    while level.len() > 1 {
+        let mut next = Vec::with_capacity(level.len() / 2);
+        for pair in level.chunks_exact(2) {
+            next.push(hash_node(&pair[0], &pair[1]));
+        }
+        level = next;
+    }
+    level.first().copied()
+}
+
+fn verify_capped_digest(entry: &[u8; 32], digest: &[u8; 32], path: &[([u8; 32], bool)]) -> bool {
+    let mut current = *digest;
+    for (sibling, is_left) in path {
+        current = if *is_left {
+            hash_node(&current, sibling)
+        } else {
+            hash_node(sibling, &current)
+        };
+    }
+    &current == entry
+}
+
 fn commit_layer(layer: &[Ext4]) -> Result<MerkleTree> {
     let mut flat = vec![0u8; 16 * layer.len()];
     for (slot, value) in flat.chunks_exact_mut(16).zip(layer) {
@@ -821,6 +958,7 @@ fn open_query(
     trees: &[MerkleTree],
     n_vars: usize,
     q: usize,
+    cap_height: usize,
 ) -> Result<QueryProof> {
     let mut branch = q;
     let mut folds = Vec::with_capacity(n_vars);
@@ -834,10 +972,11 @@ fn open_query(
             .get(i)
             .and_then(|layer| layer.get(index + 1))
             .ok_or(Error::FriVerificationFailed)?;
+        let drop = cap_drop(layers[i].len(), cap_height);
         let path = trees
             .get(i)
             .ok_or(Error::FriVerificationFailed)?
-            .prove(index)?;
+            .prove_capped(index, drop)?;
         folds.push(FoldWitness {
             values: [first, second],
             path: path.get(1..).ok_or(Error::FriVerificationFailed)?.to_vec(),
@@ -890,15 +1029,19 @@ mod tests {
         total
     }
 
-    fn prove(n_vars: usize) -> (Commitment, Vec<Ext4>, Ext4, Proof) {
+    fn prove_with(n_vars: usize, params: Params) -> (Commitment, Vec<Ext4>, Ext4, Proof) {
         let coeffs = coefficients(n_vars);
         let point = point(n_vars);
         let value = direct_eval(&coeffs, &point);
-        let state = commit(&coeffs, params().blowup).unwrap();
+        let state = commit(&coeffs, params.blowup).unwrap();
         let commitment = state.commitment().clone();
         let mut transcript = Transcript::new(b"basefold-test");
-        let proof = open(&state, &point, value, params(), &mut transcript).unwrap();
+        let proof = open(&state, &point, value, params, &mut transcript).unwrap();
         (commitment, point, value, proof)
+    }
+
+    fn prove(n_vars: usize) -> (Commitment, Vec<Ext4>, Ext4, Proof) {
+        prove_with(n_vars, params())
     }
 
     #[test]
@@ -1121,6 +1264,123 @@ mod tests {
             &mut transcript
         )
         .is_err());
+    }
+
+    #[test]
+    fn capped_openings_verify_and_shrink_paths() {
+        for (n_vars, cap_height) in [(2usize, 1usize), (5, 2), (8, 4)] {
+            let capped = params().with_cap_height(cap_height);
+            let (commitment, point, value, proof) = prove_with(n_vars, capped);
+            let mut transcript = Transcript::new(b"basefold-test");
+            verify(&commitment, &point, value, &proof, capped, &mut transcript).unwrap();
+            assert_eq!(proof.caps.len(), n_vars);
+            assert_eq!(cap_root(&proof.caps[0]), Some(commitment.root()));
+            let lde_len = (1usize << n_vars) * capped.blowup;
+            for i in 0..n_vars {
+                let layer_len = lde_len >> i;
+                let drop = cap_drop(layer_len, cap_height);
+                assert_eq!(proof.caps[i].len(), 1usize << drop);
+                #[allow(clippy::cast_possible_truncation)]
+                let depth = layer_len.trailing_zeros() as usize;
+                assert_eq!(
+                    proof.queries[0].folds[i].path.len(),
+                    depth - 1 - drop,
+                    "layer {i} path"
+                );
+            }
+        }
+
+        let capped = params().with_cap_height(4);
+        let (_, _, _, capped_proof) = prove_with(8, capped);
+        let (_, _, _, plain_proof) = prove(8);
+        assert!(capped_proof.to_bytes().len() < plain_proof.to_bytes().len());
+    }
+
+    #[test]
+    fn capped_codec_roundtrip_and_tamper_rejected() {
+        let capped = params().with_cap_height(2);
+        let (commitment, point, value, proof) = prove_with(5, capped);
+        let bytes = proof.to_bytes();
+        let decoded = Proof::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, proof);
+        let mut transcript = Transcript::new(b"basefold-test");
+        verify(
+            &commitment,
+            &point,
+            value,
+            &decoded,
+            capped,
+            &mut transcript,
+        )
+        .unwrap();
+
+        let mut bad = proof.clone();
+        bad.caps[0][0][0] ^= 1;
+        let mut transcript = Transcript::new(b"basefold-test");
+        assert!(verify(&commitment, &point, value, &bad, capped, &mut transcript).is_err());
+
+        let mut bad = proof.clone();
+        bad.caps[0].pop();
+        let mut transcript = Transcript::new(b"basefold-test");
+        assert!(verify(&commitment, &point, value, &bad, capped, &mut transcript).is_err());
+
+        let mut bad = proof;
+        bad.caps[bad.layer_roots.len() - 1][0][0] ^= 1;
+        let mut transcript = Transcript::new(b"basefold-test");
+        assert!(verify(&commitment, &point, value, &bad, capped, &mut transcript).is_err());
+    }
+
+    #[test]
+    fn cap_mismatch_and_height_cap_rejected() {
+        let capped = params().with_cap_height(2);
+        let (commitment, capped_point, capped_value, capped_proof) = prove_with(5, capped);
+        let mut transcript = Transcript::new(b"basefold-test");
+        assert!(verify(
+            &commitment,
+            &capped_point,
+            capped_value,
+            &capped_proof,
+            params(),
+            &mut transcript
+        )
+        .is_err());
+
+        let (commitment, plain_point, plain_value, plain_proof) = prove(5);
+        let mut transcript = Transcript::new(b"basefold-test");
+        assert!(verify(
+            &commitment,
+            &plain_point,
+            plain_value,
+            &plain_proof,
+            capped,
+            &mut transcript
+        )
+        .is_err());
+
+        let too_high = params().with_cap_height(MAX_CAP_HEIGHT + 1);
+        let coeffs = coefficients(3);
+        let state = commit(&coeffs, 4).unwrap();
+        let high_point = point(3);
+        let value = direct_eval(&coeffs, &high_point);
+        let mut transcript = Transcript::new(b"basefold-test");
+        assert!(open(&state, &high_point, value, too_high, &mut transcript).is_err());
+    }
+
+    #[test]
+    fn cap_height_clamps_to_layer_depth() {
+        for n_vars in [1usize, 2, 3] {
+            for cap_height in [0usize, 1, 3, MAX_CAP_HEIGHT] {
+                let capped = params().with_cap_height(cap_height);
+                let (commitment, point, value, proof) = prove_with(n_vars, capped);
+                let mut transcript = Transcript::new(b"basefold-test");
+                verify(&commitment, &point, value, &proof, capped, &mut transcript).unwrap();
+                if cap_height == 0 {
+                    assert_eq!(proof.caps.len(), 0);
+                } else {
+                    assert_eq!(proof.caps.len(), n_vars);
+                }
+            }
+        }
     }
 
     #[test]

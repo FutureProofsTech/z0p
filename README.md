@@ -30,7 +30,7 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
   (~4.95 µs/step, ~202k steps/s), verified in **~2.3 ms**, 206,353 bytes.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 240 unit tests plus three attack suites
+- **Adversarially tested** — 244 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -93,12 +93,14 @@ Full table with methodology: [docs/benchmarks.md](docs/benchmarks.md).
 
 | Multilinear PCS, 1,024 coefficients, `B16 Q40 G20` | Prove | Verify | Commitment + proof |
 |---|---|---|---|
-| BaseFold-style prototype (`basefold`) | 56 ms | 1.1 ms | 127,654 B |
-| Gemini v1 (`gemini`, one opening per layer) | 604 ms | 55 ms | 888,672 B |
+| BaseFold-style prototype (`basefold`) | 44 ms | 1.1 ms | 127,658 B |
+| BaseFold, cap height 4 | 36 ms | 0.9 ms | 80,018 B |
+| Gemini v1 (`gemini`, one opening per layer) | 693 ms | 54 ms | 888,672 B |
 
-The BaseFold row is a prototype (no Merkle caps, not wired into the AIR
-stack); its query paths dominate the wire size. Gemini remains the
-conservative v1 choice for small multilinear instances.
+The BaseFold rows are a prototype (not wired into the AIR stack); optional
+Merkle caps replace the top path steps of every layer with one frontier,
+shrinking the proof by ~37% on this shape. Gemini remains the conservative
+v1 choice for small multilinear instances.
 
 | Primitive | Result |
 |---|---|
@@ -139,7 +141,7 @@ system before an external audit.
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 240 tests across 23 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 244 tests across 23 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 8 vectors: hostile `Params`, decoder bit-flip fuzz, RNG uniformity | this README |
@@ -238,11 +240,12 @@ CHANGELOG.md     release history (Keep a Changelog)
   `3n - 2`; it remains `O(n)`. `basefold.rs` now adds a compact prototype:
   one commitment root, sumcheck reduces `f(r)` to `c(rho)`, and Möbius
   FRI folds reuse the sumcheck challenges. At 1,024 coefficients and the
-  production-shaped `B16 Q40 G20` schedule it proves in 56 ms, verifies
-  in 1.1 ms, and carries 127,654 B, versus Gemini's 604 ms / 55 ms /
-  888,672 B. It is not wired into AIR/STARK yet and needs Merkle caps,
-  decoding fuzz, and an audit; WHIR-style cap batching and self-proving
-  recursion are the next PCS steps.
+  production-shaped `B16 Q40 G20` schedule it proves in 44 ms, verifies
+  in 1.1 ms, and carries 127,658 B; cap height 4 cuts that to 80,018 B
+  and 0.9 ms verify, versus Gemini's 693 ms / 54 ms / 888,672 B. It is
+  not wired into AIR/STARK yet and needs an audit; decoder fuzzing and
+  optional Merkle caps are in place, and WHIR-style cap batching plus
+  self-proving recursion are the next PCS steps.
 - **Programs / zkVM.** Wire the compact PCS into large-table lookups,
   then program execution.
 - **External audit.** The suite, gates, versioned wire format, and pinned

@@ -6,7 +6,10 @@
 //! rather than trust the constructor. Decoders parse untrusted bytes, so each
 //! one is fed truncations, extensions, and single-bit flips.
 
-use z0p::{air, babybear::Field, fold, range, rng::ChaCha20, table, transcript::Transcript};
+use z0p::{
+    air, babybear::Field, basefold, ext4::Ext4, fold, range, rng::ChaCha20, table,
+    transcript::Transcript,
+};
 
 const LABEL: &[u8] = b"hardening";
 
@@ -204,9 +207,41 @@ fn all_decoders_fuzz_never_panic() {
     )
     .unwrap()
     .to_bytes();
+    let basefold_state = basefold::commit(&[1u32, 2, 3, 4].map(Field::new), 4).unwrap();
+    let basefold_commitment = basefold_state.commitment().clone();
+    let basefold_point = [Ext4::ONE; 2];
+    let basefold_proof = basefold::open(
+        &basefold_state,
+        &basefold_point,
+        Ext4::from_base(Field::new(10)),
+        basefold::Params::new(4, 2, 0).unwrap(),
+        &mut Transcript::new(LABEL),
+    )
+    .unwrap();
+    let capped_params = basefold::Params::new(4, 2, 0).unwrap().with_cap_height(1);
+    let capped_proof = basefold::open(
+        &basefold_state,
+        &basefold_point,
+        Ext4::from_base(Field::new(10)),
+        capped_params,
+        &mut Transcript::new(LABEL),
+    )
+    .unwrap();
+    let mut capped_verifier = Transcript::new(LABEL);
+    basefold::verify(
+        &basefold_commitment,
+        &basefold_point,
+        Ext4::from_base(Field::new(10)),
+        &capped_proof,
+        capped_params,
+        &mut capped_verifier,
+    )
+    .unwrap();
+    let basefold_bytes = basefold_proof.to_bytes();
+    let capped_bytes = capped_proof.to_bytes();
 
     let mut seed = 0xdead_beef_1234_5678u64;
-    for stream in [&range_proof, &table_proof] {
+    for stream in [&range_proof, &table_proof, &basefold_bytes, &capped_bytes] {
         for _ in 0..2000 {
             seed = seed
                 .wrapping_mul(6_364_136_223_846_793_005)
@@ -219,6 +254,7 @@ fn all_decoders_fuzz_never_panic() {
             mutated[idx] ^= u8::try_from((seed >> 32) & 0xff).expect("masked to u8");
             let _ = range::Proof::from_bytes(&mutated);
             let _ = table::Proof::from_bytes(&mutated);
+            let _ = basefold::Proof::from_bytes(&mutated);
         }
     }
 }

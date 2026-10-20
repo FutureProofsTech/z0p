@@ -247,6 +247,44 @@ the composition degree (callers size finals accordingly). Query openings
 become uniform and witness-independent; verification is identical, and
 masked false statements still fail.
 
+### 4.7 Multilinear commitments (`gemini`, `basefold` prototype)
+
+For monomial coefficients $c_b$ of a multilinear polynomial $f$, both
+constructions commit the coefficient encoding
+$g_0(X)=\sum_b c_b X^{\mathrm{index}(b)}$ with a Merkle-committed
+Reed--Solomon LDE.
+
+`gemini` folds one variable at a time,
+$g_{i-1}(X)=A_i(X^2)+X B_i(X^2)$, opens each committed layer once with a
+multi-point `upcs` proof, and checks
+$g_i(\beta^2)=A_i(\beta^2)+r_i B_i(\beta^2)$ at a fresh $\beta$.
+The proof has one root plus $n-1$ layer commitments and $n$ opening
+proofs, so it is linear-size.
+
+The experimental `basefold` prototype replaces the per-layer openings
+with sumcheck and one FRI instance. Let
+$w_b=\prod_i r_i^{b_i}$ and
+$w(X)=\prod_i (1+(r_i-1)X_i)$. Sumcheck proves
+$\sum_b c_b w_b=f(r)$ and outputs $c(\rho)$ for a challenge
+$\rho\in\mathbb{F}_{p^4}^n$, where $c(\cdot)$ is the multilinear
+extension of the coefficient table. The prover folds the LDE with the
+Möbius/eq rule
+$(1-\rho_i)E(X)+\rho_i O(X)$ rather than the coefficient-encoding rule
+$E(X)+\rho_i O(X)$, so the final FRI constant is exactly $c(\rho)$.
+The verifier recomputes
+$w(\rho)=\prod_i(1-\rho_i+\rho_i r_i)$ and checks
+$f(r)=c(\rho)w(\rho)$. The proof contains one root, $n-1$ layer roots,
+$3n$ extension-field sumcheck evaluations, and $Q$ queries with one pair
+and one Merkle path per layer per query; paths make the prototype
+$O(Qn^2)$ bytes, not $O(n)$.
+
+At 1,024 coefficients with blowup 16, 40 queries, and 20-bit grinding,
+the prototype proves in about 56 ms, verifies in 1.1 ms, and carries
+127,654 bytes; Gemini on the same shape takes 604 ms / 55 ms and carries
+888,672 bytes. The prototype is not wired into the AIR/STARK stack, has
+no Merkle caps or hiding, and has no end-to-end soundness proof; it must
+not be treated as production-ready.
+
 ## 5. Encodings (normative wire format, `VERSION = 3`)
 
 ```
@@ -292,7 +330,7 @@ cap/path shape pins before hashing; `fri-dims` dimension binding
 (closes proof malleability of echoed dimensions); canonical-only
 decoding; PoW bound to history with queries sampled after.
 
-**Validation.** 226 unit tests (KATs, cross-checks against Horner/`%`,
+**Validation.** 240 unit tests (KATs, cross-checks against Horner/`%`,
 parallel-vs-sequential identity), 13-test security suite and 10-test
 red-team suite (~800 hostile attempts/run, zero acceptances, zero
 panics), wire-exact size assertions on every benchmark, and a
@@ -300,13 +338,14 @@ panics), wire-exact size assertions on every benchmark, and a
 regression vs `tools/baseline.json`).
 
 **Out of scope / stated limits.** Bench shapes (~18 bits) are not
-production soundness; large-table lookups await a compact multilinear
-PCS; vectorized hashing, the one-query recursion fragment, FRI-backed
-univariate point and multi-point openings, and a first Gemini-style
-multilinear PCS (`O(n)` openings, one batched opening per layer) are done;
-compact multilinear FRI/BaseFold,
-self-proving recursion, and a zkVM are roadmap items; no
-external audit has yet been performed.
+production soundness; large-table lookups still await a production
+compact multilinear PCS. Vectorized hashing, the one-query recursion
+fragment, FRI-backed univariate point and multi-point openings, a
+Gemini-style multilinear PCS (`O(n)` openings, one batched opening per
+layer), and a compact BaseFold-style prototype (one root, sumcheck plus
+Möbius FRI folds) are done. The BaseFold module is experimental and not
+wired into AIR/STARK; Merkle caps/WHIR batching, self-proving recursion,
+and a zkVM are roadmap items. No external audit has yet been performed.
 
 ## 8. License
 

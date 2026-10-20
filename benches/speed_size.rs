@@ -1,19 +1,20 @@
 //! Speed + size benchmarks for `z0p` (zero dependencies).
 //!
 //! Run with `cargo bench`. Reports median wall time for prove/verify and
-//! exact wire sizes in bytes (`to_bytes` length, asserted equal every run:
-//! 1-byte version, `u32` counts, 4 B per base field, 16 B per extension
-//! field, 8 B per index/nonce, 32 B per digest, 33 B per Merkle path step).
+//! exact wire sizes in bytes (`to_bytes` length: 1-byte version, `u32`
+//! counts, 4 B per base field, 16 B per extension field, 8 B per
+//! index/nonce, 32 B per digest, 33 B per Merkle path step).
 //!
 //! Every benchmark verifies its proof once outside the timed region, so a
-//! passing run also gates correctness.
+//! passing run also gates correctness. Rows with a separate byte counter
+//! assert that it equals `to_bytes().len()`.
 
 use std::hint::black_box;
 use std::time::Instant;
 
 use z0p::{
-    air, babybear::Field, fold, fri, gf2::F64, hash::blake3_256, lookup, merkle, ntt, range, table,
-    transcript::Transcript,
+    air, babybear::Field, basefold, ext4::Ext4, fold, fri, gemini, gf2::F64, hash::blake3_256,
+    lookup, merkle, ntt, range, table, transcript::Transcript,
 };
 
 /// Median of per-iteration milliseconds over `reps` runs (plus one warmup).
@@ -393,6 +394,107 @@ fn bench_fold() {
     );
 }
 
+fn pcs_point(n_vars: usize) -> Vec<Ext4> {
+    (0..n_vars)
+        .map(|i| {
+            let i = u32::try_from(i).expect("bench point fits u32");
+            Ext4::new(
+                Field::new(i * 5 + 2),
+                Field::new(i * 3 + 1),
+                Field::new(i * 7 + 4),
+                Field::new(i + 6),
+            )
+        })
+        .collect()
+}
+
+fn pcs_value(coeffs: &[Field], point: &[Ext4]) -> Ext4 {
+    let n_vars = point.len();
+    let mut total = Ext4::ZERO;
+    for (index, coefficient) in coeffs.iter().enumerate() {
+        let mut weight = Ext4::ONE;
+        for (variable, coordinate) in point.iter().enumerate() {
+            if (index >> (n_vars - 1 - variable)) & 1 == 1 {
+                weight *= *coordinate;
+            }
+        }
+        total += Ext4::from_base(*coefficient) * weight;
+    }
+    total
+}
+
+fn bench_basefold() {
+    let params = basefold::Params::new(16, 40, 20).expect("params");
+    let coeffs: Vec<Field> = (0..1024u32)
+        .map(|i| Field::new(i.wrapping_mul(0x9e37_79b9) + 17))
+        .collect();
+    let point = pcs_point(10);
+    let value = pcs_value(&coeffs, &point);
+    let mut transcript = Transcript::new(b"bench/basefold");
+    let state = basefold::commit(black_box(&coeffs), params.blowup).expect("commit");
+    let commitment = state.commitment().clone();
+    let proof = basefold::open(&state, &point, value, params, &mut transcript).expect("open");
+    let mut transcript = Transcript::new(b"bench/basefold");
+    basefold::verify(&commitment, &point, value, &proof, params, &mut transcript).expect("verify");
+
+    let prove_ms = median_ms(3, || {
+        let mut transcript = Transcript::new(b"bench/basefold");
+        let state = basefold::commit(black_box(&coeffs), params.blowup).expect("commit");
+        black_box(basefold::open(&state, &point, value, params, &mut transcript).expect("open"));
+    });
+    let verify_ms = median_ms(5, || {
+        let mut transcript = Transcript::new(b"bench/basefold");
+        let ok =
+            basefold::verify(&commitment, &point, value, &proof, params, &mut transcript).is_ok();
+        assert!(ok);
+        black_box(ok);
+    });
+    let bytes = commitment.to_bytes().len() + proof.to_bytes().len();
+    println!(
+        "basefold P1024 B{}Q{}G{}: prove {prove_ms:8.2} ms  verify {verify_ms:8.2} ms  proof {bytes} B ({:.1} KiB)",
+        params.blowup,
+        params.num_queries,
+        params.grinding_bits,
+        kb(bytes)
+    );
+}
+
+fn bench_gemini() {
+    let params = gemini::Params::new(16, 40, 20).expect("params");
+    let coeffs: Vec<Field> = (0..1024u32)
+        .map(|i| Field::new(i.wrapping_mul(0x9e37_79b9) + 17))
+        .collect();
+    let point = pcs_point(10);
+    let value = pcs_value(&coeffs, &point);
+    let mut transcript = Transcript::new(b"bench/gemini");
+    let state = gemini::commit(black_box(&coeffs), params.blowup).expect("commit");
+    let commitment = state.commitment().clone();
+    let proof = gemini::open(&state, &point, value, params, &mut transcript).expect("open");
+    let mut transcript = Transcript::new(b"bench/gemini");
+    gemini::verify(&commitment, &point, value, &proof, params, &mut transcript).expect("verify");
+
+    let prove_ms = median_ms(2, || {
+        let mut transcript = Transcript::new(b"bench/gemini");
+        let state = gemini::commit(black_box(&coeffs), params.blowup).expect("commit");
+        black_box(gemini::open(&state, &point, value, params, &mut transcript).expect("open"));
+    });
+    let verify_ms = median_ms(3, || {
+        let mut transcript = Transcript::new(b"bench/gemini");
+        let ok =
+            gemini::verify(&commitment, &point, value, &proof, params, &mut transcript).is_ok();
+        assert!(ok);
+        black_box(ok);
+    });
+    let bytes = commitment.to_bytes().len() + proof.to_bytes().len();
+    println!(
+        "gemini P1024 B{}Q{}G{}: prove {prove_ms:8.2} ms  verify {verify_ms:8.2} ms  proof {bytes} B ({:.1} KiB)",
+        params.blowup,
+        params.num_queries,
+        params.grinding_bits,
+        kb(bytes)
+    );
+}
+
 fn bench_merkle() {
     let leaves: Vec<Vec<u8>> = (0..65536)
         .map(|i| {
@@ -621,6 +723,8 @@ fn main() {
     run_filtered(&filter, "table", bench_table);
     run_filtered(&filter, "lookup", bench_lookup);
     run_filtered(&filter, "fold", bench_fold);
+    run_filtered(&filter, "basefold", bench_basefold);
+    run_filtered(&filter, "gemini", bench_gemini);
     run_filtered(&filter, "merkle", bench_merkle);
     run_filtered(&filter, "air fib1024", bench_air_big);
     run_filtered(&filter, "fri prod B", bench_fri_production);

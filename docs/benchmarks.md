@@ -2,14 +2,14 @@
 
 Source: `benches/speed_size.rs` (`cargo bench`), release profile, median of
 N runs (plus one warmup). Every benchmark verifies its proof once outside
-the timed region and asserts the byte counter equals `to_bytes().len()`,
-so a passing run also gates correctness and wire stability.
+the timed region. Rows with a separate byte counter also assert it equals
+`to_bytes().len()`, so a passing run gates correctness and wire stability.
 
 - Machine: 16 cores, 31 GB RAM, `cargo`/`rustc 1.99.0`
 - Measured: 2026-10-20
 - Filter partial rows with `BENCH_ROW=substr`, e.g.
   `BENCH_ROW=N65536 cargo bench`
-- `tools/check.py` pins all 19 rows: sizes must match byte-for-byte, times
+- `tools/check.py` pins all 21 rows: sizes must match byte-for-byte, times
   must stay within 3× of `tools/baseline.json`
 
 ## Production shapes (`for_security(100)` — 100-bit query/PoW; Fp4 challenges)
@@ -19,16 +19,16 @@ layer and Merkle cap height.
 
 | Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
 |---|---|---|---|---|
-| `fri prod B16Q40G20C4F16` (poly-256) | 9.57 | 0.74 | 29,378 | 28.7 |
-| `air prod B16Q40G20C4F16` (fib-64) | 17.51 | 1.05 | 35,861 | 35.0 |
-| `fri prod P1024 B16Q40G20C4F16` | 71.36 | 0.93 | 43,174 | 42.2 |
-| `air prod N1024 B16Q40G20C4F16` | 48.94 | 1.21 | 71,373 | 69.7 |
-| `air prod N8192 B16Q40G20C4F32` | 82.19 | 1.62 | 104,033 | 101.6 |
-| `air prod N65536 B16Q40G20C4F16` | 325.90 | 1.98 | 144,441 | 141.1 |
-| `air prod N1048576 B16Q40G20C4F16` | 5,015.14 | 2.31 | 206,353 | 201.5 |
+| `fri prod B16Q40G20C4F16` (poly-256) | 17.34 | 0.76 | 29,378 | 28.7 |
+| `air prod B16Q40G20C4F16` (fib-64) | 14.53 | 0.76 | 35,861 | 35.0 |
+| `fri prod P1024 B16Q40G20C4F16` | 71.37 | 0.95 | 43,174 | 42.2 |
+| `air prod N1024 B16Q40G20C4F16` | 39.31 | 1.22 | 71,373 | 69.7 |
+| `air prod N8192 B16Q40G20C4F32` | 81.12 | 1.62 | 104,033 | 101.6 |
+| `air prod N65536 B16Q40G20C4F16` | 332.03 | 2.09 | 144,441 | 141.1 |
+| `air prod N1048576 B16Q40G20C4F16` | 5,194.42 | 2.32 | 206,353 | 201.5 |
 
-Marginal cost per step (1M row): `5015.14 / 1048576 ≈ 4.78 µs/step`
-(≈209k steps/s). The 20-bit PoW grind is amortized over the trace at
+Marginal cost per step (1M row): `5194.42 / 1048576 ≈ 4.95 µs/step`
+(≈202k steps/s). The 20-bit PoW grind is amortized over the trace at
 scale; on small production rows it dominates run-to-run variance
 (the N8192 row fluctuates ~75–100 ms between runs).
 
@@ -39,17 +39,37 @@ time therefore stays in the low-millisecond range from 1,024 steps to 1M
 steps; earlier revisions spent 0.29 s verifying the 1M-step proof purely
 building that table.
 
+## Compact multilinear PCS (1,024 coefficients)
+
+Both rows open a 10-variable polynomial with blowup 16, 40 queries, and
+20-bit grinding. Gemini is the `O(n)`-opening v1 path with one multi-point
+`upcs` proof per layer. The BaseFold-style prototype commits one root,
+reduces `f(r)` to `c(rho)` with sumcheck, and reuses the sumcheck
+challenges for Möbius FRI folds. It carries no Merkle caps and is not wired
+into the AIR stack; each query still opens one Merkle path per layer, so
+paths dominate its wire size.
+
+| Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
+|---|---|---|---|---|
+| `basefold P1024 B16Q40G20` | 56.37 | 1.13 | 127,654 | 124.7 |
+| `gemini P1024 B16Q40G20` | 604.24 | 55.34 | 888,672 | 867.8 |
+
+BaseFold is ~10× faster to prove, ~49× faster to verify, and ~7× smaller
+on this shape. The comparison is a prototype result, not an audit: the
+sumcheck/FRI composition needs a written soundness argument, and caps or
+WHIR-style batching are required before large tables.
+
 ## Bench shapes (fast, ~18 conjectured bits)
 
 | Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
 |---|---|---|---|---|
-| `fri poly256 B4 Q12` | 0.91 | 0.13 | 11,522 | 11.3 |
+| `fri poly256 B4 Q12` | 1.04 | 0.14 | 11,522 | 11.3 |
 | `air fib64` | 0.88 | 0.17 | 16,305 | 15.9 |
-| `range 16-bit` | 0.39 | 0.09 | 5,217 | 5.1 |
+| `range 16-bit` | 0.44 | 0.09 | 5,217 | 5.1 |
 | `table 4-entry` | 0.33 | 0.06 | 4,673 | 4.6 |
-| `lookup 64-in-16` | 0.29 | 0.19 | 2,897 | 2.8 |
+| `lookup 64-in-16` | 0.29 | 0.20 | 2,897 | 2.8 |
 | `fold 4x8 fib` | 0.74 | 0.22 | 16,845 | 16.5 |
-| `air fib1024` | 5.57 | 0.30 | 29,097 | 28.4 |
+| `air fib1024` | 6.45 | 0.32 | 29,097 | 28.4 |
 
 Lookup's v3 proof is larger than its former base-field form: multiplicities,
 quotients, and four sumcheck proofs now carry 16-byte `Fp4` values
@@ -62,11 +82,11 @@ unchanged by this migration.
 
 | Row | Result |
 |---|---|
-| `blake3 1MiB` | 1.3–2.9 ms (load-dependent) |
-| `gf2 F64 mul` | 281.54 ms for 1M ops (3.6 Mops/s) |
-| `bb field mul` | 6.61 ms for 1M ops (~151 Mops/s) |
+| `blake3 1MiB` | 1.42 ms (load-dependent) |
+| `gf2 F64 mul` | 287.31 ms for 1M ops (3.5 Mops/s) |
+| `bb field mul` | 7.36 ms for 1M ops (~136 Mops/s) |
 | `ntt forward 2^14` | 0.33 ms |
-| `merkle 64k leaves` | 3.73 ms |
+| `merkle 64k leaves` | 3.96 ms |
 
 ## Vectorized hashing (`--features simd`, nightly; v1-era rows)
 
@@ -91,7 +111,7 @@ are the other large prove costs. Builds without the feature are unaffected
 ## Reproduce
 
 ```sh
-cargo bench                          # all 19 rows
+cargo bench                          # all 21 rows
 BENCH_ROW=N1048576 cargo bench       # single scaled row
 BENCH_ROW="air prod" cargo bench     # all production AIR rows
 python3 tools/check.py               # full gates incl. bench regression

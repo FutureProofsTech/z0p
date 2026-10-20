@@ -16,6 +16,24 @@ All notable changes to `z0p` are documented here. The format follows
   ~31 bits to ~124 bits. Recursion was migrated to extension-field
   trace/composition values as well.
 
+- **Compact multilinear PCS prototype (`basefold`).** `src/basefold.rs`
+  adds a BaseFold-style opening for 1..=16 variables: commit the
+  monomial-coefficient encoding with FRI, reduce a claimed evaluation to a
+  coefficient-oracle value with sumcheck, and reuse the sumcheck
+  challenges as Möbius/eq FRI folds. The proof carries one root,
+  `n - 1` layer roots, capped sumcheck rounds, and one pair plus Merkle
+  path per layer per query, with canonical `to_bytes`/`from_bytes`.
+  At 1,024 coefficients on the production-shaped `B16 Q40 G20` schedule:
+  127,654 B, ~56 ms prove, ~1.1 ms verify, versus Gemini v1's 888,672 B,
+  ~604 ms, and ~55 ms. This is an experimental prototype: no Merkle caps,
+  no AIR/STARK wiring, no end-to-end soundness proof, and not audited.
+- **Test count 226 -> 240.** Fourteen `basefold` tests cover honest
+  openings at 1/2/5/8 variables, wrong value/point/commitment, tampered
+  sumcheck/layer/query data, grinding and canonical nonce handling,
+  parameter/domain caps, and codec version/trailer rejection. The
+  benchmark baseline now pins 21 rows (adding `basefold` and a Gemini
+  comparison), and docs report the new numbers.
+
 ### Changed
 - **Wire format v3.** FRI fold values and final-layer values, `upcs`
   opening values/points, and Gemini proofs are `Fp4` (16 bytes per
@@ -24,7 +42,7 @@ All notable changes to `z0p` are documented here. The format follows
   grew in v2 (FRI poly-256 9,170 -> 11,522 B) and the 1M-step AIR proof
   grew 186,961 -> 206,353 B; PCS and lookup proofs grow again in v3.
   `tools/baseline.json` was re-recorded after review. The 1M-step
-  release prove remains ~4.98 s on this box.
+  release prove remains ~5.2 s on this box.
 - **Canonical sumcheck/lookup codecs.** `sumcheck::Proof` and
   `lookup::Proof` now expose `to_bytes`/`from_bytes` under wire version 3,
   with capped nested sumcheck bodies, canonical `Fp4` values, and

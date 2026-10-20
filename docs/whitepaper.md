@@ -73,7 +73,7 @@ Reed–Solomon proximity testing.
    extension-field (`Fp4`) challenges, raising per-challenge algebraic
    bounds to ~124 bits. This is still a conjectured query/PoW schedule,
    not an end-to-end soundness proof.
-5. **Evidence over claims.** 226 unit tests, three adversarial suites
+5. **Evidence over claims.** 240 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught
@@ -120,11 +120,11 @@ Measured, release profile, median of runs (full table:
 
 | Workload (production query/PoW schedule) | Prove | Verify | Size |
 |---|---|---|---|
-| 1,024-step computation | 35 ms | 1.2 ms | 70 KiB |
-| 65,536-step computation | 304 ms | 2.0 ms | 141 KiB |
-| **1,048,576-step computation** | **4.98 s** | **2.6 ms** | **202 KiB** |
+| 1,024-step computation | 39 ms | 1.2 ms | 70 KiB |
+| 65,536-step computation | 332 ms | 2.1 ms | 141 KiB |
+| **1,048,576-step computation** | **5.19 s** | **2.3 ms** | **202 KiB** |
 
-Marginal cost is ~4.75 µs per step (~210k steps/s): proving scales
+Marginal cost is ~4.95 µs per step (~202k steps/s): proving scales
 linearly, verification stays in the low milliseconds *independent of
 computation size* (FRI domain points are derived on demand rather than
 materialized), and proof size grows logarithmically. No GPU, no assembly, no dependencies — this is
@@ -147,9 +147,11 @@ portable scalar-safe-Rust throughput with parallelism over
   panicking. Current standing: zero acceptances, zero panics.
 - **Known limits (stated, not hidden).** Bench defaults are fast but
   weak — production callers must use `for_security`. Table lookups are
-  small-table; a first Gemini-style multilinear PCS exists (`gemini.rs`),
-  but its `O(n)` openings are not compact enough for large tables, so an
-  efficient multilinear FRI is roadmap work.
+  small-table. A first Gemini-style multilinear PCS (`gemini.rs`) and a
+  compact BaseFold-style prototype (`basefold.rs`) exist; the latter is
+  ~7× smaller and ~49× faster to verify at 1,024 coefficients, but it has
+  no Merkle caps, is not wired into the AIR stack, and is unaudited.
+  Production large-table openings still need caps/WHIR-style batching.
   The system has not yet had an external audit; the test suites, gates,
   versioned wire format, and pinned baselines are the pre-audit package.
 
@@ -167,14 +169,19 @@ portable scalar-safe-Rust throughput with parallelism over
    query points. `open_multi` batches up to 16 distinct points behind one
    quotient and one FRI pair. Transparent, non-hiding, cap height `0`; the
    opening primitive for a multilinear PCS.
-4. **Multilinear PCS — first version done.** `gemini.rs` commits the
-   monomial-coefficient encoding and proves `f(r) = y` with Gemini-style
-   fold-chain checks and `upcs` point openings; `commit_evals` applies the
-   Möbius transform. Each layer is opened once with a multi-point proof, so
-   the proof carries `n` openings (not `3n - 2`) and remains `O(n)`;
-   compact multilinear FRI (BaseFold/WHIR) is the next step.
-5. **Programs / zkVM** — compact multilinear PCS, large-table lookups, then
-   general program execution proofs.
+4. **Multilinear PCS — Gemini done, BaseFold prototype done.**
+   `gemini.rs` commits the monomial-coefficient encoding and proves
+   `f(r) = y` with Gemini-style fold-chain checks and `upcs` point
+   openings; `commit_evals` applies the Möbius transform. Each layer is
+   opened once with a multi-point proof, so the proof carries `n` openings
+   (not `3n - 2`) and remains `O(n)`. `basefold.rs` adds the compact
+   recipe: one root, sumcheck reduces `f(r)` to `c(rho)`, and Möbius FRI
+   folds reuse the sumcheck challenges. At 1,024 coefficients it is
+   ~127.7 KB / ~56 ms / ~1.1 ms, versus Gemini's ~888.7 KB / ~604 ms /
+   ~55 ms. It needs Merkle caps, AIR/STARK wiring, and an audit before
+   production use; WHIR-style batching is the next PCS step.
+5. **Programs / zkVM** — wire the compact PCS into large-table lookups,
+   then general program execution proofs.
 6. **External audit** — procurement item; the evidence package is ready.
 
 ## 8. License

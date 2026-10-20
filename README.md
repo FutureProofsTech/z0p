@@ -26,11 +26,11 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
   sizes blowup 16, queries, grinding, final size, and cap height for a
   ~100-bit query/proof-of-work schedule. See [Soundness](#soundness) for
   what that schedule does and does not cover.
-- **Fast at scale** — 1,048,576-step production proof in ~4.98 s
-  (~4.75 µs/step, ~210k steps/s), verified in **~2.6 ms**, 206,353 bytes.
+- **Fast at scale** — 1,048,576-step production proof in ~5.19 s
+  (~4.95 µs/step, ~202k steps/s), verified in **~2.3 ms**, 206,353 bytes.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 226 unit tests plus three attack suites
+- **Adversarially tested** — 240 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -85,21 +85,30 @@ Full table with methodology: [docs/benchmarks.md](docs/benchmarks.md).
 
 | Proof (production query/PoW schedule) | Prove | Verify | Size |
 |---|---|---|---|
-| AIR Fibonacci, 1,024 steps | 49 ms | 1.2 ms | 71,373 B |
-| AIR Fibonacci, 8,192 steps | 82 ms | 1.6 ms | 104,033 B |
-| AIR Fibonacci, 65,536 steps | 326 ms | 2.0 ms | 144,441 B |
-| AIR Fibonacci, **1,048,576 steps** | **4.98 s** | **2.6 ms** | **206,353 B** |
-| FRI poly-1024 | 71 ms | 0.9 ms | 43,174 B |
+| AIR Fibonacci, 1,024 steps | 39 ms | 1.2 ms | 71,373 B |
+| AIR Fibonacci, 8,192 steps | 81 ms | 1.6 ms | 104,033 B |
+| AIR Fibonacci, 65,536 steps | 332 ms | 2.1 ms | 144,441 B |
+| AIR Fibonacci, **1,048,576 steps** | **5.19 s** | **2.3 ms** | **206,353 B** |
+| FRI poly-1024 | 71 ms | 0.95 ms | 43,174 B |
+
+| Multilinear PCS, 1,024 coefficients, `B16 Q40 G20` | Prove | Verify | Commitment + proof |
+|---|---|---|---|
+| BaseFold-style prototype (`basefold`) | 56 ms | 1.1 ms | 127,654 B |
+| Gemini v1 (`gemini`, one opening per layer) | 604 ms | 55 ms | 888,672 B |
+
+The BaseFold row is a prototype (no Merkle caps, not wired into the AIR
+stack); its query paths dominate the wire size. Gemini remains the
+conservative v1 choice for small multilinear instances.
 
 | Primitive | Result |
 |---|---|
 | BLAKE3 1 MiB | ~1.3–2.9 ms (load-dependent) |
-| BabyBear mul | ~151 Mops/s |
+| BabyBear mul | ~136 Mops/s |
 | NTT forward 2¹⁴ | 0.33 ms |
-| Merkle 65,536 leaves | 3.7 ms |
+| Merkle 65,536 leaves | ~4.0 ms |
 
-Proof sizes are deterministic and asserted byte-for-byte against the wire
-format on every benchmark run.
+Proof sizes are deterministic; rows with a separate byte counter assert it
+equals the wire format on every benchmark run.
 
 ## Soundness
 
@@ -130,7 +139,7 @@ system before an external audit.
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 226 tests across 22 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 240 tests across 23 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 8 vectors: hostile `Params`, decoder bit-flip fuzz, RNG uniformity | this README |
@@ -161,6 +170,7 @@ src/
   sumcheck.rs   sumcheck over MLE products
   upcs.rs       FRI-backed univariate commitments + point openings
   gemini.rs     multilinear commitments (Gemini fold chains)
+  basefold.rs   compact multilinear PCS prototype (sumcheck + FRI folds)
   lookup.rs     LogUp-style table membership via sumcheck
   air.rs        Fibonacci AIR/STARK (+ ZK)
   range.rs      range-check AIR (+ ZK)
@@ -220,14 +230,21 @@ CHANGELOG.md     release history (Keep a Changelog)
   distinct points behind one quotient (`(g - I)/Z`) and one FRI pair.
   Transparent, non-hiding (`v1`); cap height must be `0`. This is the
   opening primitive for a multilinear PCS.
-- **Multilinear commitments — first version done.** `gemini.rs` commits
-  the monomial-coefficient encoding and proves `f(r) = y` with Gemini-style
-  fold-chain checks; `commit_evals` applies the Möbius transform. Each
-  layer is opened once with a multi-point `upcs` proof, so the `v1` proof
-  carries `n` openings rather than `3n - 2`; it remains `O(n)`, so compact
-  multilinear FRI (BaseFold/WHIR) is the next step.
-- **Programs / zkVM.** Compact multilinear PCS (unlocks large-table
-  lookups), then program execution.
+- **Multilinear commitments — Gemini done, BaseFold prototype done.**
+  `gemini.rs` commits the monomial-coefficient encoding and proves
+  `f(r) = y` with Gemini-style fold-chain checks; `commit_evals` applies
+  the Möbius transform. Each layer is opened once with a multi-point
+  `upcs` proof, so the `v1` proof carries `n` openings rather than
+  `3n - 2`; it remains `O(n)`. `basefold.rs` now adds a compact prototype:
+  one commitment root, sumcheck reduces `f(r)` to `c(rho)`, and Möbius
+  FRI folds reuse the sumcheck challenges. At 1,024 coefficients and the
+  production-shaped `B16 Q40 G20` schedule it proves in 56 ms, verifies
+  in 1.1 ms, and carries 127,654 B, versus Gemini's 604 ms / 55 ms /
+  888,672 B. It is not wired into AIR/STARK yet and needs Merkle caps,
+  decoding fuzz, and an audit; WHIR-style cap batching and self-proving
+  recursion are the next PCS steps.
+- **Programs / zkVM.** Wire the compact PCS into large-table lookups,
+  then program execution.
 - **External audit.** The suite, gates, versioned wire format, and pinned
   baselines are the pre-audit package.
 

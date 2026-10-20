@@ -12,6 +12,7 @@
 //! - [`fri`]: FRI polynomial-commitment (commit / open / verify).
 //! - [`mle`]: multilinear polynomials in hypercube-evaluation form.
 //! - [`sumcheck`]: interactive sumcheck over [`mle`] products.
+//! - [`basefold`]: prototype compact multilinear FRI+sumcheck commitments.
 //! - [`lookup`]: `LogUp`-style table-membership argument via [`sumcheck`].
 //! - [`air`]: minimal Fibonacci AIR/STARK end-to-end over [`fri`].
 //! - [`range`]: range-check AIR (bit decomposition over committed columns).
@@ -73,6 +74,7 @@
 
 pub mod air;
 pub mod babybear;
+pub mod basefold;
 pub mod blind;
 mod codec;
 pub mod error;

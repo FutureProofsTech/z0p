@@ -22,10 +22,11 @@
 We present \textbf{z0p}, a complete zero-knowledge proving stack implemented
 from first principles in safe Rust with no dependencies beyond the compiler
 and the operating system. Binary fields, the BabyBear prime field, BLAKE3,
-Merkle trees, a parallel NTT, an arity-4 FRI polynomial commitment, and four
+Merkle trees, a parallel NTT, an arity-4 FRI polynomial commitment, four
 STARK systems (Fibonacci AIR, range checks, table membership, and hash-folded
-IVC, plus LogUp lookups and zero-knowledge masking throughout) are all owned
-by a single crate under \texttt{\#![forbid(unsafe\_code)]}. The system is
+IVC), LogUp lookups, zero-knowledge masking, and a compact multilinear PCS
+prototype are all owned by a single crate under
+\texttt{\#![forbid(unsafe\_code)]}. The system is
 transparent (no trusted setup) and hash-based, hence plausibly
 post-quantum. Production parameters target a $\approx 100$-bit
 query/proof-of-work schedule (rate $1/16$, 40 queries, 20-bit grinding).
@@ -33,9 +34,9 @@ FRI folds, STARK composition batches, \texttt{upcs}/Gemini points and
 betas, sumcheck rounds, and lookup identities draw challenges from a
 quartic extension $\mathbb{F}_{p^4}$, raising per-challenge algebraic
 bounds to $\approx 124$ bits (see Section~\ref{sec:security}). Measured on a
-16-core machine, a 1,048,576-step computation proves in 4.98~s
-($\approx 4.75\,\mu$s/step), verifies in 2.6~ms, with a 206,353-byte proof.
-Validation combines 226 unit tests with three adversarial suites
+16-core machine, a 1,048,576-step computation proves in 5.19~s
+($\approx 4.95\,\mu$s/step), verifies in 2.3~ms, with a 206,353-byte proof.
+Validation combines 240 unit tests with three adversarial suites
 ($\approx 800$ hostile attempts per run, zero acceptances, zero panics),
 wire-exact size assertions on every benchmark, and machine-checked
 regression gates.
@@ -64,7 +65,7 @@ grinding, final layer, and cap height jointly optimized for a
 $\approx 100$-bit query/PoW schedule. All algebraic challenges use a
 quartic extension field.
 \item Competitive scalar performance with parallelism over
-\texttt{std::thread} only: 1M-step proofs at $\approx 210$k steps/s,
+\texttt{std::thread} only: 1M-step proofs at $\approx 202$k steps/s,
 millisecond verification, logarithmically growing proofs.
 \item Adversarial validation as a first-class artifact: every forgery
 class we could construct is tested continuously, including a fuzzer that
@@ -241,7 +242,7 @@ check at true folded points; cap/path shape pins before hashing;
 \texttt{fri-dims} dimension binding; canonical-only decoding; PoW
 bound to history with queries sampled after.
 
-\paragraph{Adversarial validation.} Three layers: 226 unit tests
+\paragraph{Adversarial validation.} Three layers: 240 unit tests
 (KATs, Horner cross-checks, parallel-vs-sequential identity); a
 13-vector security suite (tampering of every query/fold/value/path/
 digest, 300 single-bit-flip fuzz trials, PoW forgery, rate gates both
@@ -267,36 +268,45 @@ domain points, Merkle caps. Measured 2026-10-20, release, medians,
 \toprule
 Workload (production query/PoW schedule) & Prove & Verify & Size \\
 \midrule
-AIR 1,024 steps & 35\,ms & 1.2\,ms & 71,373\,B \\
-AIR 8,192 steps & 107\,ms & 1.6\,ms & 104,033\,B \\
-AIR 65,536 steps & 304\,ms & 2.0\,ms & 144,441\,B \\
-AIR \textbf{1,048,576} steps & \textbf{4.98\,s} & \textbf{2.6\,ms} & \textbf{206,353\,B} \\
-FRI poly-1024 & 62\,ms & 0.9\,ms & 43,174\,B \\
+AIR 1,024 steps & 39\,ms & 1.2\,ms & 71,373\,B \\
+AIR 8,192 steps & 81\,ms & 1.6\,ms & 104,033\,B \\
+AIR 65,536 steps & 332\,ms & 2.1\,ms & 144,441\,B \\
+AIR \textbf{1,048,576} steps & \textbf{5.19\,s} & \textbf{2.3\,ms} & \textbf{206,353\,B} \\
+FRI poly-1024 & 71\,ms & 0.95\,ms & 43,174\,B \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Marginal cost $\approx 4.75\,\mu$s/step ($\approx 210$k steps/s);
-proof sizes are deterministic and asserted byte-for-byte every run.
+Marginal cost $\approx 4.95\,\mu$s/step ($\approx 202$k steps/s);
+proof sizes are deterministic and checked against the wire format every run.
 Verification is size-independent: each FRI domain point is derived on
 demand in $O(\log)$ field operations rather than from a materialized
 $O(\mathrm{lde})$ layer table, so verify stays in the low milliseconds
 from $1{,}024$ to $1{,}048{,}576$ steps. Primitives: BLAKE3 1\,MiB in
-1.57\,ms, BabyBear $\approx 135$\,Mops/s, NTT $2^{14}$ in 0.37\,ms,
-64k-leaf Merkle tree in 3.47\,ms.
+1.42\,ms, BabyBear $\approx 136$\,Mops/s, NTT $2^{14}$ in 0.33\,ms,
+64k-leaf Merkle tree in 3.96\,ms.
+
+\paragraph{Compact multilinear PCS prototype.} On 1,024 coefficients with
+blowup 16, 40 queries, and 20-bit grinding, the BaseFold-style prototype
+proves in 56\,ms, verifies in 1.1\,ms, and produces a 127,654-byte proof;
+the Gemini v1 construction on the same shape takes 604\,ms / 55\,ms and
+888,672 bytes. The prototype commits one root, reduces $f(r)$ to
+$c(\rho)$ with sumcheck, and uses Möbius FRI folds. It has no Merkle caps,
+is not wired into the AIR stack, and has no end-to-end soundness proof;
+treat these numbers as an engineering result, not an audit.
 
 \section{Limitations and future work}
 
 Bench defaults are fast but weak and must not be mistaken for
-production soundness; large-table lookups await a compact multilinear
-PCS. Vectorized hashing and the one-query recursion fragment are complete,
-FRI-backed univariate point and multi-point openings are in place, and a
-first Gemini-style multilinear PCS exists (one batched opening per layer,
-linear size); compact
-multilinear FRI/BaseFold, self-proving recursion, and a zkVM remain
-roadmap items. No
-external audit has yet been performed, for which the suites, gates,
-versioned wire format, and pinned baselines are the evidence package.
+production soundness; large-table lookups still await a production
+compact multilinear PCS. Vectorized hashing and the one-query recursion
+fragment are complete, FRI-backed univariate point and multi-point
+openings are in place, and Gemini plus a compact BaseFold-style prototype
+exist (one root, sumcheck plus Möbius FRI folds). The prototype is
+experimental and not wired into AIR/STARK; Merkle caps/WHIR batching,
+self-proving recursion, and a zkVM remain roadmap items. No external
+audit has yet been performed, for which the suites, gates, versioned wire
+format, and pinned baselines are the evidence package.
 
 \bibliographystyle{plain}
 \begin{thebibliography}{9}

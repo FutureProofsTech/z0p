@@ -6,6 +6,14 @@ All notable changes to `z0p` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-20
+
+### Fixed
+- Rustdoc: replaced a link to the crate-private `sumcheck::verify_final`
+  helper with inline code so `cargo doc --no-deps` passes with
+  `-D warnings`.
+- `tools/check.py`: added the rustdoc gate used by CI.
+
 ## [0.2.0] - 2026-10-20
 
 ### Added
@@ -339,6 +347,7 @@ All notable changes to `z0p` are documented here. The format follows
   and security documentation.
 - Platinum gates: `tools/check.py` with a pinned `tools/baseline.json`.
 
-[Unreleased]: https://github.com/FutureProofsTech/z0p/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/FutureProofsTech/z0p/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/FutureProofsTech/z0p/releases/tag/v0.2.1
 [0.2.0]: https://github.com/FutureProofsTech/z0p/releases/tag/v0.2.0
 [0.1.0]: https://github.com/FutureProofsTech/z0p/releases/tag/v0.1.0

@@ -18,7 +18,7 @@
 //! from them (`O(n)` openings), and [`crate::basefold`] supplies compact
 //! multilinear point openings. Committed-oracle sumcheck remains roadmap
 //! work; protocols such as [`crate::lookup_pcs`] replay the round chain with
-//! the crate-private [`verify_final`] helper and bind each final value with a
+//! the crate-private `verify_final` helper and bind each final value with a
 //! `BaseFold` opening. Sumcheck soundness below assumes a binding oracle.
 //! Round challenges are drawn from [`Ext4`], so the per-round algebraic error
 //! is bounded by roughly `degree / p^4`.

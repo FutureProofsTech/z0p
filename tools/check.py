@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Platinum gates for z0p: fmt, clippy, tests, and bench regression.
+"""Platinum gates for z0p: fmt, rustdoc, clippy, tests, and bench regression.
 
 Usage:
     tools/check.py            run every gate; fail on any regression
     tools/check.py --update   re-record tools/baseline.json from this machine
 
 Rules (see README in this file's header for rationale):
-  * fmt/clippy/tests must pass exactly.
+  * fmt/rustdoc/clippy/tests must pass exactly.
   * Proof sizes must match the baseline byte-for-byte. Sizes are
     deterministic (pure integer math plus hashes; thread-count
     independent), so any mismatch means the wire format or the tuned
@@ -19,6 +19,7 @@ Rules (see README in this file's header for rationale):
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -34,9 +35,11 @@ FULL_ROW = re.compile(
 TIME_ROW = re.compile(r"^(.+?)\s*:\s*([\d.]+)\s+ms")
 
 
-def run(cmd):
+def run(cmd, env=None):
     print(f"$ {' '.join(cmd)}", flush=True)
-    result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+    result = subprocess.run(
+        cmd, cwd=ROOT, capture_output=True, text=True, env=env
+    )
     return result
 
 
@@ -47,6 +50,18 @@ def gate_fmt():
         print(result.stdout[-2000:])
         return False
     print("ok: fmt")
+    return True
+
+
+def gate_doc():
+    env = os.environ.copy()
+    env["RUSTDOCFLAGS"] = "-D warnings"
+    result = run(["cargo", "doc", "--no-deps"], env=env)
+    if result.returncode != 0:
+        print("FAIL: cargo doc")
+        print((result.stdout + result.stderr)[-3000:])
+        return False
+    print("ok: rustdoc")
     return True
 
 
@@ -144,7 +159,13 @@ def gate_bench(update):
 
 def main():
     update = "--update" in sys.argv
-    gates = [gate_fmt(), gate_clippy(), gate_tests("debug"), gate_tests("release")]
+    gates = [
+        gate_fmt(),
+        gate_doc(),
+        gate_clippy(),
+        gate_tests("debug"),
+        gate_tests("release"),
+    ]
     gates.append(gate_bench(update))
     if all(gates):
         print("ALL GATES PASS")

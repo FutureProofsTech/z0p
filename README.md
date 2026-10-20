@@ -185,6 +185,7 @@ system before an external audit.
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 9 vectors: hostile `Params` (incl. VM), decoder bit-flip fuzz, RNG uniformity | this README |
+| `fuzz/decode` | coverage-guided decoder + canonical round-trip (dev-only harness) | [fuzz/README.md](fuzz/README.md) |
 
 Every forgery attempt is rejected; hostile input fails closed with `Err`
 (never panics); honest proofs always verify. Past findings and their fixes
@@ -234,6 +235,9 @@ tools/
   check.py      platinum gates · baseline.json  pinned regression table
   check_links.py    relative Markdown link checker
   release_check.py  version/changelog/tag consistency check
+fuzz/
+  fuzz_targets/decode.rs  coverage-guided decoder round-trip target
+  README.md               local fuzzing instructions and scope
 .github/
   workflows/ci.yml  fmt, links, tests, MSRV, rustdoc, release-tag gates
 docs/

@@ -36,7 +36,7 @@ The adversary capabilities and out-of-scope threats are in
    transition/boundary constraints and public-input binding.
 6. **Masking** (`blind`, `rng`): randomness budget, seed handling, and the
    documented non-hiding surfaces.
-7. **Adversarial suites** (`tests/`): map each fix or invariant to a
+7. **Adversarial suites** (`tests/`, `fuzz/`): map each fix or invariant to a
    regression test before reviewing performance.
 
 ## Reproduce the gates
@@ -69,7 +69,9 @@ tests, 10 red-team tests, and 5 doc tests.
   revealed 64-byte values; paths and caps are shape-checked before hashing.
 - **Fail-closed decoding**: canonical field elements, bounded counts, no
   trailing bytes, no allocation before limits are checked.
-- **No `unsafe` and no dependencies**: enforced by the manifest and CI.
+- **No `unsafe` and no runtime dependencies**: enforced by the manifest and
+  CI. The optional `fuzz/` harness is a separate dev-only package and is not
+  linked into the library.
 
 ## Evidence
 
@@ -82,6 +84,8 @@ tests, 10 red-team tests, and 5 doc tests.
 - [CHANGELOG.md](CHANGELOG.md) — wire-format history and fixes.
 - [RELEASING.md](RELEASING.md) — how tagged builds are produced and what a
   tag implies.
+- [fuzz/README.md](fuzz/README.md) — coverage-guided decoder round-trip
+  harness; run locally with nightly + cargo-fuzz.
 
 ## Known limitations
 

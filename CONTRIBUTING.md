@@ -5,8 +5,9 @@ below keep it auditable.
 
 ## Ground rules
 
-- **No dependencies.** `cargo tree` must stay a single node. Standard library
-  and the compiler only.
+- **No runtime dependencies.** `cargo tree` in the repository root must stay a
+  single node. Standard library and the compiler only. The separate `fuzz/`
+  harness is dev-only and is not part of the library graph.
 - **No `unsafe`.** `#![forbid(unsafe_code)]` is load-bearing.
 - **From-zero.** Fields, hash, Merkle, NTT, FRI, and the proof systems are
   implemented in-crate, not wrapped.
@@ -41,7 +42,9 @@ are not pinned by a v4 lockfile.
 ## Adding a security test
 
 Attack vectors go in `tests/security.rs` or `tests/redteam.rs`; parameter
-abuse and decoder fuzzing go in `tests/hardening.rs`. Each vector should:
+abuse and decoder fuzzing go in `tests/hardening.rs`. For deeper exploration,
+run the coverage-guided decoder target (see [fuzz/README.md](fuzz/README.md)).
+Each vector should:
 
 1. print its name, attempt count, and rejection count,
 2. assert 100% rejection (a single acceptance fails the suite),

@@ -10,3 +10,10 @@ Cargo.lock
 *.fdb_latexmk
 *.synctex.gz
 *.toc
+
+# cargo-fuzz output; the harness lockfile is committed for reproducibility
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/
+!fuzz/Cargo.lock

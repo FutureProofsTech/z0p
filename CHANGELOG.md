@@ -11,6 +11,8 @@ All notable changes to `z0p` are documented here. The format follows
   releases and version/tag consistency checks.
 - An explicit project-status banner and an audit review order covering the
   encoding, algebra, commitment, polynomial, statement, and masking layers.
+- `fuzz/decode`: a coverage-guided, dev-only harness for every public
+  decoder, including a canonical `to_bytes`/`from_bytes` round-trip check.
 
 ### Changed
 - README, CONTRIBUTING, and AUDIT now document the rustdoc gate added in

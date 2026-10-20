@@ -35,9 +35,9 @@ FRI folds, STARK composition batches, \texttt{upcs}/Gemini points and
 betas, sumcheck rounds, and lookup identities draw challenges from a
 quartic extension $\mathbb{F}_{p^4}$, raising per-challenge algebraic
 bounds to $\approx 124$ bits (see Section~\ref{sec:security}). Measured on a
-16-core machine, a 1,048,576-step computation proves in 5.19~s
-($\approx 4.95\,\mu$s/step), verifies in 2.3~ms, with a 206,353-byte proof.
-Validation combines 266 unit tests with three adversarial suites
+16-core machine, a 1,048,576-step computation proves in 1.76~s
+($\approx 1.68\,\mu$s/step), verifies in 2.2~ms, with a 203,553-byte proof.
+Validation combines 267 unit tests with three adversarial suites
 ($\approx 800$ hostile attempts per run, zero acceptances, zero panics),
 wire-exact size assertions on every benchmark, and machine-checked
 regression gates.
@@ -66,7 +66,7 @@ grinding, final layer, and cap height jointly optimized for a
 $\approx 100$-bit query/PoW schedule. All algebraic challenges use a
 quartic extension field.
 \item Competitive scalar performance with parallelism over
-\texttt{std::thread} only: 1M-step proofs at $\approx 202$k steps/s,
+\texttt{std::thread} only: 1M-step proofs at $\approx 596$k steps/s,
 millisecond verification, logarithmically growing proofs.
 \item Adversarial validation as a first-class artifact: every forgery
 class we could construct is tested continuously, including a fuzzer that
@@ -112,13 +112,14 @@ enforced everywhere. Vanishing polynomial $Z_H(x) = x^N - 1$.
 \paragraph{Hash and Merkle trees.} Unkeyed BLAKE3-256, implemented from
 the specification and validated against reference vectors including
 chunk boundaries. Trees use
-$\mathrm{leaf}(d) = H(0x00\|d)$,
-$\mathrm{node}(l,r) = H(0x01\|l\|r)$ (second-preimage resistant).
+$\mathrm{leaf}(d) = H(0x00\|d)$ and
+$\mathrm{node}(l,r) = H(0x01\|l\|r)$ for column trees
+(second-preimage resistant). FRI layers commit one 64-byte leaf per
+quad and AIR trace layers one 64-byte leaf per eight joint rows, using
+standard BLAKE3 for the leaf digest and the same internal-node hash.
 \emph{Caps} expose an upper tree layer in the commitment so openings
-carry only middle path segments: column trees drop
-$\min(h,\mathrm{depth})$ levels, FRI quad layers
-$\min(h,\mathrm{depth}-2)$ (the verifier rebuilds the bottom two
-levels from revealed values).
+carry only middle path segments; FRI quad and AIR trace trees drop
+$\min(h,\mathrm{depth})$ over their 64-byte-leaf counts.
 
 \paragraph{Transcripts.} Append-only, length-prefix-framed Fiat--Shamir
 transcript with a full domain-separation schedule (FRI:
@@ -149,7 +150,8 @@ $A + r_0B + r_1C + r_2D$ with fresh challenges
 $r_i \in \mathbb{F}_{p^4}$ (values embed base-field elements in the first
 coordinate), quartering the degree; point inverses are batch-inverted
 once per layer and folding is multi-threaded. Proofs carry the final layer in the clear plus, per
-query, all four values of every folded quad with middle path segments.
+query, all four values of every folded quad with middle path segments;
+each leaf hashes the canonical 64-byte encoding of its four values.
 The verifier replays the transcript, checks dimensions, rate, cap
 shapes, and PoW, verifies the final layer by divided differences
 against residual bound $\mathrm{bound} \gg 2f$, then checks every
@@ -254,7 +256,7 @@ and masked false statements still fail.
 
 \section{Encodings and parameters}
 
-Wire format (\texttt{VERSION}~=~4): counts as $u32$, dimensions as
+Wire format (\texttt{VERSION}~=~5): counts as $u32$, dimensions as
 $u64$, base fields as 4 canonical bytes and extension values as 16
 canonical bytes ($<p$ per coordinate), digests as 32 bytes, direction
 bits $0/1$. Lookup and sumcheck proofs use the same framing, with
@@ -277,7 +279,7 @@ check at true folded points; cap/path shape pins before hashing;
 \texttt{fri-dims} dimension binding; canonical-only decoding; PoW
 bound to history with queries sampled after.
 
-\paragraph{Adversarial validation.} Three layers: 266 unit tests
+\paragraph{Adversarial validation.} Three layers: 267 unit tests
 (KATs, Horner cross-checks, parallel-vs-sequential identity); a
 13-vector security suite (tampering of every query/fold/value/path/
 digest, 300 single-bit-flip fuzz trials, PoW forgery, rate gates both
@@ -303,23 +305,23 @@ domain points, Merkle caps. Measured 2026-10-20, release, medians,
 \toprule
 Workload (production query/PoW schedule) & Prove & Verify & Size \\
 \midrule
-AIR 1,024 steps & 39\,ms & 1.2\,ms & 71,373\,B \\
-AIR 8,192 steps & 81\,ms & 1.6\,ms & 104,033\,B \\
-AIR 65,536 steps & 332\,ms & 2.1\,ms & 144,441\,B \\
-AIR \textbf{1,048,576} steps & \textbf{5.19\,s} & \textbf{2.3\,ms} & \textbf{206,353\,B} \\
-FRI poly-1024 & 71\,ms & 0.95\,ms & 43,174\,B \\
+AIR 1,024 steps & 42\,ms & 0.86\,ms & 68,573\,B \\
+AIR 8,192 steps & 54\,ms & 1.2\,ms & 101,233\,B \\
+AIR 65,536 steps & 138\,ms & 1.7\,ms & 141,641\,B \\
+AIR \textbf{1,048,576} steps & \textbf{1.76\,s} & \textbf{2.2\,ms} & \textbf{203,553\,B} \\
+FRI poly-1024 & 27\,ms & 0.68\,ms & 43,174\,B \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Marginal cost $\approx 4.95\,\mu$s/step ($\approx 202$k steps/s);
+Marginal cost $\approx 1.68\,\mu$s/step ($\approx 596$k steps/s);
 proof sizes are deterministic and checked against the wire format every run.
 Verification is size-independent: each FRI domain point is derived on
 demand in $O(\log)$ field operations rather than from a materialized
 $O(\mathrm{lde})$ layer table, so verify stays in the low milliseconds
 from $1{,}024$ to $1{,}048{,}576$ steps. Primitives: BLAKE3 1\,MiB in
-1.42\,ms, BabyBear $\approx 136$\,Mops/s, NTT $2^{14}$ in 0.33\,ms,
-64k-leaf Merkle tree in 3.96\,ms.
+2.24\,ms, BabyBear $\approx 150$\,Mops/s, NTT $2^{14}$ in 0.33\,ms,
+64k-leaf Merkle tree in 4.45\,ms.
 
 \paragraph{Compact multilinear PCS prototype.} On 1,024 coefficients with
 blowup 16, 40 queries, and 20-bit grinding, the BaseFold-style prototype

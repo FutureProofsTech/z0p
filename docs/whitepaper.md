@@ -77,7 +77,7 @@ hash function and Reed–Solomon proximity testing.
    extension-field (`Fp4`) challenges, raising per-challenge algebraic
    bounds to ~124 bits. This is still a conjectured query/PoW schedule,
    not an end-to-end soundness proof.
-5. **Evidence over claims.** 266 unit tests, three adversarial suites
+5. **Evidence over claims.** 267 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught
@@ -105,8 +105,9 @@ accept / reject
   fast NTTs and 4-byte elements.
 - **Hash layer.** BLAKE3-256 from the specification, KAT-validated
   against reference vectors including chunk boundaries. Domain-separated
-  Merkle trees (leaf `0x00`, node `0x01`), capped commitments that trade
-  a few cap digests for much shorter query paths.
+  Merkle trees (column leaves `0x00`, internal nodes `0x01`; FRI and AIR
+  trace trees use standard BLAKE3 over 64-byte leaves), capped
+  commitments that trade a few cap digests for much shorter query paths.
 - **Commitment layer.** FRI with arity-4 degree-quartering folds, batch
   inversion, parallel folding, Merkle caps, and proof-of-work grinding
   that converts prover effort directly into soundness bits.
@@ -124,11 +125,11 @@ Measured, release profile, median of runs (full table:
 
 | Workload (production query/PoW schedule) | Prove | Verify | Size |
 |---|---|---|---|
-| 1,024-step computation | 39 ms | 1.2 ms | 70 KiB |
-| 65,536-step computation | 332 ms | 2.1 ms | 141 KiB |
-| **1,048,576-step computation** | **5.19 s** | **2.3 ms** | **202 KiB** |
+| 1,024-step computation | 42 ms | 0.86 ms | 67 KiB |
+| 65,536-step computation | 138 ms | 1.7 ms | 138 KiB |
+| **1,048,576-step computation** | **1.76 s** | **2.2 ms** | **199 KiB** |
 
-Marginal cost is ~4.95 µs per step (~202k steps/s): proving scales
+Marginal cost is ~1.68 µs per step (~596k steps/s): proving scales
 linearly, verification stays in the low milliseconds *independent of
 computation size* (FRI domain points are derived on demand rather than
 materialized), and proof size grows logarithmically. No GPU, no assembly, no dependencies — this is

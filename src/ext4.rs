@@ -109,13 +109,11 @@ impl Ext4 {
         let c = [self.0[2], self.0[3]];
         let d = [other.0[2], other.0[3]];
         let ac = fp2_mul(a, b);
-        let bd_u = fp2_mul_u(fp2_mul(c, d));
-        Self([
-            ac[0] + bd_u[0],
-            ac[1] + bd_u[1],
-            fp2_mul(a, d)[0] + fp2_mul(c, b)[0],
-            fp2_mul(a, d)[1] + fp2_mul(c, b)[1],
-        ])
+        let bd = fp2_mul(c, d);
+        // Karatsuba for the cross term: one F_p2 multiply instead of two.
+        let cross = fp2_sub(fp2_sub(fp2_mul(fp2_add(a, c), fp2_add(b, d)), ac), bd);
+        let bd_u = fp2_mul_u(bd);
+        Self([ac[0] + bd_u[0], ac[1] + bd_u[1], cross[0], cross[1]])
     }
 
     /// Multiply by an embedded base-field scalar (four base multiplications).
@@ -193,16 +191,22 @@ impl Ext4 {
 /// Multiply two `F_p2` elements `(a0 + a1 u)(b0 + b1 u)`.
 #[inline]
 fn fp2_mul(x: [Field; 2], y: [Field; 2]) -> [Field; 2] {
-    [
-        x[0] * y[0] + x[1] * y[1] * NONRESIDUE,
-        x[0] * y[1] + x[1] * y[0],
-    ]
+    let real = x[0] * y[0];
+    let imag = x[1] * y[1];
+    let cross = (x[0] + x[1]) * (y[0] + y[1]) - real - imag;
+    [real + imag * NONRESIDUE, cross]
 }
 
 /// Multiply an `F_p2` element by `u` (`u^2 = 11`).
 #[inline]
 fn fp2_mul_u(x: [Field; 2]) -> [Field; 2] {
     [x[1] * NONRESIDUE, x[0]]
+}
+
+/// Add two `F_p2` elements.
+#[inline]
+fn fp2_add(x: [Field; 2], y: [Field; 2]) -> [Field; 2] {
+    [x[0] + y[0], x[1] + y[1]]
 }
 
 /// Subtract two `F_p2` elements.

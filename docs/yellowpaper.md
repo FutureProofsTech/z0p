@@ -66,17 +66,22 @@ merge-while-even stacking. Validated against reference vectors
 ### 2.2 Merkle trees
 
 Binary trees, leaves padded by duplicating the last leaf to a power of
-two. Domain separation (second-preimage resistance):
+two. Column trees domain-separate leaves and internal nodes:
 
 $$\mathrm{leaf}(d) = H(0x00 \,\|\, d), \qquad
   \mathrm{node}(l, r) = H(0x01 \,\|\, l \,\|\, r).$$
 
+FRI layers commit one 64-byte leaf per quad (four canonical 16-byte
+$\mathbb{F}_{p^4}$ values) and AIR trace layers commit one 64-byte leaf
+per eight joint rows; both use standard BLAKE3 for the leaf digest and
+the same $0x01$ internal-node hash.
+
 **Caps.** `cap(dropped)` exposes the layer at depth
 $\mathrm{depth} - \mathrm{dropped}$ ($2^{\mathrm{dropped}}$ digests) in
 the commitment; openings then carry only the middle path segment.
-Column trees drop $\min(h, \mathrm{depth})$; FRI quad layers drop
-$\min(h, \mathrm{depth}-2)$ (the verifier rebuilds the bottom two
-levels from the four revealed values).
+Column trees drop $\min(h, \mathrm{depth})$; FRI quad and AIR trace
+trees drop $\min(h, \mathrm{depth})$ over their 64-byte-leaf counts
+(the verifier hashes the revealed leaf and follows the remaining path).
 
 ### 2.3 Fiat–Shamir transcript
 
@@ -134,8 +139,8 @@ layer. Each fold quarters the degree.
 
 `Proof { final_poly, queries, pow_nonce }`, where each query opens all
 four $\mathbb{F}_{p^4}$ values (16 bytes each) of every folded quad plus
-the middle Merkle path segment; leaves hash the canonical 16-byte
-encoding.
+the middle Merkle path segment; each leaf hashes the canonical 64-byte
+encoding of its four $\mathbb{F}_{p^4}$ values.
 The verifier:
 
 1. checks dimensions, the rate gate, cap shapes ($2^{\mathrm{drop}}$
@@ -330,7 +335,7 @@ larger masked LDE. The program and output remain public, execution is
 straight-line, and control flow, memory, instruction privacy, and a
 general zkVM remain future work.
 
-## 5. Encodings (normative wire format, `VERSION = 4`)
+## 5. Encodings (normative wire format, `VERSION = 5`)
 
 ```
 proof      := VERSION || body
@@ -375,7 +380,7 @@ cap/path shape pins before hashing; `fri-dims` dimension binding
 (closes proof malleability of echoed dimensions); canonical-only
 decoding; PoW bound to history with queries sampled after.
 
-**Validation.** 266 unit tests (KATs, cross-checks against Horner/`%`,
+**Validation.** 267 unit tests (KATs, cross-checks against Horner/`%`,
 parallel-vs-sequential identity), 13-test security suite and 10-test
 red-team suite (~800 hostile attempts/run, zero acceptances, zero
 panics), wire-exact size assertions on every benchmark, and a

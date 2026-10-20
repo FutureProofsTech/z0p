@@ -81,8 +81,8 @@ fn air_proof_bytes(proof: &air::Proof) -> usize {
         + fri_commitment_body_bytes(&proof.fri_commitment)
         + fri_proof_body_bytes(&proof.fri_proof);
     for opening in &proof.openings {
-        // Index, four fields, base path, shifted path (both counted).
-        total += 8 + 16 + 4 + path_bytes(&opening.path) + 4 + path_bytes(&opening.shift_path);
+        // Index, four fields, both paths, and two 64-byte packed leaves.
+        total += 8 + 16 + 4 + path_bytes(&opening.path) + 4 + path_bytes(&opening.shift_path) + 128;
     }
     total
 }

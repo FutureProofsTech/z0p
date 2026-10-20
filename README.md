@@ -21,17 +21,19 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
 - **Extension-field challenges** — FRI folds, STARK composition batches,
   `upcs`/Gemini points and betas, sumcheck rounds, and lookup identities
   use `Fp4 = Fp[v,u]/(v²-u, u²-11)` over BabyBear, raising algebraic
-  challenge entropy from ~31 bits to ~124 bits. Wire format v4 stores
-  extension values canonically (16 bytes).
+  challenge entropy from ~31 bits to ~124 bits. Wire format v5 stores
+  extension values canonically (16 bytes); FRI commits four values per
+  64-byte leaf and the AIR trace commits eight joint rows per leaf.
 - **Production parameter sizing** — `Params::for_security(steps, …, 100)`
   sizes blowup 16, queries, grinding, final size, and cap height for a
   ~100-bit query/proof-of-work schedule. See [Soundness](#soundness) for
   what that schedule does and does not cover.
-- **Fast at scale** — 1,048,576-step production proof in ~5.19 s
-  (~4.95 µs/step, ~202k steps/s), verified in **~2.3 ms**, 206,353 bytes.
+- **Fast at scale** — 1,048,576-step production proof in **~1.76 s**
+  (~1.68 µs/step, ~596k steps/s), verified in **~2.2 ms**, 203,553 bytes.
+  `--features simd` on nightly brings the same row to **~1.56 s**.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 266 unit tests plus three attack suites
+- **Adversarially tested** — 267 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -86,17 +88,17 @@ Full table with methodology: [docs/benchmarks.md](docs/benchmarks.md).
 
 | Proof (production query/PoW schedule) | Prove | Verify | Size |
 |---|---|---|---|
-| AIR Fibonacci, 1,024 steps | 39 ms | 1.2 ms | 71,373 B |
-| AIR Fibonacci, 8,192 steps | 81 ms | 1.6 ms | 104,033 B |
-| AIR Fibonacci, 65,536 steps | 332 ms | 2.1 ms | 144,441 B |
-| AIR Fibonacci, **1,048,576 steps** | **5.19 s** | **2.3 ms** | **206,353 B** |
-| FRI poly-1024 | 71 ms | 0.95 ms | 43,174 B |
+| AIR Fibonacci, 1,024 steps | 42 ms | 0.86 ms | 68,573 B |
+| AIR Fibonacci, 8,192 steps | 54 ms | 1.2 ms | 101,233 B |
+| AIR Fibonacci, 65,536 steps | 138 ms | 1.7 ms | 141,641 B |
+| AIR Fibonacci, **1,048,576 steps** | **1.76 s** | **2.2 ms** | **203,553 B** |
+| FRI poly-1024 | 27 ms | 0.68 ms | 43,174 B |
 
 | Multilinear PCS, 1,024 coefficients, `B16 Q40 G20` | Prove | Verify | Commitment + proof |
 |---|---|---|---|
-| BaseFold-style prototype (`basefold`) | 44 ms | 1.1 ms | 127,658 B |
-| BaseFold, cap height 4 | 45 ms | 0.9 ms | 80,018 B |
-| Gemini v1 (`gemini`, one opening per layer) | 693 ms | 54 ms | 888,672 B |
+| BaseFold-style prototype (`basefold`) | 31 ms | 0.97 ms | 127,658 B |
+| BaseFold, cap height 4 | 30 ms | 0.88 ms | 80,018 B |
+| Gemini v1 (`gemini`, one opening per layer) | 424 ms | 54 ms | 887,872 B |
 
 | Committed lookup, 1,024-in-1,024, BaseFold C4 | Prove | Verify | Commitments + proof |
 |---|---|---|---|
@@ -155,7 +157,7 @@ system before an external audit.
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 266 tests across 25 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 267 tests across 25 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 9 vectors: hostile `Params` (incl. VM), decoder bit-flip fuzz, RNG uniformity | this README |
@@ -228,12 +230,12 @@ CHANGELOG.md     release history (Keep a Changelog)
 - **Tier 4 — vectorized hashing (done).** `--features simd` (nightly)
   runs 8-lane portable-SIMD BLAKE3 over Merkle leaf/node batches,
   byte-identical to the scalar path (pinned by
-  `batch_digests_match_reference`), up to ~2.6× on the Merkle primitive
-  and ~11% end-to-end at 1M steps. The default build stays scalar, stable,
+  `batch_digests_match_reference`), up to ~2× on the Merkle primitive
+  and ~12% end-to-end at 1M steps. The default build stays scalar, stable,
   and MSRV 1.74; the feature is additive with a scalar fallback.
 - **Extension-field challenges — done across the stack.** FRI, STARK
   compositions, `upcs`/Gemini points and betas, sumcheck, and lookup use
-  `Fp4` challenges; the wire format is v4.
+  `Fp4` challenges; the wire format is v5.
 - **Recursion — fragment done.** `recursion.rs` proves one FRI query's
   fold chain as a STARK: public `(lde_len, leaf, challenges, initial quad,
   output)`, committed quads, shifted-index transition openings, FRI over

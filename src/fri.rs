@@ -37,10 +37,11 @@
 //! decomposition quarters the degree each round; a plain linear combination
 //! would not reduce the degree and would make the test vacuous.
 //!
-//! Leaves commit to single field elements; each query opens all four
-//! members of every folded quad but carries only the middle path segment:
-//! the bottom two siblings are recomputed from the four values and the
-//! top steps live in the layer cap (see [`MerkleTree::cap`]).
+//! Each layer commits one 64-byte leaf per quad (four canonical `Fp4`
+//! values). Each query opens all four members of every folded quad and
+//! carries only the middle path segment: the leaf digest is recomputed
+//! from the four values and the top steps live in the layer cap (see
+//! [`MerkleTree::cap`]).
 //!
 //! # Soundness notes
 //! Per-query soundness is governed by the code rate and the field size.
@@ -84,7 +85,8 @@
 use crate::babybear::Field;
 use crate::error::{Error, Result};
 use crate::ext4::Ext4;
-use crate::merkle::{hash_leaf, hash_node, MerkleTree};
+use crate::hash::leaf64_digest;
+use crate::merkle::{hash_node, MerkleTree};
 use crate::ntt::{bit_reverse_permute, bit_reverse_permute_ext, evaluate_on_coset};
 use crate::transcript::Transcript;
 
@@ -113,9 +115,9 @@ pub struct Params {
     ///
     /// Each query path shrinks by up to `cap_height` steps (33 bytes
     /// each); the commitment grows by the cap digests. Clamped per layer
-    /// to `depth - 2` (the verifier rebuilds the bottom two levels from
-    /// the quad values). See [`crate::merkle`]; [`Params::for_security`]
-    /// sizes it automatically.
+    /// to the tree depth (the verifier hashes the revealed 64-byte quad
+    /// leaf and follows the remaining path). See [`crate::merkle`];
+    /// [`Params::for_security`] sizes it automatically.
     pub cap_height: usize,
 }
 
@@ -186,8 +188,8 @@ impl Params {
 
     /// Set the Merkle cap height (builder; default `0` = root only).
     ///
-    /// Each layer then commits `2^cap_height` digests (clamped to
-    /// `depth - 2`) and every query path shrinks by the same count.
+    /// Each layer then commits `2^cap_height` digests (clamped to the
+    /// tree depth) and every query path shrinks by the same count.
     /// Values above `4` rarely pay; [`Params::for_security`] sizes it.
     #[must_use]
     pub const fn with_cap_height(mut self, height: usize) -> Self {
@@ -238,7 +240,7 @@ impl Params {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commitment {
     /// Merkle caps, one per layer from the LDE down to the final layer.
-    /// Each cap holds `2^cap_height` digests (clamped to `depth - 2`);
+    /// Each cap holds `2^cap_height` digests (clamped to the tree depth);
     /// with caps disabled it is the single root.
     pub caps: Vec<Vec<[u8; 32]>>,
     /// Length of the LDE domain.
@@ -274,10 +276,9 @@ pub struct ProverState {
 
 /// One folding step opening: the quad values plus one shared path.
 ///
-/// Only the middle path segment is stored: the bottom two siblings (the
-/// odd leaf's digest, then the right pair node) are recomputed from the
-/// four values, and the top `drop` steps live in the layer cap instead.
-/// With caps disabled the stored path runs to the root.
+/// Only the middle path segment is stored: the quad leaf digest is
+/// recomputed from the four values, and the top `drop` steps live in the
+/// layer cap instead. With caps disabled the stored path runs to the root.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FoldWitness {
     /// Evaluations at the four quad positions.
@@ -488,6 +489,23 @@ pub fn commit_ext_evals(
     params: Params,
     transcript: &mut Transcript,
 ) -> Result<ProverState> {
+    commit_ext_evals_owned(lde_evals.to_vec(), degree_bound, params, transcript)
+}
+
+/// Commit already-expanded extension-field values, taking ownership.
+///
+/// Identical to [`commit_ext_evals`] but avoids copying the caller's
+/// buffer. This is the fast path used by STARK provers that already own
+/// their composition vector.
+///
+/// # Errors
+/// Same shape and rate errors as [`commit_ext_evals`].
+pub fn commit_ext_evals_owned(
+    lde_evals: Vec<Ext4>,
+    degree_bound: usize,
+    params: Params,
+    transcript: &mut Transcript,
+) -> Result<ProverState> {
     if lde_evals.is_empty() {
         return Err(Error::EmptyInput);
     }
@@ -496,18 +514,13 @@ pub fn commit_ext_evals(
             size: lde_evals.len(),
         });
     }
-    if degree_bound >= lde_evals.len() {
+    let lde_len = lde_evals.len();
+    if degree_bound >= lde_len {
         return Err(Error::MalformedInput {
             reason: "degree bound must be below LDE size (rate < 1)",
         });
     }
-    commit_inner(
-        lde_evals.to_vec(),
-        degree_bound,
-        lde_evals.len(),
-        params,
-        transcript,
-    )
+    commit_inner(lde_evals, degree_bound, lde_len, params, transcript)
 }
 
 fn commit_inner(
@@ -532,11 +545,13 @@ fn commit_inner(
     // that still verify. Mirrored exactly in [`verify`].
     transcript.absorb(b"fri-dims", &encode_dims(lde_len, poly_len, degree_bound));
 
-    // Domain points in matching bit-reversed order, plus the fixed fourth
-    // root shared by every quad at every depth (see `fold_values`).
-    let mut points = coset_points(lde_len)?;
+    // Every fold only needs the first point of each quad, and each later
+    // layer's first points are the every-fourth-power of the current ones.
+    // Materializing the full point stack (and bit-reversing it) is wasted
+    // work: keep just the quarter-sized first-point vector.
+    let mut first_points = coset_points_with_step(lde_len / 4, Field::primitive_root(lde_len)?);
     bit_reverse_permute_ext(&mut current);
-    bit_reverse_permute(&mut points);
+    bit_reverse_permute(&mut first_points);
     let unit = Field::two_adic_generator(2)?;
 
     let mut layers: Vec<Vec<Ext4>> = Vec::new();
@@ -544,7 +559,6 @@ fn commit_inner(
     let mut caps: Vec<Vec<[u8; 32]>> = Vec::new();
     let mut fold_challenges: Vec<[Ext4; 3]> = Vec::new();
     layers.push(current);
-    let mut layer_points = points;
 
     loop {
         let idx = layers.len() - 1;
@@ -565,9 +579,10 @@ fn commit_inner(
             *slot = transcript.challenge_ext(b"fri-fold");
         }
         fold_challenges.push(challenges);
-        let (next_values, next_points) = fold_layer(&layers[idx], &layer_points, challenges, unit);
+        let (next_values, next_first_points) =
+            fold_layer(&layers[idx], &first_points, challenges, unit);
         layers.push(next_values);
-        layer_points = next_points;
+        first_points = next_first_points;
     }
 
     let final_poly = layers[layers.len() - 1].clone();
@@ -630,6 +645,7 @@ pub fn open(state: &ProverState, transcript: &mut Transcript) -> Result<(Proof, 
 /// Returns [`Error::FriVerificationFailed`] or [`Error::BadMerklePath`]
 /// when any check fails, or dimension errors when the proof does not match
 /// the commitment and parameters.
+#[allow(clippy::too_many_lines)]
 pub fn verify(
     commitment: &Commitment,
     proof: &Proof,
@@ -677,9 +693,14 @@ pub fn verify(
     // exact on 32-bit and 64-bit targets.)
     for (i, cap) in commitment.caps.iter().enumerate() {
         let layer_len = commitment.lde_len >> (2 * i);
+        let tree_leaves = if layer_len % 4 == 0 {
+            layer_len / 4
+        } else {
+            layer_len
+        };
         #[allow(clippy::cast_possible_truncation)]
-        let depth = layer_len.trailing_zeros() as usize;
-        let drop = params.cap_height.min(depth.saturating_sub(2));
+        let depth = tree_leaves.trailing_zeros() as usize;
+        let drop = params.cap_height.min(depth);
         if cap.len() != 1usize << drop {
             return Err(Error::BadMerklePath);
         }
@@ -835,14 +856,14 @@ fn fold_shift_fits(folds: usize) -> bool {
 
 /// Top steps a FRI layer drops under `cap_height`.
 ///
-/// Clamped to `depth - 2` so the verifier's quad-node recompute (bottom
-/// two levels) still lands below the cap. Opened layers always hold
-/// `>= 4` leaves, hence `depth >= 2`; the saturation is pure paranoia
-/// for commitment-derived sizes on the verify path.
+/// `layer_leaves` is the number of actual Merkle leaves (quad leaves for
+/// opened layers), so the cap may use the whole tree depth. The final
+/// layer is revealed in clear and is never opened, so its cap shape does
+/// not affect query paths.
 fn fri_drop_top(layer_leaves: usize, cap_height: usize) -> usize {
     #[allow(clippy::cast_possible_truncation)]
     let depth = layer_leaves.trailing_zeros() as usize;
-    cap_height.min(depth.saturating_sub(2))
+    cap_height.min(depth)
 }
 
 /// Leaf counts from `lde_len` down to `final_size` by quartering.
@@ -869,13 +890,14 @@ pub(crate) fn fri_layer_sizes(mut len: usize, final_size: usize) -> Vec<usize> {
 /// adds a flat 8 bytes.
 pub(crate) fn estimate_fri_bytes(layers: &[usize], num_queries: usize, cap_height: usize) -> usize {
     let mut total: usize = 24 + 8; // dimensions + pow nonce
-    for (i, &leaves) in layers.iter().enumerate() {
+    for (i, &values) in layers.iter().enumerate() {
+        let tree_leaves = if values % 4 == 0 { values / 4 } else { values };
         #[allow(clippy::cast_possible_truncation)]
-        let depth = leaves.trailing_zeros() as usize;
-        let drop = cap_height.min(depth.saturating_sub(2));
+        let depth = tree_leaves.trailing_zeros() as usize;
+        let drop = cap_height.min(depth);
         total = total.saturating_add(32usize * (1usize << drop.min(16)));
         if i + 1 < layers.len() {
-            let steps = depth.saturating_sub(2).saturating_sub(drop);
+            let steps = depth.saturating_sub(drop);
             total += num_queries * (64 + 33 * steps);
         }
     }
@@ -979,15 +1001,24 @@ pub(crate) fn tune_strength(target_bits: u32, millibits_per_query: u32) -> (usiz
     (queries, grinding)
 }
 
+#[cfg(test)]
 fn coset_points(len: usize) -> Result<Vec<Field>> {
-    let omega = Field::primitive_root(len)?;
+    Ok(coset_points_with_step(len, Field::primitive_root(len)?))
+}
+
+/// Coset `SHIFT * <step>` of length `len`.
+///
+/// The FRI layer-0 quad leaders use the *full-domain* step `omega`, not
+/// the step `omega^4` of a quarter-sized domain. Bit-reversing this short
+/// sequence yields exactly `points[4i]` of the full layer.
+fn coset_points_with_step(len: usize, step: Field) -> Vec<Field> {
     let mut points = Vec::with_capacity(len);
     let mut current = LDE_SHIFT;
     for _ in 0..len {
         points.push(current);
-        current *= omega;
+        current *= step;
     }
-    Ok(points)
+    points
 }
 
 /// Point `j` of the bit-reversed FRI point layer `depth`.
@@ -1053,33 +1084,27 @@ fn verify_one(check: &QueryCheck<'_>) -> Result<()> {
         if base + 3 >= layer_len {
             return Err(Error::FriVerificationFailed);
         }
-        // Opened layers hold `>= 4` leaves here, so `depth_bits >= 2` and
-        // the clamp below keeps the quad node under the cap.
+        // Opened layers commit one 64-byte leaf per fold quad, so the tree
+        // depth is two bits shorter than the value-domain depth.
+        let quad_len = layer_len / 4;
         #[allow(clippy::cast_possible_truncation)]
-        let depth_bits = layer_len.trailing_zeros() as usize;
-        let drop = check.cap_height.min(depth_bits.saturating_sub(2));
-        // Exact stored length (middle segment only): wrong-sized paths
-        // could never verify, so reject before hashing them.
-        if witness.path.len() != depth_bits - 2 - drop {
+        let depth_bits = quad_len.trailing_zeros() as usize;
+        let drop = check.cap_height.min(depth_bits);
+        // Exact stored length: wrong-sized paths could never verify, so
+        // reject before hashing them.
+        if witness.path.len() != depth_bits - drop {
             return Err(Error::BadMerklePath);
         }
-        // Cap entry covering `base`: each entry spans `2^(depth_bits-drop)`
-        // leaves. Length-checked: the commitment is untrusted input.
+        // Cap entry covering `quad_index`: each entry spans
+        // `2^(depth_bits-drop)` quad leaves. Length-checked: the commitment
+        // is untrusted input.
+        let quad_index = base / 4;
         let entry = cap
-            .get(base >> (depth_bits - drop))
+            .get(quad_index >> (depth_bits - drop))
             .ok_or(Error::BadMerklePath)?;
         let x = point_at(check.commitment.lde_len, depth, base)?;
-        // Rebuild the quad node from all four values and walk the shared
-        // path (the first two siblings are recomputed, not transmitted).
-        let left = hash_node(
-            &hash_leaf(&witness.values[0].to_le_bytes()),
-            &hash_leaf(&witness.values[1].to_le_bytes()),
-        );
-        let right = hash_node(
-            &hash_leaf(&witness.values[2].to_le_bytes()),
-            &hash_leaf(&witness.values[3].to_le_bytes()),
-        );
-        let mut node = hash_node(&left, &right);
+        // The quad itself is the leaf; hash it once and walk the shared path.
+        let mut node = leaf64_digest(&quad_leaf(witness.values));
         for (sibling, is_left) in &witness.path {
             node = if *is_left {
                 hash_node(&node, sibling)
@@ -1131,9 +1156,8 @@ fn open_one(state: &ProverState, leaf_index: usize) -> Result<QueryProof> {
             break;
         }
         // Open the quad containing `index` (base multiple of four): all
-        // four values plus the quad node's path, minus the bottom two
-        // steps (recomputable from the values) and the top `drop` steps
-        // (covered by the cap) — the same clamp the verifier applies.
+        // four values plus the middle path segment, minus the top `drop`
+        // steps covered by the cap — the same clamp the verifier applies.
         let base = index / 4 * 4;
         let values = [
             layer[base],
@@ -1141,47 +1165,38 @@ fn open_one(state: &ProverState, leaf_index: usize) -> Result<QueryProof> {
             layer[base + 2],
             layer[base + 3],
         ];
-        let full_path = state.trees[depth].prove(base)?;
-        let odd_digest = hash_leaf(&values[1].to_le_bytes());
-        let right_node = hash_node(
-            &hash_leaf(&values[2].to_le_bytes()),
-            &hash_leaf(&values[3].to_le_bytes()),
-        );
-        debug_assert_eq!(
-            full_path.first().map(|(digest, left)| (*digest, *left)),
-            Some((odd_digest, true))
-        );
-        debug_assert_eq!(
-            full_path.get(1).map(|(digest, left)| (*digest, *left)),
-            Some((right_node, true))
-        );
-        let drop = fri_drop_top(layer.len(), state.params.cap_height);
-        let stored = full_path.len().saturating_sub(2 + drop);
-        let path = full_path.into_iter().skip(2).take(stored).collect();
+        let full_path = state.trees[depth].prove(base / 4)?;
+        let drop = fri_drop_top(state.trees[depth].num_leaves(), state.params.cap_height);
+        let stored = full_path.len().saturating_sub(drop);
+        let path = full_path.into_iter().take(stored).collect();
         folds.push(FoldWitness { values, path });
         index /= 4;
     }
     Ok(QueryProof { folds })
 }
 
-/// Degree-quartering fold of adjacent quads with tracked points.
+/// Degree-quartering fold of adjacent quads with tracked first points.
 ///
-/// `values`/`points` are bit-reversed; quad `(4j..4j+3)` sits at
-/// `(x, -x, j0*x, -j0*x)` for the fixed fourth root `unit`, sharing `x^4`.
-/// Point inverses are batch-inverted once per layer (one inversion total
-/// instead of one Fermat power per quad); values fold in parallel.
+/// `values` are bit-reversed and `first_points[i]` is the domain point of
+/// quad `4i`; quad `(4i..4i+3)` sits at `(x, -x, j0*x, -j0*x)` for the
+/// fixed fourth root `unit`, sharing `x^4`. Point inverses are
+/// batch-inverted once per layer (one inversion total instead of one
+/// Fermat power per quad); values fold in parallel.
+///
+/// Only quad leaders are needed: layer `d+1`'s first points are
+/// `first_points[4j]^4`, so the full `O(lde_len)` point stack is never
+/// materialized.
 fn fold_layer(
     values: &[Ext4],
-    points: &[Field],
+    first_points: &[Field],
     challenges: [Ext4; 3],
     unit: Field,
 ) -> (Vec<Ext4>, Vec<Field>) {
     use crate::babybear::batch_invert;
     debug_assert_eq!(values.len() % 4, 0);
-    debug_assert_eq!(values.len(), points.len());
+    debug_assert_eq!(values.len() / 4, first_points.len());
     let quarter = values.len() / 4;
-    let first_points: Vec<Field> = points.chunks_exact(4).map(|quad| quad[0]).collect();
-    let inv_points = batch_invert(&first_points);
+    let inv_points = batch_invert(first_points);
     let mut next_values = vec![Ext4::ZERO; quarter];
     crate::par::for_each_indexed(&mut next_values, 512, |base, piece| {
         for (j, slot) in piece.iter_mut().enumerate() {
@@ -1195,11 +1210,11 @@ fn fold_layer(
             *slot = fold_values(quad, inv_points[i], challenges, unit);
         }
     });
-    let mut next_points = Vec::with_capacity(quarter);
-    for quad in points.chunks_exact(4) {
-        next_points.push(quad[0].square().square());
+    let mut next_first_points = Vec::with_capacity(quarter / 4);
+    for quad in first_points.chunks_exact(4) {
+        next_first_points.push(quad[0].square().square());
     }
-    (next_values, next_points)
+    (next_values, next_first_points)
 }
 
 /// Fold one quad `(x, -x, j0*x, -j0*x)` into `A + r0*B + r1*C + r2*D`,
@@ -1219,12 +1234,14 @@ pub(crate) fn fold_values(
     let odd_diff = quad[0] - quad[1];
     let skew_diff = quad[2] - quad[3];
     let inv = Ext4::from_base(inv_point);
-    let unit = Ext4::from_base(unit);
     let mean = even_sum.halve().halve();
-    let linear = (odd_diff - unit * skew_diff).halve().halve() * inv;
-    let quadratic = ((quad[0] + quad[1]) - (quad[2] + quad[3])).halve().halve() * inv * inv;
-    let cubic = (odd_diff + unit * skew_diff).halve().halve() * inv * inv * inv;
-    mean + challenges[0] * linear + challenges[1] * quadratic + challenges[2] * cubic
+    let odd = (odd_diff - skew_diff.mul_base(unit)).halve().halve();
+    let even = ((quad[0] + quad[1]) - (quad[2] + quad[3])).halve().halve();
+    let skew = (odd_diff + skew_diff.mul_base(unit)).halve().halve();
+    // Horner in `inv`: one shared factor instead of materializing
+    // inv^2/inv^3 and three separate challenge products.
+    let acc = (challenges[2] * skew * inv + challenges[1] * even) * inv + challenges[0] * odd;
+    mean + acc * inv
 }
 
 /// Check `values` at distinct `points` interpolate to degree `<= bound`.
@@ -1287,11 +1304,41 @@ pub fn check_degree(points: &[Field], values: &[Field], bound: usize) -> bool {
 }
 
 fn commit_layer(layer: &[Ext4]) -> Result<MerkleTree> {
+    if layer.len() % 4 == 0 {
+        commit_layer_quads(layer)
+    } else {
+        commit_layer_values(layer)
+    }
+}
+
+/// Commit four consecutive `Ext4` values per 64-byte Merkle leaf.
+///
+/// The FRI verifier already receives exactly the four values of each fold
+/// quad, so leaf hashing needs one compression per quad instead of four
+/// leaf hashes plus two parent hashes.
+fn commit_layer_quads(layer: &[Ext4]) -> Result<MerkleTree> {
+    let mut flat = vec![0u8; 16 * layer.len()];
+    for (slot, f) in flat.chunks_exact_mut(16).zip(layer.iter()) {
+        slot.copy_from_slice(&f.to_le_bytes());
+    }
+    MerkleTree::from_flat64(&flat)
+}
+
+fn commit_layer_values(layer: &[Ext4]) -> Result<MerkleTree> {
     let mut flat = vec![0u8; 16 * layer.len()];
     for (slot, f) in flat.chunks_exact_mut(16).zip(layer.iter()) {
         slot.copy_from_slice(&f.to_le_bytes());
     }
     MerkleTree::from_flat(&flat, 16)
+}
+
+/// Canonical 64-byte preimage of a fold quad.
+fn quad_leaf(values: [Ext4; 4]) -> [u8; 64] {
+    let mut leaf = [0u8; 64];
+    for (slot, value) in leaf.chunks_exact_mut(16).zip(values) {
+        slot.copy_from_slice(&value.to_le_bytes());
+    }
+    leaf
 }
 
 fn encode_fields(fields: &[Ext4]) -> Vec<u8> {

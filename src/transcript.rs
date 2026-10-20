@@ -305,17 +305,20 @@ fn scan_range(head: &[u8], start: u64, count: u64, difficulty_bits: u32) -> Opti
 /// the band minimum wins — so the result equals [`grind_sequential`]
 /// regardless of thread count or scheduling.
 fn grind_parallel(head: &[u8], difficulty_bits: u32, workers: usize) -> u64 {
-    const BAND_PER_WORKER: u64 = 4096;
-    let band = (workers as u64).wrapping_mul(BAND_PER_WORKER);
+    // Size each worker's band so the whole pool covers about the expected
+    // search space in one round. Tiny bands spend more time spawning than
+    // hashing; the cap keeps very high difficulties from over-scanning.
+    let per_worker = 1u64 << difficulty_bits.min(16);
+    let band = (workers as u64).saturating_mul(per_worker);
     let mut base = 0u64;
     loop {
         let mut best: Option<u64> = None;
         std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(workers);
             for worker in 0..workers {
-                let start = base.wrapping_add((worker as u64).wrapping_mul(BAND_PER_WORKER));
+                let start = base.wrapping_add((worker as u64).saturating_mul(per_worker));
                 handles.push(
-                    scope.spawn(move || scan_range(head, start, BAND_PER_WORKER, difficulty_bits)),
+                    scope.spawn(move || scan_range(head, start, per_worker, difficulty_bits)),
                 );
             }
             for handle in handles {

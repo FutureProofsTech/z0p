@@ -50,6 +50,7 @@ use crate::codec::{Reader, Writer, MAX_QUERIES, VERSION};
 use crate::error::{Error, Result};
 use crate::ext4::Ext4;
 use crate::fri::{self, LDE_SHIFT};
+use crate::hash::leaf64_digest;
 use crate::merkle::MerkleTree;
 use crate::ntt;
 use crate::transcript::Transcript;
@@ -60,7 +61,7 @@ pub const MAX_POINTS: usize = 16;
 /// Public commitment to a coefficient polynomial.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commitment {
-    /// Merkle root over the bit-reversed LDE evaluations (4-byte leaves).
+    /// Merkle root over the bit-reversed LDE evaluations (four `Ext4` per leaf).
     pub root: [u8; 32],
     /// Number of coefficients (`2^k`).
     pub poly_len: usize,
@@ -133,6 +134,8 @@ impl ProverState {
 pub struct Opening {
     /// Claimed evaluation at the position.
     pub value: Ext4,
+    /// The full 64-byte quad leaf containing the claimed value.
+    pub leaf: [Ext4; 4],
     /// Full Merkle path (leaf to root).
     pub path: Vec<([u8; 32], bool)>,
 }
@@ -166,6 +169,9 @@ impl Proof {
         writer.count(self.openings.len());
         for opening in &self.openings {
             writer.ext4(opening.value);
+            for value in opening.leaf {
+                writer.ext4(value);
+            }
             writer.path(&opening.path);
         }
         writer.finish()
@@ -188,6 +194,12 @@ impl Proof {
         for _ in 0..reader.count(MAX_QUERIES)? {
             openings.push(Opening {
                 value: reader.ext4()?,
+                leaf: [
+                    reader.ext4()?,
+                    reader.ext4()?,
+                    reader.ext4()?,
+                    reader.ext4()?,
+                ],
                 path: reader.path()?,
             });
         }
@@ -315,9 +327,16 @@ fn open_with_quotient(
 
     let mut openings = Vec::with_capacity(indices.len());
     for index in indices {
+        let base = index / 4 * 4;
         openings.push(Opening {
             value: state.lde[index],
-            path: state.tree.prove(index)?,
+            leaf: [
+                state.lde[base],
+                state.lde[base + 1],
+                state.lde[base + 2],
+                state.lde[base + 3],
+            ],
+            path: state.tree.prove(index / 4)?,
         });
     }
     Ok(Proof {
@@ -433,9 +452,16 @@ fn open_multi_with_quotient(
 
     let mut openings = Vec::with_capacity(indices.len());
     for index in indices {
+        let base = index / 4 * 4;
         openings.push(Opening {
             value: state.lde[index],
-            path: state.tree.prove(index)?,
+            leaf: [
+                state.lde[base],
+                state.lde[base + 1],
+                state.lde[base + 2],
+                state.lde[base + 3],
+            ],
+            path: state.tree.prove(index / 4)?,
         });
     }
     Ok(Proof {
@@ -499,7 +525,9 @@ pub fn verify_multi(
         return Err(Error::FriVerificationFailed);
     }
     let depth = usize::try_from(lde_len.trailing_zeros())
-        .map_err(|_| Error::InvalidDomainSize { size: lde_len })?;
+        .map_err(|_| Error::InvalidDomainSize { size: lde_len })?
+        .checked_sub(2)
+        .ok_or(Error::InvalidDomainSize { size: lde_len })?;
     let interp = interpolate(points, values)?;
     let vanishing = interpolation_vanishing(points);
 
@@ -520,12 +548,11 @@ pub fn verify_multi(
         if opening.path.len() != depth {
             return Err(Error::BadMerklePath);
         }
-        if !MerkleTree::verify(
-            &commitment.root,
-            &opening.value.to_le_bytes(),
-            index,
-            &opening.path,
-        ) {
+        if opening.leaf.get(index - base) != Some(&opening.value) {
+            return Err(Error::BadMerklePath);
+        }
+        let digest = leaf64_digest(&quad_bytes(opening.leaf));
+        if !MerkleTree::verify_digest(&commitment.root, &digest, index / 4, &opening.path) {
             return Err(Error::BadMerklePath);
         }
         let z = fri::point_at(lde_len, 0, index)?;
@@ -584,7 +611,9 @@ pub fn verify(
         return Err(Error::FriVerificationFailed);
     }
     let depth = usize::try_from(lde_len.trailing_zeros())
-        .map_err(|_| Error::InvalidDomainSize { size: lde_len })?;
+        .map_err(|_| Error::InvalidDomainSize { size: lde_len })?
+        .checked_sub(2)
+        .ok_or(Error::InvalidDomainSize { size: lde_len })?;
 
     for ((query, opening), &index) in proof
         .q_fri
@@ -603,12 +632,11 @@ pub fn verify(
         if opening.path.len() != depth {
             return Err(Error::BadMerklePath);
         }
-        if !MerkleTree::verify(
-            &commitment.root,
-            &opening.value.to_le_bytes(),
-            index,
-            &opening.path,
-        ) {
+        if opening.leaf.get(index - base) != Some(&opening.value) {
+            return Err(Error::BadMerklePath);
+        }
+        let digest = leaf64_digest(&quad_bytes(opening.leaf));
+        if !MerkleTree::verify_digest(&commitment.root, &digest, index / 4, &opening.path) {
             return Err(Error::BadMerklePath);
         }
         let z = fri::point_at(lde_len, 0, index)?;
@@ -794,13 +822,25 @@ fn absorb_statement(
     transcript.absorb(b"upcs/statement", &writer.finish());
 }
 
-/// Merkle tree over 16-byte extension-field leaves.
+/// Merkle tree over 64-byte quad leaves (four `Ext4` per leaf).
 fn tree_over(lde: &[Ext4]) -> Result<MerkleTree> {
+    if lde.len() % 4 != 0 {
+        return Err(Error::InvalidDomainSize { size: lde.len() });
+    }
     let mut flat = vec![0u8; 16 * lde.len()];
     for (chunk, value) in flat.chunks_exact_mut(16).zip(lde) {
         chunk.copy_from_slice(&value.to_le_bytes());
     }
-    MerkleTree::from_flat(&flat, 16)
+    MerkleTree::from_flat64(&flat)
+}
+
+/// Canonical bytes of one fold quad.
+fn quad_bytes(values: [Ext4; 4]) -> [u8; 64] {
+    let mut leaf = [0u8; 64];
+    for (slot, value) in leaf.chunks_exact_mut(16).zip(values) {
+        slot.copy_from_slice(&value.to_le_bytes());
+    }
+    leaf
 }
 
 /// Synthetic division `(g - value) / (X - point)`, padded to `deg(g) + 1`.

@@ -1,13 +1,13 @@
 # Unit tests — breakdown
 
 `cargo test --lib` (also run with `--release` by `tools/check.py`).
-Measured: 2026-10-20 — **266 passed, 0 failed.**
+Measured: 2026-10-20 — **267 passed, 0 failed.**
 
 ## Per-module counts
 
 | Module | Tests | What they pin |
 |---|---|---|
-| `air` | 22 | honest/tampered openings, ZK masking, caps, grinding, encoding, batched compose identity, forged next-column claim, shifted-opening tamper, downgraded FRI bound |
+| `air` | 23 | honest/tampered openings, ZK masking, caps, grinding, encoding, batched compose identity, linked second-column LDE, forged next-column claim, shifted-opening tamper, downgraded FRI bound |
 | `babybear` | 7 | wrap arithmetic, Barrett vs `%` (100k random + corners), inverse, two-adicity, batch inversion |
 | `basefold` | 20 | honest n=1/2/5/8, wrong value/point/commitment, extension-field coefficient/evaluation commits, tampered sumcheck/layer/query, capped and uncapped paths, forged/mis-shaped caps, cap-height limits and clamping, grinding roundtrip, nonzero nonce, params/domain caps, codec roundtrip/version |
 | `ext4` | 1 | quartic tower axioms (`u²=11`, `v²=u`), inversion, base embedding/scaling, canonical encoding |
@@ -37,5 +37,5 @@ Measured: 2026-10-20 — **266 passed, 0 failed.**
 
 ```sh
 cargo test --lib              # debug
-cargo test --lib --release    # optimized (same 266, also gated)
+cargo test --lib --release    # optimized (same 267, also gated)
 ```

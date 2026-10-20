@@ -14,34 +14,63 @@ use crate::babybear::Field;
 use crate::error::{Error, Result};
 use crate::ext4::Ext4;
 
-/// In-place bit-reversal permutation.
+/// Bit-reversal permutation.
+///
+/// Large arrays gather in parallel into a fresh buffer (scattered reads,
+/// sequential writes); small arrays stay in place to avoid the allocation.
 pub(crate) fn bit_reverse_permute(values: &mut [Field]) {
     let n = values.len();
     if n <= 1 {
         return;
     }
     let bits = n.trailing_zeros();
-    for i in 0..n {
-        let rev = i.reverse_bits() >> (usize::BITS - bits);
-        if i < rev {
-            values.swap(i, rev);
+    if n < (1 << 18) {
+        for i in 0..n {
+            let rev = i.reverse_bits() >> (usize::BITS - bits);
+            if i < rev {
+                values.swap(i, rev);
+            }
         }
+        return;
     }
+    let mut out = vec![Field::ZERO; n];
+    crate::par::for_each_indexed(&mut out, 1 << 14, |base, piece| {
+        for (k, slot) in piece.iter_mut().enumerate() {
+            let i = base + k;
+            *slot = values[i.reverse_bits() >> (usize::BITS - bits)];
+        }
+    });
+    values.copy_from_slice(&out);
 }
 
-/// In-place bit-reversal permutation for extension-field values.
+/// Bit-reversal permutation for extension-field values.
+///
+/// Large arrays use a parallel gather into a fresh buffer: reads are
+/// scattered but writes stay sequential, which hides memory latency across
+/// workers. Small arrays stay in place to avoid the allocation.
 pub(crate) fn bit_reverse_permute_ext(values: &mut [Ext4]) {
     let n = values.len();
     if n <= 1 {
         return;
     }
     let bits = n.trailing_zeros();
-    for i in 0..n {
-        let rev = i.reverse_bits() >> (usize::BITS - bits);
-        if i < rev {
-            values.swap(i, rev);
+    if n < (1 << 24) {
+        for i in 0..n {
+            let rev = i.reverse_bits() >> (usize::BITS - bits);
+            if i < rev {
+                values.swap(i, rev);
+            }
         }
+        return;
     }
+    let mut out = vec![Ext4::ZERO; n];
+    crate::par::for_each_indexed(&mut out, 1 << 14, |base, piece| {
+        for (k, slot) in piece.iter_mut().enumerate() {
+            let i = base + k;
+            *slot = values[i.reverse_bits() >> (usize::BITS - bits)];
+        }
+    });
+    values.copy_from_slice(&out);
 }
 
 /// Forward NTT: coefficients -> evaluations at `omega^0..omega^(n-1)`.
@@ -119,11 +148,11 @@ fn twiddle_table(root: Field, n: usize) -> Vec<Field> {
 /// Below this a transform is sub-millisecond and thread spawning would
 /// cost more than the butterflies themselves.
 const PAR_NTT: usize = 1 << 16;
-/// Minimum butterfly blocks per worker in one stage.
+/// Minimum butterflies per worker in one stage.
 ///
-/// Late stages hold few blocks; they transparently fall back to one
-/// thread via [`crate::par::worker_count`].
-const PAR_BLOCKS_PER_THREAD: usize = 1024;
+/// Counting butterflies instead of blocks keeps the last stages parallel:
+/// they contain very few (sometimes one) large blocks.
+const PAR_BUTTERFLIES_PER_THREAD: usize = 1 << 14;
 
 /// One Cooley-Tukey stage: every `len`-wide block butterflies with the
 /// strided twiddle subsequence. `scale` (inverse-NTT final stage) folds a
@@ -141,10 +170,11 @@ fn butterfly_stage(
 ) {
     let half = len / 2;
     let blocks = values.len() / len;
+    let butterflies = blocks * half;
     let workers = if values.len() < PAR_NTT {
         1
     } else {
-        crate::par::worker_count(blocks, PAR_BLOCKS_PER_THREAD)
+        crate::par::worker_count(butterflies, PAR_BUTTERFLIES_PER_THREAD)
     };
     if workers <= 1 {
         for block in values.chunks_mut(len) {
@@ -152,13 +182,62 @@ fn butterfly_stage(
         }
         return;
     }
-    let blocks_per_chunk = blocks.div_ceil(workers);
-    let chunk_len = blocks_per_chunk * len;
+    if blocks >= workers {
+        let blocks_per_chunk = blocks.div_ceil(workers);
+        let chunk_len = blocks_per_chunk * len;
+        std::thread::scope(|scope| {
+            for piece in values.chunks_mut(chunk_len) {
+                scope.spawn(move || {
+                    for block in piece.chunks_mut(len) {
+                        butterfly_block(block, half, twiddles, stride, scale);
+                    }
+                });
+            }
+        });
+        return;
+    }
+    // Late stages have fewer large blocks than workers. Split each block's
+    // butterfly range instead of leaving most cores idle.
+    for block in values.chunks_mut(len) {
+        butterfly_block_parallel(block, half, twiddles, stride, scale, workers);
+    }
+}
+
+/// Parallel butterflies over one `len`-wide block.
+///
+/// The block is split at `half`; both halves are then cut at matching
+/// boundaries so every worker owns one disjoint `(left[j], right[j])`
+/// range. Safe without raw pointers and bit-identical to the scalar loop.
+fn butterfly_block_parallel(
+    block: &mut [Field],
+    half: usize,
+    twiddles: &[Field],
+    stride: usize,
+    scale: Option<Field>,
+    workers: usize,
+) {
+    let (left, right) = block.split_at_mut(half);
+    let chunk = half.div_ceil(workers);
     std::thread::scope(|scope| {
-        for piece in values.chunks_mut(chunk_len) {
+        for (k, (lo, hi)) in left
+            .chunks_mut(chunk)
+            .zip(right.chunks_mut(chunk))
+            .enumerate()
+        {
+            let base = k * chunk;
             scope.spawn(move || {
-                for block in piece.chunks_mut(len) {
-                    butterfly_block(block, half, twiddles, stride, scale);
+                for (j, (u, v)) in lo.iter_mut().zip(hi.iter_mut()).enumerate() {
+                    let idx = base + j;
+                    let product = *v * twiddles[idx * stride];
+                    let sum = *u + product;
+                    let diff = *u - product;
+                    if let Some(inv) = scale {
+                        *u = sum * inv;
+                        *v = diff * inv;
+                    } else {
+                        *u = sum;
+                        *v = diff;
+                    }
                 }
             });
         }

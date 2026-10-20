@@ -1,7 +1,8 @@
 //! Binary Merkle tree over BLAKE3-256.
 //!
-//! Second-preimage hardened by domain separation:
-//! leaf = `H(0x00 || data)`, node = `H(0x01 || left || right)`.
+//! Generic leaves are domain-separated: `H(0x00 || data)`; FRI and AIR
+//! trace commitments use [`MerkleTree::from_flat64`] with standard BLAKE3
+//! roots over 64-byte leaves. Internal nodes are `H(0x01 || left || right)`.
 //! Fallible construction and opening return [`Error`]; success paths never
 //! panic.
 
@@ -74,6 +75,36 @@ impl MerkleTree {
             let start = base * leaf_len;
             let end = start + piece.len() * leaf_len;
             crate::hash::leaf_digests(&flat[start..end], leaf_len, piece);
+        });
+        Ok(finish(current))
+    }
+
+    /// Build from concatenated 64-byte leaves.
+    ///
+    /// Each leaf is one full BLAKE3 block, hashed as a standard BLAKE3 root
+    /// (one compression instead of the two used by [`MerkleTree::from_flat`]
+    /// for a `0x00`-prefixed variable-length leaf). Used by FRI quad
+    /// commitments (four `Ext4` values per leaf) and AIR trace commitments
+    /// (eight joint `A || B` rows per leaf).
+    ///
+    /// # Errors
+    /// Returns [`Error::EmptyInput`] for empty input, or
+    /// [`Error::MalformedInput`] when `flat.len()` is not a multiple of 64.
+    pub fn from_flat64(flat: &[u8]) -> Result<Self> {
+        if flat.is_empty() {
+            return Err(Error::EmptyInput);
+        }
+        if flat.len() % 64 != 0 {
+            return Err(Error::MalformedInput {
+                reason: "64-byte leaves must tile the buffer exactly",
+            });
+        }
+        let count = flat.len() / 64;
+        let mut current = vec![[0u8; 32]; count];
+        crate::par::for_each_indexed(&mut current, 1024, |base, piece| {
+            let start = base * 64;
+            let end = start + piece.len() * 64;
+            crate::hash::leaf64_digests(&flat[start..end], piece);
         });
         Ok(finish(current))
     }
@@ -185,9 +216,9 @@ impl MerkleTree {
     /// Always `2^dropped` digests when the tree is deeper than `dropped`;
     /// dropping at or past the depth returns every leaf digest. Prover and
     /// verifier must drop identically from the same depth: columns drop
-    /// `min(height, depth)`, FRI quads drop `min(height, depth - 2)`
-    /// (the verifier rebuilds the bottom two levels from the values).
-    /// See [`MerkleTree::prove_capped`].
+    /// `min(height, depth)`, FRI quads and AIR trace trees drop
+    /// `min(height, depth)` over 64-byte leaves. See
+    /// [`MerkleTree::prove_capped`].
     #[must_use]
     pub fn cap(&self, dropped: usize) -> Vec<[u8; 32]> {
         let depth = self.layers.len() - 1;
@@ -205,6 +236,37 @@ impl MerkleTree {
         let drop = drop_top.min(full.len());
         full.truncate(full.len() - drop);
         Ok(full)
+    }
+
+    /// Verify a capped opening whose leaf is exactly one 64-byte BLAKE3 block.
+    ///
+    /// Same shape checks and cap-entry comparison as
+    /// [`MerkleTree::verify_capped`], but the leaf digest is the standard
+    /// 64-byte BLAKE3 root used by [`MerkleTree::from_flat64`]. Used by the
+    /// AIR trace tree, which packs eight joint rows per leaf.
+    #[must_use]
+    pub fn verify_capped64(
+        cap_entry: &[u8; 32],
+        leaf_data: &[u8; 64],
+        index: usize,
+        total_depth: usize,
+        path: &[([u8; 32], bool)],
+    ) -> bool {
+        if total_depth >= usize::BITS as usize
+            || path.len() > total_depth
+            || index >> total_depth != 0
+        {
+            return false;
+        }
+        let mut current = crate::hash::leaf64_digest(leaf_data);
+        for (sibling, is_left) in path {
+            current = if *is_left {
+                hash_node(&current, sibling)
+            } else {
+                hash_node(sibling, &current)
+            };
+        }
+        &current == cap_entry
     }
 
     /// Verify a capped opening against one cap entry.

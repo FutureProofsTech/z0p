@@ -94,6 +94,18 @@ All notable changes to `z0p` are documented here. The format follows
   divergence, the minimum-masker guard, and tampered-opening rejection.
 
 ### Changed
+- **Wire format v5 and faster proving.** `codec::VERSION` is now `5`.
+  FRI commits four `Fp4` values per 64-byte leaf, and the AIR trace tree
+  commits eight joint rows per 64-byte leaf; AIR openings carry the opened
+  leaf and shifted leaf. Prover-side work is substantially cheaper:
+  linked second-column LDE generation, first-point-only FRI folding,
+  Karatsuba `Ext4`/`Fp2` multiplication, Horner folding, fully
+  parallel NTT butterflies, out-of-place bit reversal for large layers,
+  and wider PoW scan bands. The 1,048,576-step AIR row drops from
+  5.19 s to **1.76 s** (1.56 s with `--features simd`), proof size from
+  206,353 B to **203,553 B**, with verify at ~2.2 ms. Test count
+  266 -> 267 (linked-LDE cross-check), and `tools/baseline.json` was
+  re-recorded (24 rows).
 - **Wire format v4.** The unreleased v3 work moved FRI fold values,
   final-layer values, `upcs` opening values/points, and Gemini proofs to
   `Fp4` (16 bytes per element), with 16-byte extension leaves. This

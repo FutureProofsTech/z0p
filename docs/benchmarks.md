@@ -19,16 +19,16 @@ layer and Merkle cap height.
 
 | Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
 |---|---|---|---|---|
-| `fri prod B16Q40G20C4F16` (poly-256) | 17.34 | 0.76 | 29,378 | 28.7 |
-| `air prod B16Q40G20C4F16` (fib-64) | 14.53 | 0.76 | 35,861 | 35.0 |
-| `fri prod P1024 B16Q40G20C4F16` | 71.37 | 0.95 | 43,174 | 42.2 |
-| `air prod N1024 B16Q40G20C4F16` | 39.31 | 1.22 | 71,373 | 69.7 |
-| `air prod N8192 B16Q40G20C4F32` | 81.12 | 1.62 | 104,033 | 101.6 |
-| `air prod N65536 B16Q40G20C4F16` | 332.03 | 2.09 | 144,441 | 141.1 |
-| `air prod N1048576 B16Q40G20C4F16` | 5,194.42 | 2.32 | 206,353 | 201.5 |
+| `fri prod B16Q40G20C4F16` (poly-256) | 12.34 | 0.80 | 29,378 | 28.7 |
+| `air prod B16Q40G20C4F16` (fib-64) | 13.18 | 0.56 | 33,061 | 32.3 |
+| `fri prod P1024 B16Q40G20C4F16` | 27.29 | 0.68 | 43,174 | 42.2 |
+| `air prod N1024 B16Q40G20C4F16` | 42.26 | 0.86 | 68,573 | 67.0 |
+| `air prod N8192 B16Q40G20C4F32` | 53.99 | 1.22 | 101,233 | 98.9 |
+| `air prod N65536 B16Q40G20C4F16` | 138.11 | 1.65 | 141,641 | 138.3 |
+| `air prod N1048576 B16Q40G20C4F16` | 1,758.45 | 2.17 | 203,553 | 198.8 |
 
-Marginal cost per step (1M row): `5194.42 / 1048576 ≈ 4.95 µs/step`
-(≈202k steps/s). The 20-bit PoW grind is amortized over the trace at
+Marginal cost per step (1M row): `1758.45 / 1048576 ≈ 1.68 µs/step`
+(≈596k steps/s). The 20-bit PoW grind is amortized over the trace at
 scale; on small production rows it dominates run-to-run variance
 (the N8192 row fluctuates ~75–100 ms between runs).
 
@@ -55,13 +55,13 @@ path per layer.
 
 | Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
 |---|---|---|---|---|
-| `basefold P1024 B16Q40G20` | 43.63 | 1.14 | 127,658 | 124.7 |
-| `basefold-capped P1024 B16Q40G20C4` | 44.78 | 0.91 | 80,018 | 78.1 |
-| `gemini P1024 B16Q40G20` | 693.04 | 54.42 | 888,672 | 867.8 |
+| `basefold P1024 B16Q40G20` | 31.10 | 0.97 | 127,658 | 124.7 |
+| `basefold-capped P1024 B16Q40G20C4` | 30.26 | 0.88 | 80,018 | 78.1 |
+| `gemini P1024 B16Q40G20` | 424.37 | 54.37 | 887,872 | 867.1 |
 
 Cap height 4 shrinks the BaseFold proof by ~37% on this shape. Against
-Gemini the uncapped prototype is ~16× faster to prove, ~48× faster to
-verify, and ~7× smaller; capped is ~19× faster to prove, ~60× faster to
+Gemini the uncapped prototype is ~14× faster to prove, ~56× faster to
+verify, and ~7× smaller; capped is ~14× faster to prove, ~62× faster to
 verify, and ~11× smaller. The comparison is a prototype result, not an
 audit: the sumcheck/FRI composition needs a written soundness argument,
 and WHIR-style batching is required before large tables.
@@ -77,7 +77,7 @@ multiplicities. The witness and table columns never travel on the wire.
 
 | Row | Prove (ms) | Verify (ms) | Commitments + proof (B) | (KiB) |
 |---|---|---|---|---|
-| `lookup-pcs 1024-in-1024 B16Q40G20C4` | 367.04 | 20.67 | 642,443 | 627.4 |
+| `lookup-pcs 1024-in-1024 B16Q40G20C4` | 316.93 | 20.24 | 642,443 | 627.4 |
 
 Four sumchecks cover the rational identity and read-checks; the total
 multiplicity weight is folded into the sum-t claim with a fresh `gamma`.
@@ -97,7 +97,7 @@ boundaries at degree below `2n - 1`.
 
 | Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
 |---|---|---|---|---|
-| `vm 64-step B16Q12C2` | 1.53 | 0.24 | 14,933 | 14.6 |
+| `vm 64-step B16Q12C2` | 1.25 | 0.21 | 14,933 | 14.6 |
 
 This is a fast, weak query schedule and the plain (non-hiding) proving path:
 programs are public and straight-line, the initial state is the witness, and
@@ -110,15 +110,15 @@ privacy, and a hiding PCS/sumcheck remain roadmap items.
 
 | Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
 |---|---|---|---|---|
-| `fri poly256 B4 Q12` | 1.04 | 0.14 | 11,522 | 11.3 |
-| `air fib64` | 0.88 | 0.17 | 16,305 | 15.9 |
-| `range 16-bit` | 0.44 | 0.09 | 5,217 | 5.1 |
-| `table 4-entry` | 0.33 | 0.06 | 4,673 | 4.6 |
-| `lookup 64-in-16` | 0.29 | 0.20 | 2,897 | 2.8 |
-| `fold 4x8 fib` | 0.74 | 0.22 | 16,845 | 16.5 |
-| `air fib1024` | 6.45 | 0.32 | 29,097 | 28.4 |
+| `fri poly256 B4 Q12` | 0.49 | 0.09 | 11,522 | 11.3 |
+| `air fib64` | 0.52 | 0.13 | 15,465 | 15.1 |
+| `range 16-bit` | 0.31 | 0.08 | 5,217 | 5.1 |
+| `table 4-entry` | 0.24 | 0.05 | 4,673 | 4.6 |
+| `lookup 64-in-16` | 0.28 | 0.18 | 2,897 | 2.8 |
+| `fold 4x8 fib` | 0.65 | 0.20 | 16,845 | 16.5 |
+| `air fib1024` | 3.52 | 0.24 | 28,257 | 27.6 |
 
-Lookup's v4 extension-field proof is larger than its former base-field form: multiplicities,
+Lookup's extension-field proof is larger than its former base-field form: multiplicities,
 quotients, and four sumcheck proofs now carry 16-byte `Fp4` values
 (688 -> 2,897 B). Tower-norm `Fp4` inversion brings prove/verify back to
 ~0.29/0.19 ms. Proof sizes now come from the real canonical codec rather
@@ -129,13 +129,13 @@ unchanged by this migration.
 
 | Row | Result |
 |---|---|
-| `blake3 1MiB` | 1.42 ms (load-dependent) |
-| `gf2 F64 mul` | 287.31 ms for 1M ops (3.5 Mops/s) |
-| `bb field mul` | 7.36 ms for 1M ops (~136 Mops/s) |
+| `blake3 1MiB` | 2.24 ms (447 MB/s; load-dependent) |
+| `gf2 F64 mul` | 280.41 ms for 1M ops (3.6 Mops/s) |
+| `bb field mul` | 6.64 ms for 1M ops (~150 Mops/s) |
 | `ntt forward 2^14` | 0.33 ms |
-| `merkle 64k leaves` | 3.96 ms |
+| `merkle 64k leaves` | 4.45 ms |
 
-## Vectorized hashing (`--features simd`, nightly; v1-era rows)
+## Vectorized hashing (`--features simd`, nightly)
 
 Tier 4 batches Merkle leaf/node BLAKE3 eight lanes at a time with
 `std::simd` (`u32x8`), byte-identical to the scalar path. Same-session
@@ -143,15 +143,12 @@ paired runs on this box (which is not idle), nightly:
 
 | Row | Scalar | `--features simd` |
 |---|---|---|
-| `merkle 64k leaves` (quiet) | 8.5 ms | **3.2 ms** (~2.6×) |
-| `merkle 64k leaves` (loaded) | 9.9 ms | **8.5 ms** (~1.2×) |
-| `air prod N1048576` prove | 4,558 ms | **3,980 ms** (~13%) |
+| `merkle 64k leaves` | 4.45 ms | **2.21 ms** (~2.0×) |
+| `blake3 1MiB` | 2.24 ms | **1.68 ms** (~1.3×) |
+| `air prod N1048576` prove | 1,758.45 ms | **1,555.20 ms** (~12%) |
 
 SIMD is faster in every paired run; absolute gains depend heavily on box
-load (the scalar baseline row itself ranged 3.3–13.9 ms across sessions).
-The proof rows above predate the v3 `Fp4` wire format and have not been
-re-baselined with SIMD; rerun nightly before quoting them for v3.
-End-to-end gains are bounded because NTT, composition, and the transcript
+load. End-to-end gains are bounded because NTT, composition, and folding
 are the other large prove costs. Builds without the feature are unaffected
 (scalar fallback, stable MSRV 1.74).
 

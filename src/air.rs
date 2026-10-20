@@ -226,10 +226,14 @@ pub struct TraceOpening {
     pub a_next: Field,
     /// Columns at the shifted index `index + lde_len / n_steps`.
     pub b_next: Field,
-    /// Merkle path of the joint row leaf (`A || B`) at `index`.
+    /// Merkle path of the 64-byte leaf containing the row at `index`.
     pub path: Vec<([u8; 32], bool)>,
-    /// Merkle path of the joint row leaf (`A || B`) at the shifted index.
+    /// Merkle path of the 64-byte leaf containing the shifted row.
     pub shift_path: Vec<([u8; 32], bool)>,
+    /// Eight packed joint rows (`A || B`, 8 bytes each) containing `index`.
+    pub leaf: [u8; 64],
+    /// Eight packed joint rows containing the shifted index.
+    pub shift_leaf: [u8; 64],
 }
 
 /// AIR proof: trace roots, FRI commitment/proof, trace openings.
@@ -248,7 +252,7 @@ pub struct Proof {
 
 impl Proof {
     /// Canonical bytes: version, column cap, FRI commitment/proof, then
-    /// openings (index, four fields, both paths each).
+    /// openings (index, four fields, both paths, and both 64-byte leaves).
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut writer = crate::codec::Writer::new();
@@ -265,6 +269,8 @@ impl Proof {
             writer.field(opening.b_next);
             writer.path(&opening.path);
             writer.path(&opening.shift_path);
+            writer.bytes(&opening.leaf);
+            writer.bytes(&opening.shift_leaf);
         }
         writer.finish()
     }
@@ -284,14 +290,25 @@ impl Proof {
         let fri_proof = fri::Proof::read_body(&mut reader)?;
         let mut openings = Vec::new();
         for _ in 0..reader.count(MAX_QUERIES)? {
+            let index = reader.dimension()?;
+            let a = reader.field()?;
+            let b = reader.field()?;
+            let a_next = reader.field()?;
+            let b_next = reader.field()?;
+            let path = reader.path()?;
+            let shift_path = reader.path()?;
+            let leaf = read_leaf(&mut reader)?;
+            let shift_leaf = read_leaf(&mut reader)?;
             openings.push(TraceOpening {
-                index: reader.dimension()?,
-                a: reader.field()?,
-                b: reader.field()?,
-                a_next: reader.field()?,
-                b_next: reader.field()?,
-                path: reader.path()?,
-                shift_path: reader.path()?,
+                index,
+                a,
+                b,
+                a_next,
+                b_next,
+                path,
+                shift_path,
+                leaf,
+                shift_leaf,
             });
         }
         reader.end()?;
@@ -302,6 +319,13 @@ impl Proof {
             openings,
         })
     }
+}
+
+fn read_leaf(reader: &mut crate::codec::Reader<'_>) -> Result<[u8; 64]> {
+    let bytes = reader.take_bytes(64)?;
+    let mut leaf = [0u8; 64];
+    leaf.copy_from_slice(bytes);
+    Ok(leaf)
 }
 
 /// Build the Fibonacci trace columns from the input claims.
@@ -335,7 +359,9 @@ pub fn build_trace(a0: Field, b0: Field, n_steps: usize) -> (Vec<Field>, Vec<Fie
 /// Returns [`Error`] for domain or Merkle failures (all structural).
 pub fn prove(params: Params, transcript: &mut Transcript) -> Result<Proof> {
     let (col_a, col_b) = build_trace(params.a0, params.b0, params.n_steps);
-    prove_with_trace(params, &col_a, &col_b, transcript)
+    params.validate()?;
+    let coeff_a = interpolate(&col_a)?;
+    prove_linked(params, &coeff_a, col_b[params.n_steps - 1], transcript)
 }
 
 /// Prove with explicit trace columns (expert API).
@@ -364,6 +390,28 @@ pub fn prove_with_trace(
     let coeff_a = interpolate(col_a)?;
     let coeff_b = interpolate(col_b)?;
     prove_from_coeffs(params, &coeff_a, &coeff_b, n - 1, transcript)
+}
+
+/// Prove a canonical Fibonacci trace, deriving the second column's LDE from
+/// the first instead of running a second NTT.
+///
+/// For `i < n - 1`, `b_i = a_{i+1}`, so `B(X) = A(omega_n X)` at every base
+/// row except the last. One Lagrange correction fixes the last row without
+/// changing any committed value; `prove_with_trace` keeps the general path.
+fn prove_linked(
+    params: Params,
+    coeff_a: &[Field],
+    actual_b_last: Field,
+    transcript: &mut Transcript,
+) -> Result<Proof> {
+    prove_inner(
+        params,
+        coeff_a,
+        None,
+        params.n_steps - 1,
+        Some(actual_b_last),
+        transcript,
+    )
 }
 
 /// Prove zero-knowledge: identical to [`prove`] except both trace columns
@@ -409,15 +457,40 @@ fn prove_from_coeffs(
     degree_bound: usize,
     transcript: &mut Transcript,
 ) -> Result<Proof> {
+    prove_inner(
+        params,
+        coeff_a,
+        Some(coeff_b),
+        degree_bound,
+        None,
+        transcript,
+    )
+}
+
+fn prove_inner(
+    params: Params,
+    coeff_a: &[Field],
+    coeff_b: Option<&[Field]>,
+    degree_bound: usize,
+    linked_b_last: Option<Field>,
+    transcript: &mut Transcript,
+) -> Result<Proof> {
+    params.validate()?;
     let n = params.n_steps;
     absorb_params(params, transcript);
 
     let omega_base = Field::primitive_root(n)?;
-    let lde_cols = [
-        evaluate_on_coset(coeff_a, params.blowup, crate::fri::LDE_SHIFT)?,
-        evaluate_on_coset(coeff_b, params.blowup, crate::fri::LDE_SHIFT)?,
-    ];
-    let m = lde_cols[0].len();
+    let lde_a = evaluate_on_coset(coeff_a, params.blowup, crate::fri::LDE_SHIFT)?;
+    let m = lde_a.len();
+    let lde_b = if let Some(coeff_b) = coeff_b {
+        evaluate_on_coset(coeff_b, params.blowup, crate::fri::LDE_SHIFT)?
+    } else {
+        let actual_b_last = linked_b_last.ok_or(Error::MalformedInput {
+            reason: "linked trace needs its final column value",
+        })?;
+        linked_lde(&lde_a, n, actual_b_last, params.a0)?
+    };
+    let lde_cols = [lde_a, lde_b];
     // Shift offset in LDE index space: `omega_base * x_i = x_{(i + offset)}`
     // because `omega_m^offset = omega_base` for `offset = m / n`. Masked
     // proofs use a larger (padded) LDE; `m / n` stays exact (both powers
@@ -438,8 +511,9 @@ fn prove_from_coeffs(
             slot.copy_from_slice(&lde[i].to_le_bytes());
         }
     }
-    let tree = MerkleTree::from_flat(&flat, row_len)?;
-    let (drop, _) = crate::merkle::capped_shape(m, params.cap_height);
+    let tree = MerkleTree::from_flat64(&flat)?;
+    let leaves = m / 8;
+    let (drop, _) = crate::merkle::capped_shape(leaves, params.cap_height);
     let column_cap = tree.cap(drop);
     transcript.absorb(b"fib/trace", &crate::merkle::cap_bytes(&column_cap));
 
@@ -468,7 +542,7 @@ fn prove_from_coeffs(
     // Declared degree bound comes from the caller: `< N` plain, higher
     // with masking (rate stays `< 1` either way).
     let fri_params = params.fri_params()?;
-    let fri_state = fri::commit_ext_evals(&composition, degree_bound, fri_params, transcript)?;
+    let fri_state = fri::commit_ext_evals_owned(composition, degree_bound, fri_params, transcript)?;
     let fri_commitment = fri::public_commitment(&fri_state);
     let (fri_proof, fri_indices) = fri::open(&fri_state, transcript)?;
 
@@ -477,8 +551,14 @@ fn prove_from_coeffs(
     for &leaf in &fri_indices {
         let index = bit_reverse_index(leaf, log_m);
         let shifted = (index + offset) % m;
-        let path = tree.prove_capped(index, drop)?;
-        let shift_path = tree.prove_capped(shifted, drop)?;
+        let base = index & !7;
+        let shift_base = shifted & !7;
+        let path = tree.prove_capped(base / 8, drop)?;
+        let shift_path = tree.prove_capped(shift_base / 8, drop)?;
+        let mut leaf_bytes = [0u8; 64];
+        leaf_bytes.copy_from_slice(&flat[base * row_len..base * row_len + 64]);
+        let mut shift_leaf = [0u8; 64];
+        shift_leaf.copy_from_slice(&flat[shift_base * row_len..shift_base * row_len + 64]);
         openings.push(TraceOpening {
             index,
             a: lde_cols[0][index],
@@ -487,6 +567,8 @@ fn prove_from_coeffs(
             b_next: lde_cols[1][shifted],
             path,
             shift_path,
+            leaf: leaf_bytes,
+            shift_leaf,
         });
     }
 
@@ -577,33 +659,50 @@ pub fn verify(params: Params, proof: &Proof, transcript: &mut Transcript) -> Res
         // malformed proofs fail before any hashing. The shifted index is
         // recomputed here, so `a_next`/`b_next` can only be the committed
         // columns at that position, never an independent witness.
-        let (drop, depth) = crate::merkle::capped_shape(m, params.cap_height);
+        if m % 8 != 0 {
+            return Err(Error::FriVerificationFailed);
+        }
+        let leaves = m / 8;
+        let (drop, depth) = crate::merkle::capped_shape(leaves, params.cap_height);
         if proof.column_cap.len() != 1usize << drop
             || opening.path.len() != depth - drop
             || opening.shift_path.len() != depth - drop
         {
             return Err(Error::BadMerklePath);
         }
+        let row_offset = (index & 7) * 8;
         let mut row = [0u8; 8];
-        row[..4].copy_from_slice(&opening.a.to_le_bytes());
-        row[4..].copy_from_slice(&opening.b.to_le_bytes());
+        row.copy_from_slice(&opening.leaf[row_offset..row_offset + 8]);
+        if row[..4] != opening.a.to_le_bytes() || row[4..] != opening.b.to_le_bytes() {
+            return Err(Error::BadMerklePath);
+        }
         let entry = proof
             .column_cap
-            .get(index >> (depth - drop))
+            .get((index / 8) >> (depth - drop))
             .ok_or(Error::BadMerklePath)?;
-        if !MerkleTree::verify_capped(entry, &row, index, depth, &opening.path) {
+        if !MerkleTree::verify_capped64(entry, &opening.leaf, index / 8, depth, &opening.path) {
             return Err(Error::BadMerklePath);
         }
         let shifted = (index + offset) % m;
+        let shift_offset = (shifted & 7) * 8;
         let mut shift_row = [0u8; 8];
-        shift_row[..4].copy_from_slice(&opening.a_next.to_le_bytes());
-        shift_row[4..].copy_from_slice(&opening.b_next.to_le_bytes());
+        shift_row.copy_from_slice(&opening.shift_leaf[shift_offset..shift_offset + 8]);
+        if shift_row[..4] != opening.a_next.to_le_bytes()
+            || shift_row[4..] != opening.b_next.to_le_bytes()
+        {
+            return Err(Error::BadMerklePath);
+        }
         let shift_entry = proof
             .column_cap
-            .get(shifted >> (depth - drop))
+            .get((shifted / 8) >> (depth - drop))
             .ok_or(Error::BadMerklePath)?;
-        if !MerkleTree::verify_capped(shift_entry, &shift_row, shifted, depth, &opening.shift_path)
-        {
+        if !MerkleTree::verify_capped64(
+            shift_entry,
+            &opening.shift_leaf,
+            shifted / 8,
+            depth,
+            &opening.shift_path,
+        ) {
             return Err(Error::BadMerklePath);
         }
         // Re-evaluate the composition identity at this point. The point
@@ -679,6 +778,49 @@ fn lde_point_at(m: usize, index: usize) -> Result<Field> {
 /// `offset = lde_len / n_steps`; next-row values are the same committed
 /// columns at index `(i + offset) mod lde_len` (the `omega_base * x` point
 /// in index space), never a separate witness column.
+/// Derive the second Fibonacci LDE from the first in one field pass.
+///
+/// `B(X) = A(omega_n X)` holds at all base rows except the last; adding
+/// `delta * L_{n-1}(X)` with `delta = b_last - A(1)` and the Lagrange
+/// basis for the last root makes the two polynomials equal. On the coset,
+/// `A(omega_n x)` is the first LDE shifted by `m/n`, and the correction is
+/// evaluated from `(x^n - 1) / (x - w_last)` in the same pass.
+fn linked_lde(lde_a: &[Field], n: usize, actual_b_last: Field, a0: Field) -> Result<Vec<Field>> {
+    let m = lde_a.len();
+    if n == 0 || !n.is_power_of_two() || m % n != 0 {
+        return Err(Error::MalformedInput {
+            reason: "linked LDE dimensions must be powers of two",
+        });
+    }
+    let offset = m / n;
+    let omega_m = Field::primitive_root(m)?;
+    let omega_n = Field::primitive_root(n)?;
+    let w_last = omega_n.pow((n - 1) as u64);
+    let ratio = omega_m.pow(n as u64);
+    let p0 = crate::fri::LDE_SHIFT.pow(n as u64);
+    let n_inv = Field::from_u64(n as u64).inv();
+    let coeff = (actual_b_last - a0) * w_last * n_inv;
+    let mut out = vec![Field::ZERO; m];
+    crate::par::for_each_indexed(&mut out, 2048, |base, piece| {
+        let mut x = crate::fri::LDE_SHIFT * omega_m.pow(base as u64);
+        let mut xn = p0 * ratio.pow(base as u64);
+        let mut den = Vec::with_capacity(piece.len());
+        let mut vanishing = Vec::with_capacity(piece.len());
+        for _ in 0..piece.len() {
+            den.push(x - w_last);
+            vanishing.push(xn - Field::ONE);
+            x *= omega_m;
+            xn *= ratio;
+        }
+        let inv = crate::babybear::batch_invert(&den);
+        for (j, slot) in piece.iter_mut().enumerate() {
+            let i = base + j;
+            *slot = lde_a[(i + offset) % m] + coeff * vanishing[j] * inv[j];
+        }
+    });
+    Ok(out)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compose(
     cols: &[Vec<Field>; 2],
@@ -836,6 +978,18 @@ mod tests {
         assert!(Params::new(16, 8, 0, 4, Field::ONE, Field::ONE, Field::ONE).is_err());
         let huge = 1usize << (usize::BITS - 1);
         assert!(Params::new(huge, 4, 8, 4, Field::ONE, Field::ONE, Field::ONE).is_err());
+    }
+
+    #[test]
+    fn linked_lde_matches_independent_ntt() {
+        let n = 16;
+        let (col_a, col_b) = build_trace(Field::new(7), Field::new(11), n);
+        let coeff_a = interpolate(&col_a).unwrap();
+        let coeff_b = interpolate(&col_b).unwrap();
+        let lde_a = evaluate_on_coset(&coeff_a, 8, crate::fri::LDE_SHIFT).unwrap();
+        let lde_b = evaluate_on_coset(&coeff_b, 8, crate::fri::LDE_SHIFT).unwrap();
+        let derived = linked_lde(&lde_a, n, col_b[n - 1], col_a[0]).unwrap();
+        assert_eq!(derived, lde_b);
     }
 
     #[test]
@@ -1124,9 +1278,9 @@ mod tests {
         let mut prover_t = Transcript::new(b"fib-cap");
         let proof = prove(params, &mut prover_t).unwrap();
         assert_eq!(proof.column_cap.len(), 4);
-        // Column paths shrink by the cap height (depth 7 -> 5 steps).
+        // Eight rows per leaf (depth 4), minus cap height 2.
         for opening in &proof.openings {
-            assert_eq!(opening.path.len(), 5);
+            assert_eq!(opening.path.len(), 2);
         }
         let mut verifier_t = Transcript::new(b"fib-cap");
         verify(params, &proof, &mut verifier_t).unwrap();

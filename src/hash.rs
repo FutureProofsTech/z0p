@@ -350,6 +350,32 @@ pub(crate) fn leaf_digest(data: &[u8]) -> [u8; 32] {
     }
 }
 
+/// BLAKE3 root of one full 64-byte block.
+///
+/// Used by FRI quad commitments, where a leaf is exactly four `Ext4`
+/// coordinates. Hashing the block directly avoids the two-compression
+/// `0x00 || data` preimage used by generic variable-length leaves.
+pub(crate) fn leaf64_digest(block: &[u8; 64]) -> [u8; 32] {
+    chunk_output(block, 0, true)
+}
+
+/// Batch 64-byte leaf digests: `flat.len() == 64 * out.len()`.
+pub(crate) fn leaf64_digests(flat: &[u8], out: &mut [[u8; 32]]) {
+    debug_assert_eq!(flat.len(), 64 * out.len());
+    #[cfg(feature = "simd")]
+    {
+        simd::leaf64_digests(flat, out);
+    }
+    #[cfg(not(feature = "simd"))]
+    {
+        let mut block = [0u8; 64];
+        for (chunk, slot) in flat.chunks_exact(64).zip(out.iter_mut()) {
+            block.copy_from_slice(chunk);
+            *slot = leaf64_digest(&block);
+        }
+    }
+}
+
 /// Scalar node digest: BLAKE3 of `0x01 || left || right`.
 pub(crate) fn node_digest(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     let mut prefixed = [0u8; 65];
@@ -400,8 +426,8 @@ mod simd {
     //! parent preimage), so lane outputs are the same 256-bit digests the
     //! scalar code produces; only the instruction schedule differs.
     use super::{
-        chaining_bytes, leaf_digest, node_digest, words_from_block, BLOCK_LEN, BLOCK_LEN_U32,
-        CHUNK_END, CHUNK_START, IV, PERMUTATION, ROOT,
+        chaining_bytes, leaf64_digest, leaf_digest, node_digest, words_from_block, BLOCK_LEN,
+        BLOCK_LEN_U32, CHUNK_END, CHUNK_START, IV, PERMUTATION, ROOT,
     };
     use core::simd::u32x8;
 
@@ -565,6 +591,37 @@ mod simd {
         }
         for (k, slot) in out[i..].iter_mut().enumerate() {
             *slot = node_digest(&prev[2 * (i + k)], &prev[2 * (i + k) + 1]);
+        }
+    }
+
+    /// 64-byte leaf roots: one full-block compression per lane.
+    pub(super) fn leaf64_digests(flat: &[u8], out: &mut [[u8; 32]]) {
+        let count = out.len();
+        let mut i = 0;
+        while i + 8 <= count {
+            let blocks: [[u32; 16]; 8] = core::array::from_fn(|lane| {
+                let start = (i + lane) * 64;
+                let mut buf = [0u8; BLOCK_LEN];
+                buf.copy_from_slice(&flat[start..start + 64]);
+                words_from_block(&buf)
+            });
+            let outputs = compress_x8(
+                core::array::from_fn(|i| u32x8::splat(IV[i])),
+                &blocks,
+                0,
+                BLOCK_LEN_U32,
+                CHUNK_START | CHUNK_END | ROOT,
+            );
+            for (lane, output) in outputs.iter().enumerate() {
+                out[i + lane] = chaining_bytes(output);
+            }
+            i += 8;
+        }
+        for (k, slot) in out[i..].iter_mut().enumerate() {
+            let start = (i + k) * 64;
+            let mut block = [0u8; 64];
+            block.copy_from_slice(&flat[start..start + 64]);
+            *slot = leaf64_digest(&block);
         }
     }
 }

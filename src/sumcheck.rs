@@ -21,10 +21,14 @@
 //! algebraic error is bounded by roughly `degree / p^4`.
 
 use crate::babybear::Field;
+use crate::codec::{Reader, Writer, MAX_ELEMS, VERSION};
 use crate::error::{Error, Result};
 use crate::ext4::Ext4;
 use crate::mle::Mle;
 use crate::transcript::Transcript;
+
+/// Maximum number of rounds accepted by the decoder (one per variable).
+const MAX_ROUNDS: u32 = 32;
 
 /// One summand term: `coeff * prod(factors)` with factors as [`Mle`] indices.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,6 +56,69 @@ pub struct Proof {
     pub round_evals: Vec<Vec<Ext4>>,
     /// Each [`Mle`] evaluated at the full challenge point.
     pub final_values: Vec<Ext4>,
+}
+
+impl Proof {
+    /// Canonical bytes: version, claimed sum, rounds, final values.
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut writer = Writer::new();
+        writer.byte(VERSION);
+        self.write_body(&mut writer);
+        writer.finish()
+    }
+
+    /// Decode [`Proof::to_bytes`] output, rejecting anything else.
+    ///
+    /// Shape-checked only; soundness checks happen in [`verify`].
+    ///
+    /// # Errors
+    /// Returns [`Error::MalformedInput`] on any encoding violation.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut reader = Reader::new(bytes);
+        reader.version()?;
+        let proof = Self::read_body(&mut reader)?;
+        reader.end()?;
+        Ok(proof)
+    }
+
+    /// Append the version-free body.
+    pub(crate) fn write_body(&self, writer: &mut Writer) {
+        writer.ext4(self.sum);
+        writer.count(self.round_evals.len());
+        for round in &self.round_evals {
+            writer.count(round.len());
+            for &value in round {
+                writer.ext4(value);
+            }
+        }
+        writer.count(self.final_values.len());
+        for &value in &self.final_values {
+            writer.ext4(value);
+        }
+    }
+
+    /// Read a version-free body.
+    pub(crate) fn read_body(reader: &mut Reader<'_>) -> Result<Self> {
+        let sum = reader.ext4()?;
+        let mut round_evals = Vec::new();
+        for _ in 0..reader.count(MAX_ROUNDS)? {
+            let mut round = Vec::new();
+            for _ in 0..reader.count(MAX_ELEMS)? {
+                round.push(reader.ext4()?);
+            }
+            round_evals.push(round);
+        }
+        let mut final_values = Vec::new();
+        for _ in 0..reader.count(MAX_ELEMS)? {
+            final_values.push(reader.ext4()?);
+        }
+        Ok(Self {
+            sum,
+            round_evals,
+            final_values,
+        })
+    }
 }
 
 /// Prove `sum f = S` for the given [`Mle`] table and [`Term`]s.
@@ -349,6 +416,25 @@ mod tests {
         let proof = prove(std::slice::from_ref(&a), &terms, &mut pt).unwrap();
         let mut vt = Transcript::new(b"sc-B");
         assert!(verify(&[a], &terms, &proof, &mut vt).is_err());
+    }
+
+    #[test]
+    fn encoding_roundtrip_and_rejects() {
+        let mut seed = 0x1234_abcd_5678_ef01u64;
+        let a = random_mle(3, &mut seed);
+        let terms = [Term::new(Ext4::from_base(Field::new(7)), vec![0])];
+        let mut transcript = Transcript::new(b"sc-encode");
+        let proof = prove(std::slice::from_ref(&a), &terms, &mut transcript).unwrap();
+        let bytes = proof.to_bytes();
+        assert_eq!(Proof::from_bytes(&bytes).unwrap(), proof);
+        assert!(Proof::from_bytes(&[]).is_err());
+        assert!(Proof::from_bytes(&bytes[..bytes.len() - 1]).is_err());
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(Proof::from_bytes(&trailing).is_err());
+        let mut version = bytes;
+        version[0] = VERSION.wrapping_add(1);
+        assert!(Proof::from_bytes(&version).is_err());
     }
 
     #[test]

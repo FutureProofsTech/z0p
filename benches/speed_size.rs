@@ -113,29 +113,6 @@ fn table_proof_bytes(proof: &table::Proof) -> usize {
     total
 }
 
-fn sumcheck_proof_bytes(proof: &z0p::sumcheck::Proof) -> usize {
-    let mut total = 16;
-    for round in &proof.round_evals {
-        total += 4 + 16 * round.len();
-    }
-    total += 4 + 16 * proof.final_values.len();
-    total
-}
-
-fn lookup_proof_bytes(proof: &lookup::Proof) -> usize {
-    16 + 4
-        + 16 * proof.multiplicities.len()
-        + 4
-        + 16 * proof.quot_w.len()
-        + 4
-        + 16 * proof.quot_t.len()
-        + 32
-        + sumcheck_proof_bytes(&proof.sc_sum_w)
-        + sumcheck_proof_bytes(&proof.sc_read_w)
-        + sumcheck_proof_bytes(&proof.sc_sum_t)
-        + sumcheck_proof_bytes(&proof.sc_read_t)
-}
-
 fn fold_proof_bytes(proof: &fold::IvcProof) -> usize {
     let mut total = 1
         + 4
@@ -356,7 +333,7 @@ fn bench_lookup() {
         assert!(ok);
         black_box(ok);
     });
-    let bytes = lookup_proof_bytes(&proof);
+    let bytes = proof.to_bytes().len();
     println!(
         "lookup 64-in-16    : prove {prove_ms:8.2} ms  verify {verify_ms:8.2} ms  proof {bytes} B ({:.1} KiB)",
         kb(bytes)

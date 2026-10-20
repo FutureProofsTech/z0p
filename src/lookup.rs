@@ -24,11 +24,15 @@
 //! when privacy matters.
 
 use crate::babybear::Field;
+use crate::codec::{Reader, Writer, MAX_ELEMS, VERSION};
 use crate::error::{Error, Result};
 use crate::ext4::Ext4;
 use crate::mle::Mle;
 use crate::sumcheck::{self, Proof as ScProof, Term};
 use crate::transcript::Transcript;
+
+/// Maximum encoded size of one nested sumcheck proof.
+const MAX_NESTED_BYTES: u32 = 1 << 27;
 
 /// `LogUp` membership proof (all vectors in index order, padded lengths).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +58,88 @@ pub struct Proof {
     pub sc_sum_t: ScProof,
     /// Sumcheck: read-check `quot_t * (beta + t) = m`.
     pub sc_read_t: ScProof,
+}
+
+impl Proof {
+    /// Canonical bytes: version, challenge, columns, sums, nested sumchecks.
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut writer = Writer::new();
+        writer.byte(VERSION);
+        writer.ext4(self.beta);
+        writer.count(self.multiplicities.len());
+        for &value in &self.multiplicities {
+            writer.ext4(value);
+        }
+        writer.count(self.quot_w.len());
+        for &value in &self.quot_w {
+            writer.ext4(value);
+        }
+        writer.count(self.quot_t.len());
+        for &value in &self.quot_t {
+            writer.ext4(value);
+        }
+        writer.ext4(self.sum_w);
+        writer.ext4(self.sum_t);
+        for proof in [
+            &self.sc_sum_w,
+            &self.sc_read_w,
+            &self.sc_sum_t,
+            &self.sc_read_t,
+        ] {
+            let bytes = proof.to_bytes();
+            writer.count(bytes.len());
+            writer.bytes(&bytes);
+        }
+        writer.finish()
+    }
+
+    /// Decode [`Proof::to_bytes`] output, rejecting anything else.
+    ///
+    /// Shape-checked only; soundness checks happen in [`verify`].
+    ///
+    /// # Errors
+    /// Returns [`Error::MalformedInput`] on any encoding violation.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut reader = Reader::new(bytes);
+        reader.version()?;
+        let beta = reader.ext4()?;
+        let multiplicities = read_ext_vec(&mut reader)?;
+        let quot_w = read_ext_vec(&mut reader)?;
+        let quot_t = read_ext_vec(&mut reader)?;
+        let sum_w = reader.ext4()?;
+        let sum_t = reader.ext4()?;
+        let sc_sum_w = read_sc_proof(&mut reader)?;
+        let sc_read_w = read_sc_proof(&mut reader)?;
+        let sc_sum_t = read_sc_proof(&mut reader)?;
+        let sc_read_t = read_sc_proof(&mut reader)?;
+        reader.end()?;
+        Ok(Self {
+            beta,
+            multiplicities,
+            quot_w,
+            quot_t,
+            sum_w,
+            sum_t,
+            sc_sum_w,
+            sc_read_w,
+            sc_sum_t,
+            sc_read_t,
+        })
+    }
+}
+
+fn read_ext_vec(reader: &mut Reader<'_>) -> Result<Vec<Ext4>> {
+    let mut values = Vec::new();
+    for _ in 0..reader.count(MAX_ELEMS)? {
+        values.push(reader.ext4()?);
+    }
+    Ok(values)
+}
+
+fn read_sc_proof(reader: &mut Reader<'_>) -> Result<ScProof> {
+    let len = reader.count(MAX_NESTED_BYTES)?;
+    ScProof::from_bytes(reader.take_bytes(len)?)
 }
 
 /// Prove membership of `witness` in `table`.
@@ -503,6 +589,28 @@ mod tests {
             sc_sum_t,
             sc_read_t,
         }
+    }
+
+    #[test]
+    fn encoding_roundtrip_and_rejects() {
+        let witness = fields(&[10, 20, 10]);
+        let table = fields(&[10, 20, 30, 40]);
+        let mut pt = Transcript::new(b"lookup-encode");
+        let proof = prove(&witness, &table, &mut pt).unwrap();
+        let bytes = proof.to_bytes();
+        let decoded = Proof::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, proof);
+        let mut vt = Transcript::new(b"lookup-encode");
+        verify(&witness, &table, &decoded, &mut vt).unwrap();
+
+        assert!(Proof::from_bytes(&[]).is_err());
+        assert!(Proof::from_bytes(&bytes[..bytes.len() - 1]).is_err());
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(Proof::from_bytes(&trailing).is_err());
+        let mut version = bytes;
+        version[0] = VERSION.wrapping_add(1);
+        assert!(Proof::from_bytes(&version).is_err());
     }
 
     #[test]

@@ -30,7 +30,7 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
   (~4.75 µs/step, ~210k steps/s), verified in **~2.6 ms**, 206,353 bytes.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 224 unit tests plus three attack suites
+- **Adversarially tested** — 226 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -93,7 +93,7 @@ Full table with methodology: [docs/benchmarks.md](docs/benchmarks.md).
 
 | Primitive | Result |
 |---|---|
-| BLAKE3 1 MiB | 2.93 ms (~342 MB/s) |
+| BLAKE3 1 MiB | ~1.3–2.9 ms (load-dependent) |
 | BabyBear mul | ~151 Mops/s |
 | NTT forward 2¹⁴ | 0.33 ms |
 | Merkle 65,536 leaves | 3.7 ms |
@@ -130,7 +130,7 @@ system before an external audit.
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 224 tests across 22 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 226 tests across 22 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 8 vectors: hostile `Params`, decoder bit-flip fuzz, RNG uniformity | this README |

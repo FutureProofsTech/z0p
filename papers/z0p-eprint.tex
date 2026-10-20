@@ -35,7 +35,7 @@ quartic extension $\mathbb{F}_{p^4}$, raising per-challenge algebraic
 bounds to $\approx 124$ bits (see Section~\ref{sec:security}). Measured on a
 16-core machine, a 1,048,576-step computation proves in 4.98~s
 ($\approx 4.75\,\mu$s/step), verifies in 2.6~ms, with a 206,353-byte proof.
-Validation combines 224 unit tests with three adversarial suites
+Validation combines 226 unit tests with three adversarial suites
 ($\approx 800$ hostile attempts per run, zero acceptances, zero panics),
 wire-exact size assertions on every benchmark, and machine-checked
 regression gates.
@@ -220,7 +220,8 @@ and masked false statements still fail.
 Wire format (\texttt{VERSION}~=~3): counts as $u32$, dimensions as
 $u64$, base fields as 4 canonical bytes and extension values as 16
 canonical bytes ($<p$ per coordinate), digests as 32 bytes, direction
-bits $0/1$. The decoder fails closed on wrong
+bits $0/1$. Lookup and sumcheck proofs use the same framing, with
+canonical extension values and nested versioned sumcheck bodies. The decoder fails closed on wrong
 versions, trailing bytes, truncation, non-canonical fields, and counts
 past hard caps ($2^{20}$ queries, $64$ folds, $128$ path steps,
 $256$ cap digests, $2^{27}$ elements, $2^{20}$ IVC steps) before any
@@ -239,7 +240,7 @@ check at true folded points; cap/path shape pins before hashing;
 \texttt{fri-dims} dimension binding; canonical-only decoding; PoW
 bound to history with queries sampled after.
 
-\paragraph{Adversarial validation.} Three layers: 224 unit tests
+\paragraph{Adversarial validation.} Three layers: 226 unit tests
 (KATs, Horner cross-checks, parallel-vs-sequential identity); a
 13-vector security suite (tampering of every query/fold/value/path/
 digest, 300 single-bit-flip fuzz trials, PoW forgery, rate gates both

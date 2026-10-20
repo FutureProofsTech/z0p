@@ -73,7 +73,7 @@ Reed–Solomon proximity testing.
    extension-field (`Fp4`) challenges, raising per-challenge algebraic
    bounds to ~124 bits. This is still a conjectured query/PoW schedule,
    not an end-to-end soundness proof.
-5. **Evidence over claims.** 224 unit tests, three adversarial suites
+5. **Evidence over claims.** 226 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught

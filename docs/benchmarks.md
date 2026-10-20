@@ -47,20 +47,21 @@ building that table.
 | `air fib64` | 0.88 | 0.17 | 16,305 | 15.9 |
 | `range 16-bit` | 0.39 | 0.09 | 5,217 | 5.1 |
 | `table 4-entry` | 0.33 | 0.06 | 4,673 | 4.6 |
-| `lookup 64-in-16` | 0.78 | 0.54 | 2,860 | 2.8 |
+| `lookup 64-in-16` | 0.76 | 0.53 | 2,897 | 2.8 |
 | `fold 4x8 fib` | 0.74 | 0.22 | 16,845 | 16.5 |
 | `air fib1024` | 5.57 | 0.30 | 29,097 | 28.4 |
 
 Lookup's v3 proof is larger and slower than its former base-field form:
 multiplicities, quotients, and four sumcheck proofs now carry 16-byte
-`Fp4` values (688 -> 2,860 B). The AIR/FRI production rows above are
+`Fp4` values (688 -> 2,897 B). Proof sizes now come from the real
+canonical codec rather than a hand-written estimator. The AIR/FRI production rows above are
 unchanged by this migration.
 
 ## Primitives
 
 | Row | Result |
 |---|---|
-| `blake3 1MiB` | 2.93 ms (~342 MB/s) |
+| `blake3 1MiB` | 1.3–2.9 ms (load-dependent) |
 | `gf2 F64 mul` | 281.54 ms for 1M ops (3.6 Mops/s) |
 | `bb field mul` | 6.61 ms for 1M ops (~151 Mops/s) |
 | `ntt forward 2^14` | 0.33 ms |

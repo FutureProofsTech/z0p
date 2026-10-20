@@ -291,7 +291,7 @@ cap/path shape pins before hashing; `fri-dims` dimension binding
 (closes proof malleability of echoed dimensions); canonical-only
 decoding; PoW bound to history with queries sampled after.
 
-**Validation.** 224 unit tests (KATs, cross-checks against Horner/`%`,
+**Validation.** 226 unit tests (KATs, cross-checks against Horner/`%`,
 parallel-vs-sequential identity), 13-test security suite and 10-test
 red-team suite (~800 hostile attempts/run, zero acceptances, zero
 panics), wire-exact size assertions on every benchmark, and a

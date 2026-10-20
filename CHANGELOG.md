@@ -25,9 +25,15 @@ All notable changes to `z0p` are documented here. The format follows
   grew 186,961 -> 206,353 B; PCS and lookup proofs grow again in v3.
   `tools/baseline.json` was re-recorded after review. The 1M-step
   release prove remains ~4.98 s on this box.
-- **Test count 221 -> 224.** Added `ext4` tower/roundtrip tests, the
-  extension transcript test, and an extension NTT interpolation/coset
-  cross-check; docs/module tables updated to 22 modules.
+- **Canonical sumcheck/lookup codecs.** `sumcheck::Proof` and
+  `lookup::Proof` now expose `to_bytes`/`from_bytes` under wire version 3,
+  with capped nested sumcheck bodies, canonical `Fp4` values, and
+  fail-closed truncation/trailing/version checks. Benchmark sizes for
+  lookup are now measured from the real codec rather than estimated.
+- **Test count 221 -> 226.** Added `ext4` tower/roundtrip tests, the
+  extension transcript test, an extension NTT interpolation/coset
+  cross-check, and canonical codec roundtrip tests for sumcheck and
+  lookup; docs/module tables updated to 22 modules.
 
 ### Security
 - **FRI zero-grind nonce is canonical.** With grinding disabled, `open`

@@ -31,7 +31,7 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
   (~4.95 µs/step, ~202k steps/s), verified in **~2.3 ms**, 206,353 bytes.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 261 unit tests plus three attack suites
+- **Adversarially tested** — 266 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -76,8 +76,8 @@ let params = air::Params::for_security(steps, Field::ONE, Field::ONE, b_last, 10
 ```
 
 Zero-knowledge variants (`air::prove_zk`, `range::prove_zk`,
-`table::prove_zk`) mask the trace so query openings reveal nothing;
-verification is unchanged.
+`table::prove_zk`, `vm::prove_zk`) mask the trace so query openings reveal
+nothing; verification is unchanged.
 
 ## Performance
 
@@ -112,9 +112,9 @@ shrinking the proof by ~37% on this shape. Gemini remains the conservative
 v1 choice for small multilinear instances. The committed lookup commits the
 witness, table, multiplicities, and both quotient columns, then carries
 eight BaseFold openings; it hides columns from the wire but is not
-zero-knowledge. The `vm` row is a plain execution prototype: the program is
+zero-knowledge. The `vm` row is the plain proving path: the program is
 public, the initial registers are a witness, and FRI query openings are not
-masked.
+masked. `vm::prove_zk` masks both columns; it is not benchmarked here.
 
 | Primitive | Result |
 |---|---|
@@ -155,7 +155,7 @@ system before an external audit.
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 261 tests across 25 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 266 tests across 25 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 9 vectors: hostile `Params` (incl. VM), decoder bit-flip fuzz, RNG uniformity | this README |
@@ -189,7 +189,7 @@ src/
   basefold.rs   compact multilinear PCS prototype (sumcheck + FRI folds)
   lookup.rs     LogUp-style table membership via sumcheck
   lookup_pcs.rs committed LogUp over compact BaseFold openings
-  vm.rs         minimal register-machine program-execution AIR
+  vm.rs         minimal register-machine program-execution AIR (+ ZK)
   air.rs        Fibonacci AIR/STARK (+ ZK)
   range.rs      range-check AIR (+ ZK)
   recursion.rs  one-query FRI fold-chain AIR (recursion fragment)
@@ -270,9 +270,13 @@ CHANGELOG.md     release history (Keep a Changelog)
   two-register straight-line program from a private initial state to a
   public output: public one-hot opcode selectors and immediate
   polynomials drive a trace of committed `A`/`B` columns, with a
-  64-step proof at ~1.5 ms prove, ~0.24 ms verify, and 14,933 B. It is a
-  non-hiding execution prototype, not a general zkVM; control flow,
-  memory, instruction privacy, hiding PCS/sumcheck, and an audit remain.
+  64-step plain proof at ~1.5 ms prove, ~0.24 ms verify, and 14,933 B.
+  `prove_zk` masks both columns with the existing vanishing-multiple
+  layer, so query responses hide the initial state when
+  `n_rand >= num_queries`; callers must size `final_size` for the masked
+  LDE. It remains an execution prototype, not a general zkVM; control
+  flow, memory, instruction privacy, hiding PCS/sumcheck, and an audit
+  remain.
 - **External audit.** The suite, gates, versioned wire format, and pinned
   baselines are the pre-audit package.
 

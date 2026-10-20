@@ -37,7 +37,7 @@ quartic extension $\mathbb{F}_{p^4}$, raising per-challenge algebraic
 bounds to $\approx 124$ bits (see Section~\ref{sec:security}). Measured on a
 16-core machine, a 1,048,576-step computation proves in 5.19~s
 ($\approx 4.95\,\mu$s/step), verifies in 2.3~ms, with a 206,353-byte proof.
-Validation combines 261 unit tests with three adversarial suites
+Validation combines 266 unit tests with three adversarial suites
 ($\approx 800$ hostile attempts per run, zero acceptances, zero panics),
 wire-exact size assertions on every benchmark, and machine-checked
 regression gates.
@@ -238,10 +238,13 @@ C(x) ={}& \alpha_0\frac{T(x)}{Z_{\mathrm{trans}}(x)}
 \end{equation}
 The final row has no outgoing transition. Composition degree is below
 $2n-1$, so blowup is at least $8$; production tuning uses $16$. A
-64-step $B16Q12C2$ proof proves in 1.5\,ms, verifies in 0.24\,ms, and
-carries 14,933 bytes. The program is public and execution is
-straight-line; the initial state is the witness, there is no control
-flow or memory, and FRI query openings are not masked.
+64-step $B16Q12C2$ plain proof proves in 1.5\,ms, verifies in 0.24\,ms,
+and carries 14,933 bytes. The plain path is not hiding; \texttt{prove\_zk}
+masks both columns with random multiples of $x^n-1$, preserving the trace
+and hiding query responses when $n_{\mathrm{rand}}\ge Q$ (the caller
+sizes the final layer for the masked LDE). The program and output remain
+public and execution is straight-line; there is no control flow or
+memory.
 
 \paragraph{Zero knowledge.} Masked proving blinds columns with
 vanishing multiples from a ChaCha20 stream
@@ -274,7 +277,7 @@ check at true folded points; cap/path shape pins before hashing;
 \texttt{fri-dims} dimension binding; canonical-only decoding; PoW
 bound to history with queries sampled after.
 
-\paragraph{Adversarial validation.} Three layers: 261 unit tests
+\paragraph{Adversarial validation.} Three layers: 266 unit tests
 (KATs, Horner cross-checks, parallel-vs-sequential identity); a
 13-vector security suite (tampering of every query/fold/value/path/
 digest, 300 single-bit-flip fuzz trials, PoW forgery, rate gates both
@@ -346,8 +349,8 @@ experimental and not wired into production AIR/STARK paths; batched
 openings, a hiding PCS/sumcheck, self-proving recursion, control flow,
 memory, instruction privacy, and a general zkVM remain roadmap items.
 The \texttt{vm} prototype is a public-program, private-initial-state,
-two-register straight-line machine; it is not hiding and has no
-memory or control flow. No external audit has yet been performed, for
+two-register straight-line machine with plain and masked proving; it has
+no memory or control flow. No external audit has yet been performed, for
 which the suites, gates, versioned wire format, and pinned baselines are
 the evidence package.
 

@@ -77,7 +77,7 @@ hash function and Reed–Solomon proximity testing.
    extension-field (`Fp4`) challenges, raising per-challenge algebraic
    bounds to ~124 bits. This is still a conjectured query/PoW schedule,
    not an end-to-end soundness proof.
-5. **Evidence over claims.** 261 unit tests, three adversarial suites
+5. **Evidence over claims.** 266 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught
@@ -164,12 +164,14 @@ portable scalar-safe-Rust throughput with parallelism over
   large-table openings need batched openings, a hiding PCS, and an audit.
   A first program-execution prototype (`vm.rs`) proves a public
   two-register straight-line program from a private initial state to a
-  public output; a 64-step proof takes ~1.5 ms prove, ~0.24 ms verify,
-  and 14,933 B. It is not a zkVM: programs are public, there is no
-  control flow or memory, the initial state is the witness, and proving
-  is not hiding. The system has not yet had an external audit; the test
-  suites, gates, versioned wire format, and pinned baselines are the
-  pre-audit package.
+  public output; a 64-step plain proof takes ~1.5 ms prove, ~0.24 ms
+  verify, and 14,933 B. `vm::prove_zk` masks both trace columns with the
+  existing vanishing-multiple layer, hiding query responses when
+  `n_rand >= num_queries`; callers must size the final layer for the
+  masked LDE. It is not a zkVM: programs are public, there is no control
+  flow or memory, and BaseFold/sumcheck still lack a hiding layer. The
+  system has not yet had an external audit; the test suites, gates,
+  versioned wire format, and pinned baselines are the pre-audit package.
 
 ## 7. Roadmap
 
@@ -203,10 +205,10 @@ portable scalar-safe-Rust throughput with parallelism over
    quotient columns, binds sumcheck final values with eight BaseFold
    openings, and hides the input columns from the wire. `vm` adds a
    public-program, private-input two-register execution AIR with opcode
-   selectors, immediate polynomials, and a 64-step proof at ~1.5 ms
-   prove / ~0.24 ms verify / 14,933 B. Next: batched openings, hiding PCS
-   and sumcheck for private tables, then control flow, memory, and a
-   general zkVM.
+   selectors, immediate polynomials, a 64-step plain proof at ~1.5 ms
+   prove / ~0.24 ms verify / 14,933 B, and a masked `prove_zk` path.
+   Next: batched openings, hiding PCS and sumcheck for private tables,
+   then control flow, memory, and a general zkVM.
 6. **External audit** — procurement item; the evidence package is ready.
 
 ## 8. License

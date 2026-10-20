@@ -99,10 +99,12 @@ boundaries at degree below `2n - 1`.
 |---|---|---|---|---|
 | `vm 64-step B16Q12C2` | 1.53 | 0.24 | 14,933 | 14.6 |
 
-This is a fast, weak query schedule and a plain (non-hiding) execution
-prototype: programs are public and straight-line, the initial state is the
-witness, and FRI query openings reveal trace values. Control flow, memory,
-instruction privacy, and a hiding PCS/sumcheck remain roadmap items.
+This is a fast, weak query schedule and the plain (non-hiding) proving path:
+programs are public and straight-line, the initial state is the witness, and
+FRI query openings reveal trace values. `vm::prove_zk` masks both trace
+columns for query-response hiding (not benchmarked here; its LDE is larger,
+so `final_size` must be sized for it). Control flow, memory, instruction
+privacy, and a hiding PCS/sumcheck remain roadmap items.
 
 ## Bench shapes (fast, ~18 conjectured bits)
 

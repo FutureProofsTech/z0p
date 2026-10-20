@@ -81,6 +81,17 @@ All notable changes to `z0p` are documented here. The format follows
   program length limits, production parameters, trace construction, and
   codec roundtrips. The benchmark baseline now pins 24 rows (adding the
   VM row), and docs report the new numbers.
+- **Masked VM proving.** `vm::prove_zk` and `prove_zk_with_trace` mask
+  both program trace columns with the existing vanishing-multiple layer.
+  Masking preserves every trace-row value, so the same verifier checks the
+  same transition and output constraints; with `n_rand >= num_queries`
+  the FRI query responses are independent of the private initial state.
+  The public program and final registers are unchanged. The caller must
+  size `final_size` for the larger masked LDE; the plain path and its
+  benchmark row are unaffected.
+- **Test count 261 -> 266.** Five `vm` tests cover masked execution,
+  deterministic masking under a fixed RNG, plain-vs-masked commitment
+  divergence, the minimum-masker guard, and tampered-opening rejection.
 
 ### Changed
 - **Wire format v4.** The unreleased v3 work moved FRI fold values,

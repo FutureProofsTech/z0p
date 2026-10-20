@@ -322,8 +322,12 @@ $$
 where $T,U$ are the selector-weighted transition numerators. Composition
 degree is below $2n-1$, so blowup is at least $8$ (production $16$). A
 64-step $B16Q12C2$ proof takes about 1.5 ms prove, 0.24 ms verify, and
-14,933 bytes. The program is public, execution is straight-line, and the
-proof is not hiding; control flow, memory, instruction privacy, and a
+14,933 bytes for the plain path. `prove_zk` masks both columns with
+random multiples of $x^n-1$, preserving trace values and making query
+responses independent of the private initial state when
+$n_{\mathrm{rand}}\ge Q$; the caller must choose `final_size` for the
+larger masked LDE. The program and output remain public, execution is
+straight-line, and control flow, memory, instruction privacy, and a
 general zkVM remain future work.
 
 ## 5. Encodings (normative wire format, `VERSION = 4`)
@@ -371,7 +375,7 @@ cap/path shape pins before hashing; `fri-dims` dimension binding
 (closes proof malleability of echoed dimensions); canonical-only
 decoding; PoW bound to history with queries sampled after.
 
-**Validation.** 261 unit tests (KATs, cross-checks against Horner/`%`,
+**Validation.** 266 unit tests (KATs, cross-checks against Horner/`%`,
 parallel-vs-sequential identity), 13-test security suite and 10-test
 red-team suite (~800 hostile attempts/run, zero acceptances, zero
 panics), wire-exact size assertions on every benchmark, and a
@@ -387,11 +391,11 @@ recursion fragment, FRI-backed univariate point and multi-point openings,
 a Gemini-style multilinear PCS (`O(n)` openings, one batched opening per
 layer), a compact BaseFold-style prototype (one root, sumcheck plus
 Möbius FRI folds), committed LogUp, and a two-register program-execution
-prototype are done. The BaseFold, `lookup_pcs`, and `vm` modules are
-experimental and not wired into AIR/STARK production paths; batched
-openings, a hiding PCS/sumcheck, self-proving recursion, control flow,
-memory, and a zkVM are roadmap items. No external audit has yet been
-performed.
+prototype with plain and masked proving are done. The BaseFold,
+`lookup_pcs`, and `vm` modules are experimental and not wired into
+AIR/STARK production paths; batched openings, a hiding PCS/sumcheck,
+self-proving recursion, control flow, memory, and a zkVM are roadmap
+items. No external audit has yet been performed.
 
 ## 8. License
 

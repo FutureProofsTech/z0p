@@ -40,8 +40,12 @@
 //! knowledge of an initial pair that executes the public program to the
 //! public output. Programs are straight-line and public; there is no control
 //! flow, memory, or instruction privacy. [`prove`] is not hiding: FRI query
-//! openings reveal trace values at queried positions. This is an execution
-//! prototype, not a production zkVM, and it has not been audited.
+//! openings reveal trace values at queried positions. [`prove_zk`] masks both
+//! trace columns with vanishing multiples from [`crate::blind`], making the
+//! query responses independent of the private initial state when
+//! `n_rand >= num_queries`; the program and final registers remain public.
+//! This is an execution prototype, not a production zkVM, and it has not been
+//! audited.
 
 use crate::babybear::{batch_invert, Field};
 use crate::codec::{Reader, Writer, MAX_QUERIES, VERSION};
@@ -383,6 +387,8 @@ pub fn build_trace(
 
 /// Prove execution of `params.program` from the private initial state.
 ///
+/// This is the plain (non-hiding) path; use [`prove_zk`] to mask the trace.
+///
 /// # Errors
 /// Returns structural trace/Merkle/FRI errors. A false output claim produces
 /// a high-degree composition that [`verify`] rejects.
@@ -416,16 +422,89 @@ pub fn prove_with_trace(
     }
     let coeff_a = interpolate(col_a)?;
     let coeff_b = interpolate(col_b)?;
-    prove_from_coeffs(params, &coeff_a, &coeff_b, transcript)
+    prove_from_coeffs(params, &coeff_a, &coeff_b, 2 * n - 2, transcript)
+}
+
+/// Prove zero-knowledge: mask both trace columns with
+/// [`crate::blind::mask_coeffs`] (`n_rand` maskers each) before committing.
+///
+/// Masking preserves every base-row value, so the same [`verify`] checks the
+/// same transition and boundary identities. `n_rand >= num_queries` makes the
+/// query responses jointly uniform and independent of the private initial
+/// state. The program and final registers remain public.
+///
+/// `params.final_size` must be chosen for the masked LDE (its length is
+/// `n_steps + n_rand` rounded up to a power of two, times `blowup`), not for
+/// the plain domain; [`Params::for_security`] sizes the plain path only.
+///
+/// # Errors
+/// Returns [`Error::MalformedInput`] when `n_rand < num_queries`, otherwise
+/// the structural errors of [`prove`], including an incompatible final layer.
+pub fn prove_zk(
+    params: &Params,
+    a0: Field,
+    b0: Field,
+    n_rand: usize,
+    rng: &mut crate::rng::ChaCha20,
+    transcript: &mut Transcript,
+) -> Result<Proof> {
+    params.validate()?;
+    let (col_a, col_b) = build_trace(&params.program, a0, b0, params.n_steps)?;
+    prove_zk_with_trace(params, &col_a, &col_b, n_rand, rng, transcript)
+}
+
+/// Zero-knowledge variant of [`prove_with_trace`] (expert API).
+///
+/// The columns need not satisfy the transition relation; verification still
+/// rejects invalid traces. The columns are masked as in [`prove_zk`].
+///
+/// # Errors
+/// Returns [`Error::MalformedInput`] on a column-length mismatch or
+/// `n_rand < num_queries`, otherwise the structural errors of [`prove`].
+pub fn prove_zk_with_trace(
+    params: &Params,
+    col_a: &[Field],
+    col_b: &[Field],
+    n_rand: usize,
+    rng: &mut crate::rng::ChaCha20,
+    transcript: &mut Transcript,
+) -> Result<Proof> {
+    params.validate()?;
+    if n_rand < params.num_queries {
+        return Err(Error::MalformedInput {
+            reason: "n_rand must cover num_queries for hiding",
+        });
+    }
+    let n = params.n_steps;
+    if col_a.len() != n || col_b.len() != n {
+        return Err(Error::MalformedInput {
+            reason: "trace columns must match n_steps",
+        });
+    }
+    let coeff_a = interpolate(col_a)?;
+    let coeff_b = interpolate(col_b)?;
+    let masked_a = crate::blind::mask_coeffs(&coeff_a, n, n_rand, rng)?;
+    let masked_b = crate::blind::mask_coeffs(&coeff_b, n, n_rand, rng)?;
+    let degree_bound = n
+        .checked_add(n_rand)
+        .and_then(|total| total.checked_sub(1))
+        .ok_or(Error::InvalidDomainSize { size: n })?;
+    prove_from_coeffs(params, &masked_a, &masked_b, degree_bound, transcript)
 }
 
 fn prove_from_coeffs(
     params: &Params,
     coeff_a: &[Field],
     coeff_b: &[Field],
+    degree_bound: usize,
     transcript: &mut Transcript,
 ) -> Result<Proof> {
     let n = params.n_steps;
+    if coeff_a.len() != coeff_b.len() {
+        return Err(Error::MalformedInput {
+            reason: "trace columns must have the same length",
+        });
+    }
     absorb_params(params, transcript);
 
     let omega_base = Field::primitive_root(n)?;
@@ -460,16 +539,23 @@ fn prove_from_coeffs(
     ];
 
     let polys = program_polys(&params.program, n)?;
+    let coeff_len = coeff_a.len();
     let mut selectors = Vec::with_capacity(OP_COUNT);
     for selector in &polys.selectors {
+        let mut extended = selector.clone();
+        extended.resize(coeff_len, Field::ZERO);
         selectors.push(evaluate_on_coset(
-            selector,
+            &extended,
             params.blowup,
             crate::fri::LDE_SHIFT,
         )?);
     }
-    let imm_a = evaluate_on_coset(&polys.imm_a, params.blowup, crate::fri::LDE_SHIFT)?;
-    let imm_b = evaluate_on_coset(&polys.imm_b, params.blowup, crate::fri::LDE_SHIFT)?;
+    let mut imm = polys.imm_a.clone();
+    imm.resize(coeff_len, Field::ZERO);
+    let imm_a = evaluate_on_coset(&imm, params.blowup, crate::fri::LDE_SHIFT)?;
+    let mut imm = polys.imm_b.clone();
+    imm.resize(coeff_len, Field::ZERO);
+    let imm_b = evaluate_on_coset(&imm, params.blowup, crate::fri::LDE_SHIFT)?;
     let points = lde_points(m)?;
     let w_last = omega_base.pow((n - 1) as u64);
     let composition = compose(
@@ -486,7 +572,6 @@ fn prove_from_coeffs(
         &alphas,
     );
 
-    let degree_bound = 2 * n - 2;
     let fri_state =
         fri::commit_ext_evals(&composition, degree_bound, params.fri_params()?, transcript)?;
     let fri_commitment = fri::public_commitment(&fri_state);
@@ -529,10 +614,18 @@ pub fn verify(params: &Params, proof: &Proof, transcript: &mut Transcript) -> Re
     let expected_m = n
         .checked_mul(params.blowup)
         .ok_or(Error::FriVerificationFailed)?;
-    if m != expected_m {
+    if m < expected_m || m % expected_m != 0 {
         return Err(Error::FriVerificationFailed);
     }
-    if proof.fri_commitment.poly_len != m || proof.fri_commitment.degree_bound != 2 * n - 2 {
+    let degree_bound = proof.fri_commitment.degree_bound;
+    if m == expected_m {
+        if degree_bound != 2 * n - 2 {
+            return Err(Error::FriVerificationFailed);
+        }
+    } else if degree_bound >= m / params.blowup {
+        return Err(Error::FriVerificationFailed);
+    }
+    if proof.fri_commitment.poly_len != m {
         return Err(Error::FriVerificationFailed);
     }
     let offset = m / n;
@@ -845,6 +938,16 @@ mod tests {
         (params, proof)
     }
 
+    fn zk_params() -> Params {
+        Params::new(16, 8, 2, 4, program(), Field::new(3), Field::new(15))
+            .unwrap()
+            .with_cap_height(1)
+    }
+
+    fn zk_rng() -> crate::rng::ChaCha20 {
+        crate::rng::ChaCha20::new([7u8; 32], [3u8; 12])
+    }
+
     #[test]
     fn honest_execution_verifies() {
         let (params, proof) = sample();
@@ -868,6 +971,100 @@ mod tests {
         let proof = prove(&params, Field::new(1), Field::new(2), &mut prover).unwrap();
         let mut verifier = Transcript::new(b"vm-immediate");
         verify(&params, &proof, &mut verifier).unwrap();
+    }
+
+    #[test]
+    fn zk_execution_verifies() {
+        let params = zk_params();
+        let mut prover = Transcript::new(b"vm-zk");
+        let proof = prove_zk(
+            &params,
+            Field::new(10),
+            Field::new(20),
+            8,
+            &mut zk_rng(),
+            &mut prover,
+        )
+        .unwrap();
+        let mut verifier = Transcript::new(b"vm-zk");
+        verify(&params, &proof, &mut verifier).unwrap();
+    }
+
+    #[test]
+    fn zk_openings_differ_from_plain() {
+        let (_, plain) = sample();
+        let params = zk_params();
+        let mut prover = Transcript::new(b"vm-test");
+        let blinded = prove_zk(
+            &params,
+            Field::new(10),
+            Field::new(20),
+            8,
+            &mut zk_rng(),
+            &mut prover,
+        )
+        .unwrap();
+        assert_ne!(plain.column_cap, blinded.column_cap);
+        assert_ne!(plain.fri_commitment, blinded.fri_commitment);
+    }
+
+    #[test]
+    fn zk_is_deterministic() {
+        let params = zk_params();
+        let mut first = Transcript::new(b"vm-zk-deterministic");
+        let a = prove_zk(
+            &params,
+            Field::new(10),
+            Field::new(20),
+            8,
+            &mut zk_rng(),
+            &mut first,
+        )
+        .unwrap();
+        let mut second = Transcript::new(b"vm-zk-deterministic");
+        let b = prove_zk(
+            &params,
+            Field::new(10),
+            Field::new(20),
+            8,
+            &mut zk_rng(),
+            &mut second,
+        )
+        .unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn zk_rejects_few_maskers() {
+        let params = zk_params();
+        let mut prover = Transcript::new(b"vm-zk-few");
+        assert!(prove_zk(
+            &params,
+            Field::new(10),
+            Field::new(20),
+            params.num_queries - 1,
+            &mut zk_rng(),
+            &mut prover,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn zk_tampered_opening_fails() {
+        let params = zk_params();
+        let mut prover = Transcript::new(b"vm-zk-tamper");
+        let mut proof = prove_zk(
+            &params,
+            Field::new(10),
+            Field::new(20),
+            8,
+            &mut zk_rng(),
+            &mut prover,
+        )
+        .unwrap();
+        proof.openings[0].a += Field::ONE;
+        let mut verifier = Transcript::new(b"vm-zk-tamper");
+        assert!(verify(&params, &proof, &mut verifier).is_err());
     }
 
     #[test]

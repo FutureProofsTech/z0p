@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use z0p in academic work, please cite this software."
+title: "z0p: a zero-dependency transparent STARK stack in safe Rust"
+abstract: "A from-scratch, zero-dependency zero-knowledge proving stack: binary fields, BabyBear, BLAKE3, Merkle trees, NTT, FRI, STARKs, and masking, implemented in safe Rust."
+type: software
+authors:
+  - name: "Future Proofs Tech"
+version: 0.2.0
+date-released: 2026-10-20
+license: GPL-3.0-only
+repository-code: "https://github.com/FutureProofsTech/z0p"
+url: "https://github.com/FutureProofsTech/z0p"
+keywords:
+  - zero-knowledge
+  - zk-stark
+  - fri
+  - rust
+  - cryptography
+  - post-quantum

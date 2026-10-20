@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/FutureProofsTech/z0p/security/policy
+    about: Report soundness, zero-knowledge, or memory-safety issues privately.
+  - name: Questions and design discussion
+    url: https://github.com/FutureProofsTech/z0p/discussions
+    about: Ask usage questions or discuss protocol design in the open.

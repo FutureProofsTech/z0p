@@ -1,5 +1,11 @@
 # z0p
 
+[![CI](https://github.com/FutureProofsTech/z0p/actions/workflows/ci.yml/badge.svg)](https://github.com/FutureProofsTech/z0p/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/FutureProofsTech/z0p?display_name=tag&sort=semver)](https://github.com/FutureProofsTech/z0p/releases)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![Rust 1.74+](https://img.shields.io/badge/rust-1.74%2B-orange.svg)](Cargo.toml)
+[![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](Cargo.toml)
+
 A from-scratch, zero-dependency zero-knowledge proving stack in safe Rust:
 binary fields, an NTT-friendly prime field, BLAKE3, Merkle trees, FRI
 polynomial commitments, and STARKs (Fibonacci AIR, range checks, table
@@ -85,6 +91,16 @@ nothing; verification is unchanged.
 
 Release profile, median of runs, 16-core / 31 GB machine, `rustc 1.99.0`.
 Full table with methodology: [docs/benchmarks.md](docs/benchmarks.md).
+
+## Audit and reproduce
+
+Start with [AUDIT.md](AUDIT.md): scope, invariants, reproduction commands,
+evidence, and known limitations. The formal specification is
+[docs/yellowpaper.md](docs/yellowpaper.md); the design and performance
+overview is [docs/whitepaper.md](docs/whitepaper.md). Evidence lives in
+[docs/security-tests.md](docs/security-tests.md),
+[docs/red-team.md](docs/red-team.md), and
+[docs/unit-tests.md](docs/unit-tests.md).
 
 | Proof (production query/PoW schedule) | Prove | Verify | Size |
 |---|---|---|---|

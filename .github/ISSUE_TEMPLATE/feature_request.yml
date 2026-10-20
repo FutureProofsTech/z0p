@@ -1,0 +1,44 @@
+name: Feature request
+description: Propose a protocol, API, documentation, or tooling improvement
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what is missing?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the smallest useful change and any alternatives.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - protocol / proof system
+        - API / ergonomics
+        - performance
+        - documentation
+        - tooling / CI
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and soundness
+      description: Does this change assumptions, wire format, or the threat model?
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues and discussions first.
+          required: true

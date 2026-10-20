@@ -44,14 +44,12 @@ byte-exact regression tests, a from-zero implementation with no dependencies,
 and adversarial test suites (`tests/security.rs`, `tests/redteam.rs`,
 `tests/hardening.rs`). Soundness numbers in the README and `docs/` are
 *conjectured* (Fiat–Shamir + FRI in the QROM, Johnson-radius heuristic).
-FRI folding and the AIR/range/table/fold composition batches use quartic
-extension-field (`Fp4`) challenges, so the advertised ~100-bit
-query/PoW schedule is no longer capped at ~31 bits on those paths. Some
-components still draw base-field challenges: `upcs`/`gemini` evaluation
-points and fold betas, and `sumcheck`/`lookup` rounds. Their algebraic
-error remains capped at about 31 bits until they migrate. No path is a
-100-bit end-to-end guarantee. Do not deploy in production for high-value
-statements before an external audit.
+FRI folding, STARK composition batches, `upcs`/Gemini evaluation points
+and fold betas, sumcheck rounds, and lookup's rational-identity challenge
+all use quartic extension-field (`Fp4`) challenges, removing the former
+~31-bit algebraic ceiling. The advertised ~100-bit figure remains a
+query/PoW schedule, not an end-to-end soundness proof. Do not deploy in
+production for high-value statements before an external audit.
 
 Internal adversarial review has already closed two findings with fixes and
 regression tests: the FRI verifier allocation DoS (an `O(lde_len)` table

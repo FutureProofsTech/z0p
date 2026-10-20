@@ -2,8 +2,8 @@
 //!
 //! Run with `cargo bench`. Reports median wall time for prove/verify and
 //! exact wire sizes in bytes (`to_bytes` length, asserted equal every run:
-//! 1-byte version, `u32` counts, 4 B per field, 8 B per index/nonce,
-//! 32 B per digest, 33 B per Merkle path step).
+//! 1-byte version, `u32` counts, 4 B per base field, 16 B per extension
+//! field, 8 B per index/nonce, 32 B per digest, 33 B per Merkle path step).
 //!
 //! Every benchmark verifies its proof once outside the timed region, so a
 //! passing run also gates correctness.
@@ -114,19 +114,22 @@ fn table_proof_bytes(proof: &table::Proof) -> usize {
 }
 
 fn sumcheck_proof_bytes(proof: &z0p::sumcheck::Proof) -> usize {
-    let mut total = 4;
+    let mut total = 16;
     for round in &proof.round_evals {
-        total += 4 * round.len();
+        total += 4 + 16 * round.len();
     }
-    total += 4 * proof.final_values.len();
+    total += 4 + 16 * proof.final_values.len();
     total
 }
 
 fn lookup_proof_bytes(proof: &lookup::Proof) -> usize {
-    4 + 4 * proof.multiplicities.len()
-        + 4 * proof.quot_w.len()
-        + 4 * proof.quot_t.len()
-        + 8
+    16 + 4
+        + 16 * proof.multiplicities.len()
+        + 4
+        + 16 * proof.quot_w.len()
+        + 4
+        + 16 * proof.quot_t.len()
+        + 32
         + sumcheck_proof_bytes(&proof.sc_sum_w)
         + sumcheck_proof_bytes(&proof.sc_read_w)
         + sumcheck_proof_bytes(&proof.sc_sum_t)

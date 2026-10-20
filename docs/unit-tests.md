@@ -1,7 +1,7 @@
 # Unit tests — breakdown
 
 `cargo test --lib` (also run with `--release` by `tools/check.py`).
-Measured: 2026-10-20 — **223 passed, 0 failed.**
+Measured: 2026-10-20 — **224 passed, 0 failed.**
 
 ## Per-module counts
 
@@ -19,7 +19,7 @@ Measured: 2026-10-20 — **223 passed, 0 failed.**
 | `lookup` | 7 | membership, non-members, tampered multiplicities, forged fractional multiplicities |
 | `merkle` | 7 | prove/verify, padding, flat-vs-nested, capped roundtrips, oversized paths, SIMD batch equivalence |
 | `mle` | 5 | evaluation corners, variable fixing, eq-polynomial sums |
-| `ntt` | 6 | Horner cross-checks (incl. parallel path at 2¹⁶/2¹⁷), determinism, roundtrips, RS extension |
+| `ntt` | 7 | Horner cross-checks (incl. parallel path at 2¹⁶/2¹⁷), determinism, base/extension roundtrips, RS extension |
 | `par` | 2 | parallel-vs-sequential identity, sequential thresholds |
 | `range` | 17 | honest/out-of-range/boundary, bit columns, ZK masking, caps, encodings, downgraded FRI bound |
 | `upcs` | 25 | honest openings (n=1..64, four points), multi-point batches (k=1..n, up to 16), duplicate/oversized sets, wrong value/point/quotient, leaf/path/commitment/FRI tampering, caps/dim gates, encodings |
@@ -34,5 +34,5 @@ Measured: 2026-10-20 — **223 passed, 0 failed.**
 
 ```sh
 cargo test --lib              # debug
-cargo test --lib --release    # optimized (same 223, also gated)
+cargo test --lib --release    # optimized (same 224, also gated)
 ```

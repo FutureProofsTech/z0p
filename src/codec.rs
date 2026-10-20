@@ -18,7 +18,7 @@ use crate::ext4::Ext4;
 
 /// Encoding version. Bump on any format change; old proofs then fail
 /// loudly instead of misparsing.
-pub(crate) const VERSION: u8 = 2;
+pub(crate) const VERSION: u8 = 3;
 
 /// Maximum query/opening count (matches the tuner ceiling).
 pub(crate) const MAX_QUERIES: u32 = 1 << 20;

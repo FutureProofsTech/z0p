@@ -17,10 +17,12 @@
 //! univariate polynomials, and [`crate::gemini`] builds a first multilinear
 //! PCS from them (`O(n)` openings); compact multilinear FRI and committed
 //! oracles remain roadmap work. Sumcheck soundness below assumes a binding
-//! oracle.
+//! oracle. Round challenges are drawn from [`Ext4`], so the per-round
+//! algebraic error is bounded by roughly `degree / p^4`.
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};
+use crate::ext4::Ext4;
 use crate::mle::Mle;
 use crate::transcript::Transcript;
 
@@ -28,7 +30,7 @@ use crate::transcript::Transcript;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Term {
     /// Scalar coefficient.
-    pub coeff: Field,
+    pub coeff: Ext4,
     /// Indices into the [`Mle`] table passed to [`prove`]/[`verify`].
     pub factors: Vec<usize>,
 }
@@ -36,7 +38,7 @@ pub struct Term {
 impl Term {
     /// Build a term.
     #[must_use]
-    pub const fn new(coeff: Field, factors: Vec<usize>) -> Self {
+    pub const fn new(coeff: Ext4, factors: Vec<usize>) -> Self {
         Self { coeff, factors }
     }
 }
@@ -45,11 +47,11 @@ impl Term {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Proof {
     /// Claimed hypercube sum.
-    pub sum: Field,
+    pub sum: Ext4,
     /// Round `i` evaluations at `0..=degree`, in order.
-    pub round_evals: Vec<Vec<Field>>,
+    pub round_evals: Vec<Vec<Ext4>>,
     /// Each [`Mle`] evaluated at the full challenge point.
-    pub final_values: Vec<Field>,
+    pub final_values: Vec<Ext4>,
 }
 
 /// Prove `sum f = S` for the given [`Mle`] table and [`Term`]s.
@@ -67,17 +69,21 @@ pub fn prove(mles: &[Mle], terms: &[Term], transcript: &mut Transcript) -> Resul
     transcript.absorb(b"sumcheck/claim", &encode_fields(&[claimed]));
 
     // Working buffers, one per MLE (MSB-first layout: halves split var 0).
-    let mut bufs: Vec<Vec<Field>> = mles.iter().map(|m| m.evals().to_vec()).collect();
-    let mut challenges: Vec<Field> = Vec::with_capacity(n);
-    let mut round_evals: Vec<Vec<Field>> = Vec::with_capacity(n);
+    let mut bufs: Vec<Vec<Ext4>> = mles.iter().map(|m| m.evals().to_vec()).collect();
+    let mut challenges: Vec<Ext4> = Vec::with_capacity(n);
+    let mut round_evals: Vec<Vec<Ext4>> = Vec::with_capacity(n);
 
     for _ in 0..n {
         let mut evals = Vec::with_capacity(degree + 1);
         for k in 0..=degree {
-            evals.push(round_eval(&bufs, terms, Field::from_u64(k as u64)));
+            evals.push(round_eval(
+                &bufs,
+                terms,
+                Ext4::from_base(Field::from_u64(k as u64)),
+            ));
         }
         transcript.absorb(b"sumcheck/round", &encode_fields(&evals));
-        let r = transcript.challenge_bb(b"sumcheck/challenge");
+        let r = transcript.challenge_ext(b"sumcheck/challenge");
         challenges.push(r);
         round_evals.push(evals);
         for buf in &mut bufs {
@@ -85,7 +91,7 @@ pub fn prove(mles: &[Mle], terms: &[Term], transcript: &mut Transcript) -> Resul
         }
     }
 
-    let final_values: Vec<Field> = bufs.iter().map(|b| b[0]).collect();
+    let final_values: Vec<Ext4> = bufs.iter().map(|b| b[0]).collect();
     Ok(Proof {
         sum: claimed,
         round_evals,
@@ -115,7 +121,7 @@ pub fn verify(
 
     transcript.absorb(b"sumcheck/claim", &encode_fields(&[proof.sum]));
     let mut expected = proof.sum;
-    let mut challenges: Vec<Field> = Vec::with_capacity(n);
+    let mut challenges: Vec<Ext4> = Vec::with_capacity(n);
 
     for round in &proof.round_evals {
         if round.len() != degree + 1 {
@@ -125,7 +131,7 @@ pub fn verify(
             return Err(Error::FriVerificationFailed);
         }
         transcript.absorb(b"sumcheck/round", &encode_fields(round));
-        let r = transcript.challenge_bb(b"sumcheck/challenge");
+        let r = transcript.challenge_ext(b"sumcheck/challenge");
         challenges.push(r);
         expected = interpolate_at(round, r);
     }
@@ -144,18 +150,18 @@ pub fn verify(
 
 /// Lagrange-interpolate evaluations at `0..n` to `at`.
 #[must_use]
-pub fn interpolate_at(evals: &[Field], at: Field) -> Field {
+pub fn interpolate_at(evals: &[Ext4], at: Ext4) -> Ext4 {
     let n = evals.len();
-    let mut acc = Field::ZERO;
+    let mut acc = Ext4::ZERO;
     for (i, &eval_i) in evals.iter().enumerate() {
-        let xi = Field::from_u64(i as u64);
-        let mut num = Field::ONE;
-        let mut den = Field::ONE;
+        let xi = Ext4::from_base(Field::from_u64(i as u64));
+        let mut num = Ext4::ONE;
+        let mut den = Ext4::ONE;
         for j in 0..n {
             if i == j {
                 continue;
             }
-            let xj = Field::from_u64(j as u64);
+            let xj = Ext4::from_base(Field::from_u64(j as u64));
             num *= at - xj;
             den *= xi - xj;
         }
@@ -200,11 +206,11 @@ fn round_degree(terms: &[Term]) -> usize {
 }
 
 /// Full hypercube sum of the summand.
-fn full_sum(mles: &[Mle], terms: &[Term]) -> Field {
+fn full_sum(mles: &[Mle], terms: &[Term]) -> Ext4 {
     let len = mles[0].len();
-    let mut acc = Field::ZERO;
+    let mut acc = Ext4::ZERO;
     for j in 0..len {
-        let mut point = Field::ZERO;
+        let mut point = Ext4::ZERO;
         for term in terms {
             let mut prod = term.coeff;
             for &f in &term.factors {
@@ -218,11 +224,11 @@ fn full_sum(mles: &[Mle], terms: &[Term]) -> Field {
 }
 
 /// Round polynomial at `at`: MSB-first halves are `(var_i = 0 | 1)` sides.
-fn round_eval(bufs: &[Vec<Field>], terms: &[Term], at: Field) -> Field {
+fn round_eval(bufs: &[Vec<Ext4>], terms: &[Term], at: Ext4) -> Ext4 {
     let half = bufs[0].len() / 2;
-    let mut acc = Field::ZERO;
+    let mut acc = Ext4::ZERO;
     for term in terms {
-        let mut term_sum = Field::ZERO;
+        let mut term_sum = Ext4::ZERO;
         for j in 0..half {
             let mut prod = term.coeff;
             for &f in &term.factors {
@@ -238,7 +244,7 @@ fn round_eval(bufs: &[Vec<Field>], terms: &[Term], at: Field) -> Field {
 }
 
 /// Fold MSB-first halves with challenge `r` in place.
-fn fold_halves(buf: &mut Vec<Field>, r: Field) {
+fn fold_halves(buf: &mut Vec<Ext4>, r: Ext4) {
     let half = buf.len() / 2;
     for j in 0..half {
         buf[j] = buf[j] + r * (buf[j + half] - buf[j]);
@@ -247,8 +253,8 @@ fn fold_halves(buf: &mut Vec<Field>, r: Field) {
 }
 
 /// Evaluate the summand from per-MLE point values.
-fn eval_summand(values: &[Field], terms: &[Term]) -> Field {
-    let mut acc = Field::ZERO;
+fn eval_summand(values: &[Ext4], terms: &[Term]) -> Ext4 {
+    let mut acc = Ext4::ZERO;
     for term in terms {
         let mut prod = term.coeff;
         for &f in &term.factors {
@@ -259,8 +265,8 @@ fn eval_summand(values: &[Field], terms: &[Term]) -> Field {
     acc
 }
 
-fn encode_fields(fields: &[Field]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(fields.len() * 4);
+fn encode_fields(fields: &[Ext4]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(fields.len() * 16);
     for f in fields {
         out.extend_from_slice(&f.to_le_bytes());
     }
@@ -273,7 +279,7 @@ mod tests {
 
     fn random_mle(n_vars: usize, seed: &mut u64) -> Mle {
         let evals = (0..(1usize << n_vars))
-            .map(|_| Field::from_u64(crate::gf2::splitmix64(seed)))
+            .map(|_| Ext4::from_base(Field::from_u64(crate::gf2::splitmix64(seed))))
             .collect();
         Mle::new(evals).unwrap()
     }
@@ -283,13 +289,13 @@ mod tests {
         let mut t = Transcript::new(b"sc-shape");
         let m = random_mle(2, &mut 1u64);
         assert!(prove(std::slice::from_ref(&m), &[], &mut t).is_err());
-        assert!(prove(&[], &[Term::new(Field::ONE, vec![0])], &mut t).is_err());
+        assert!(prove(&[], &[Term::new(Ext4::ONE, vec![0])], &mut t).is_err());
         let m2 = random_mle(3, &mut 2u64);
-        let terms = [Term::new(Field::ONE, vec![0])];
+        let terms = [Term::new(Ext4::ONE, vec![0])];
         assert!(prove(&[m, m2], &terms, &mut t).is_err());
         assert!(prove(
             &[random_mle(2, &mut 3u64)],
-            &[Term::new(Field::ONE, vec![7])],
+            &[Term::new(Ext4::ONE, vec![7])],
             &mut t
         )
         .is_err());
@@ -299,7 +305,7 @@ mod tests {
     fn product_sum_verifies() {
         let mut seed = 0x2222_3333_4444_5555u64;
         let (a, b) = (random_mle(4, &mut seed), random_mle(4, &mut seed));
-        let terms = [Term::new(Field::ONE, vec![0, 1])];
+        let terms = [Term::new(Ext4::ONE, vec![0, 1])];
         let mut pt = Transcript::new(b"sc-prod");
         let mles = [a.clone(), b.clone()];
         let proof = prove(&mles, &terms, &mut pt).unwrap();
@@ -313,11 +319,11 @@ mod tests {
     fn tampered_round_fails() {
         let mut seed = 0x6666_7777_8888_9999u64;
         let (a, b) = (random_mle(3, &mut seed), random_mle(3, &mut seed));
-        let terms = [Term::new(Field::ONE, vec![0, 1])];
+        let terms = [Term::new(Ext4::ONE, vec![0, 1])];
         let mut pt = Transcript::new(b"sc-tamper");
         let mles = [a.clone(), b.clone()];
         let mut proof = prove(&mles, &terms, &mut pt).unwrap();
-        proof.round_evals[1][0] += Field::ONE;
+        proof.round_evals[1][0] += Ext4::ONE;
         let mut vt = Transcript::new(b"sc-tamper");
         assert!(verify(&mles, &terms, &proof, &mut vt).is_err());
     }
@@ -326,10 +332,10 @@ mod tests {
     fn tampered_final_fails() {
         let mut seed = 0xaaaa_0000_bbbb_1111u64;
         let a = random_mle(3, &mut seed);
-        let terms = [Term::new(Field::new(5), vec![0])];
+        let terms = [Term::new(Ext4::from_base(Field::new(5)), vec![0])];
         let mut pt = Transcript::new(b"sc-final");
         let mut proof = prove(std::slice::from_ref(&a), &terms, &mut pt).unwrap();
-        proof.final_values[0] += Field::ONE;
+        proof.final_values[0] += Ext4::ONE;
         let mut vt = Transcript::new(b"sc-final");
         assert!(verify(&[a], &terms, &proof, &mut vt).is_err());
     }
@@ -338,7 +344,7 @@ mod tests {
     fn wrong_transcript_fails() {
         let mut seed = 0xcccc_dddd_eeee_ffffu64;
         let a = random_mle(2, &mut seed);
-        let terms = [Term::new(Field::ONE, vec![0])];
+        let terms = [Term::new(Ext4::ONE, vec![0])];
         let mut pt = Transcript::new(b"sc-A");
         let proof = prove(std::slice::from_ref(&a), &terms, &mut pt).unwrap();
         let mut vt = Transcript::new(b"sc-B");
@@ -348,7 +354,10 @@ mod tests {
     #[test]
     fn interpolate_sanity() {
         // Line through (0,1),(1,3): f(2) = 5.
-        let evals = [Field::ONE, Field::new(3)];
-        assert_eq!(interpolate_at(&evals, Field::new(2)), Field::new(5));
+        let evals = [Ext4::from_base(Field::ONE), Ext4::from_base(Field::new(3))];
+        assert_eq!(
+            interpolate_at(&evals, Ext4::from_base(Field::new(2))),
+            Ext4::from_base(Field::new(5))
+        );
     }
 }

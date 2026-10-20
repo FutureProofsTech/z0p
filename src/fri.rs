@@ -68,18 +68,14 @@
 //! count from the rate first, then top up with grinding to the target.
 //!
 //! # Challenge fields (important)
-//! The totals above count query sampling and grinding only. FRI fold
-//! challenges and the AIR/range/table/fold composition batches are drawn
-//! from the quartic extension field [`Ext4`] (tower
-//! `Fp[u]/(u^2 - 11)`, then `Fp2[v]/(v^2 - u)`), so the former ~31-bit
-//! algebraic ceiling is removed on those paths: a degree-`d` identity
-//! collides with probability roughly `d / p^4`.
-//!
-//! Some components still use base-field challenges: `upcs`/`gemini`
-//! evaluation points and fold betas, and `sumcheck`/`lookup` rounds.
-//! Those paths retain a ~31-bit algebraic ceiling until migrated. The
-//! production schedule is query/PoW sizing, not by itself a 100-bit
-//! end-to-end guarantee.
+//! The totals above count query sampling and grinding only. Folding and
+//! algebraic identities draw challenges from the quartic extension field
+//! [`Ext4`] (tower `Fp[u]/(u^2 - 11)`, then `Fp2[v]/(v^2 - u)`), so a
+//! degree-`d` identity collides with probability roughly `d / p^4` per
+//! challenge. `upcs` evaluation points, Gemini fold betas,
+//! `sumcheck` rounds, and the lookup rational-identity challenge use the
+//! same extension field. The production schedule remains a query/PoW
+//! sizing, not a proof of end-to-end soundness.
 //!
 //! Merkle caps are size-only: they shorten transmitted paths without
 //! changing the committed function or the query count, so the query/PoW
@@ -89,7 +85,7 @@ use crate::babybear::Field;
 use crate::error::{Error, Result};
 use crate::ext4::Ext4;
 use crate::merkle::{hash_leaf, hash_node, MerkleTree};
-use crate::ntt::{bit_reverse_permute, evaluate_on_coset};
+use crate::ntt::{bit_reverse_permute, bit_reverse_permute_ext, evaluate_on_coset};
 use crate::transcript::Transcript;
 
 /// Coset shift for every LDE domain in this crate (NTT and FRI agree).
@@ -110,7 +106,7 @@ pub struct Params {
     /// Proof-of-work difficulty in leading-zero bits (`0` disables grinding).
     ///
     /// Adds that many query/PoW bits at `2^bits` prover hashes; see the
-    /// module soundness notes, including the field-size ceiling.
+    /// module soundness notes.
     pub grinding_bits: u32,
     /// Merkle cap height: `2^cap_height` digests per layer stay in the
     /// commitment instead of one root (`0` disables caps).
@@ -201,7 +197,7 @@ impl Params {
 
     /// Production parameters for the [`commit`] path: blowup 16 (rate
     /// 1/16), queries plus grinding sized for a `target_bits` query/PoW
-    /// schedule (see the field-size ceiling above), and size-optimal final
+    /// schedule (see the soundness notes above), and size-optimal final
     /// size and cap height.
     ///
     /// `poly_len` is the coefficient count (power of two, non-empty);
@@ -411,6 +407,33 @@ pub fn commit(
         params,
         transcript,
     )
+}
+
+/// Commit to extension-field polynomial coefficients.
+///
+/// Identical to [`commit`] except the coefficient polynomial may have
+/// [`Ext4`] coefficients. Used by PCS layers whose coefficients become
+/// extension-valued after a random fold.
+///
+/// # Errors
+/// Returns [`Error`] for empty/non-power-of-two coefficient counts,
+/// oversized domains, or unreachable final sizes.
+pub fn commit_ext(
+    poly_coeffs: &[Ext4],
+    params: Params,
+    transcript: &mut Transcript,
+) -> Result<ProverState> {
+    if poly_coeffs.is_empty() {
+        return Err(Error::EmptyInput);
+    }
+    if !poly_coeffs.len().is_power_of_two() {
+        return Err(Error::InvalidDomainSize {
+            size: poly_coeffs.len(),
+        });
+    }
+    let lde = crate::ntt::evaluate_on_coset_ext(poly_coeffs, params.blowup, LDE_SHIFT)?;
+    let degree_bound = poly_coeffs.len() - 1;
+    commit_inner(lde, degree_bound, poly_coeffs.len(), params, transcript)
 }
 
 /// Commit to already-expanded LDE evaluations of declared degree.
@@ -954,21 +977,6 @@ pub(crate) fn tune_strength(target_bits: u32, millibits_per_query: u32) -> (usiz
     #[allow(clippy::cast_possible_truncation)]
     let queries = queries as usize;
     (queries, grinding)
-}
-
-/// In-place bit-reversal permutation for extension-field values.
-fn bit_reverse_permute_ext(values: &mut [Ext4]) {
-    let n = values.len();
-    if n <= 1 {
-        return;
-    }
-    let bits = n.trailing_zeros();
-    for i in 0..n {
-        let rev = i.reverse_bits() >> (usize::BITS - bits);
-        if i < rev {
-            values.swap(i, rev);
-        }
-    }
 }
 
 fn coset_points(len: usize) -> Result<Vec<Field>> {

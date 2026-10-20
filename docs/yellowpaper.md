@@ -26,8 +26,8 @@ Multiplication uses Barrett reduction with $\mu = \lfloor 2^{64}/p
 batch inversion is Montgomery's trick. All operation counts are
 input-independent for fixed parameters.
 
-**Quartic extension field.** FRI folds and the main STARK composition
-batches use $\mathbb{F}_{p^4} = \mathbb{F}_{p^2}[v]/(v^2-u)$ with
+**Quartic extension field.** All algebraic challenges use
+$\mathbb{F}_{p^4} = \mathbb{F}_{p^2}[v]/(v^2-u)$ with
 $\mathbb{F}_{p^2} = \mathbb{F}_p[u]/(u^2-11)$, represented as
 $a + bu + cv + duv$ (four canonical field coordinates, 16 bytes).
 Inversion is Fermat with exponent $p^4-2$; multiplication is the tower
@@ -163,15 +163,14 @@ survival $\le 1 - \delta$):
   caps are size-only and do not affect bit-levels.
 
 **Challenge fields.** This heuristic counts query sampling and grinding
-only. FRI folds and the AIR/range/table/fold composition batches now use
-the quartic extension field $\mathbb{F}_{p^4}$ (tower
+only. FRI folds, STARK composition batches, `upcs`/`gemini` evaluation
+points and fold betas, `sumcheck` rounds, and lookup's rational-identity
+challenge use the quartic extension field $\mathbb{F}_{p^4}$ (tower
 $\mathbb{F}_p[u]/(u^2-11)$, then $\mathbb{F}_{p^2}[v]/(v^2-u)$), so a
-degree-$d$ identity collides with probability about $d/p^4$ on those
-paths. `upcs`/`gemini` evaluation points and fold betas, plus
-`sumcheck`/`lookup` rounds, still use base-field challenges: their
-algebraic term remains bounded by $\approx 31$ bits. The production
-schedule is therefore not a 100-bit end-to-end soundness guarantee until
-those components migrate.
+degree-$d$ identity collides with probability about $d/p^4$ per
+challenge. The former $\approx 31$-bit algebraic ceiling is gone. The
+production schedule remains a query/PoW formula, not an end-to-end
+soundness proof.
 
 ## 4. AIR systems
 
@@ -247,7 +246,7 @@ the composition degree (callers size finals accordingly). Query openings
 become uniform and witness-independent; verification is identical, and
 masked false statements still fail.
 
-## 5. Encodings (normative wire format, `VERSION = 2`)
+## 5. Encodings (normative wire format, `VERSION = 3`)
 
 ```
 proof      := VERSION || body
@@ -292,7 +291,7 @@ cap/path shape pins before hashing; `fri-dims` dimension binding
 (closes proof malleability of echoed dimensions); canonical-only
 decoding; PoW bound to history with queries sampled after.
 
-**Validation.** 223 unit tests (KATs, cross-checks against Horner/`%`,
+**Validation.** 224 unit tests (KATs, cross-checks against Horner/`%`,
 parallel-vs-sequential identity), 13-test security suite and 10-test
 red-team suite (~800 hostile attempts/run, zero acceptances, zero
 panics), wire-exact size assertions on every benchmark, and a

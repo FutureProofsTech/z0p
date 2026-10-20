@@ -1,24 +1,24 @@
 {
   "rows": {
     "blake3 1MiB": {
-      "prove_ms": 1.4
+      "prove_ms": 2.93
     },
     "gf2 F64 mul": {
-      "prove_ms": 282.91
+      "prove_ms": 281.54
     },
     "bb field mul": {
-      "prove_ms": 6.7
+      "prove_ms": 6.61
     },
     "ntt forward 2^14": {
-      "prove_ms": 0.32
+      "prove_ms": 0.33
     },
     "fri poly256 B4 Q12": {
-      "prove_ms": 0.9,
+      "prove_ms": 0.91,
       "verify_ms": 0.13,
       "bytes": 11522
     },
     "air fib64": {
-      "prove_ms": 0.87,
+      "prove_ms": 0.88,
       "verify_ms": 0.17,
       "bytes": 16305
     },
@@ -28,61 +28,61 @@
       "bytes": 5217
     },
     "table 4-entry": {
-      "prove_ms": 0.32,
+      "prove_ms": 0.33,
       "verify_ms": 0.06,
       "bytes": 4673
     },
     "lookup 64-in-16": {
-      "prove_ms": 0.11,
-      "verify_ms": 0.1,
-      "bytes": 688
+      "prove_ms": 0.78,
+      "verify_ms": 0.54,
+      "bytes": 2860
     },
     "fold 4x8 fib": {
-      "prove_ms": 0.72,
+      "prove_ms": 0.74,
       "verify_ms": 0.22,
       "bytes": 16845
     },
     "merkle 64k leaves": {
-      "prove_ms": 3.93
+      "prove_ms": 3.73
     },
     "air fib1024": {
-      "prove_ms": 6.46,
-      "verify_ms": 0.37,
+      "prove_ms": 5.57,
+      "verify_ms": 0.3,
       "bytes": 29097
     },
     "fri prod B16Q40G20C4F16": {
-      "prove_ms": 14.45,
-      "verify_ms": 0.76,
+      "prove_ms": 9.57,
+      "verify_ms": 0.74,
       "bytes": 29378
     },
     "air prod B16Q40G20C4F16": {
-      "prove_ms": 17.47,
-      "verify_ms": 0.82,
+      "prove_ms": 17.51,
+      "verify_ms": 1.05,
       "bytes": 35861
     },
     "fri prod P1024 B16Q40G20C4F16": {
-      "prove_ms": 62.16,
+      "prove_ms": 71.36,
       "verify_ms": 0.93,
       "bytes": 43174
     },
     "air prod N1024 B16Q40G20C4F16": {
-      "prove_ms": 35.42,
+      "prove_ms": 48.94,
       "verify_ms": 1.21,
       "bytes": 71373
     },
     "air prod N8192 B16Q40G20C4F32": {
-      "prove_ms": 107.07,
-      "verify_ms": 1.6,
+      "prove_ms": 82.19,
+      "verify_ms": 1.62,
       "bytes": 104033
     },
     "air prod N65536 B16Q40G20C4F16": {
-      "prove_ms": 304.21,
-      "verify_ms": 1.99,
+      "prove_ms": 325.9,
+      "verify_ms": 1.98,
       "bytes": 144441
     },
     "air prod N1048576 B16Q40G20C4F16": {
-      "prove_ms": 4980.54,
-      "verify_ms": 2.6,
+      "prove_ms": 5015.14,
+      "verify_ms": 2.31,
       "bytes": 206353
     }
   }

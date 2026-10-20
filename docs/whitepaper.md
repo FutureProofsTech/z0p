@@ -68,12 +68,12 @@ Reed–Solomon proximity testing.
    stated explicitly (rate + queries + grinding) rather than implied.
    Bench shapes are fast and labeled weak (~18 query bits); production
    shapes target a ~100-bit query/PoW schedule via
-   `Params::for_security(…, 100)`. FRI folds and the main STARK
-   composition batches use quartic extension-field (`Fp4`) challenges,
-   raising their algebraic term to ~124 bits. `upcs`/`gemini` points and
-   `sumcheck`/`lookup` rounds remain base-field, so end-to-end 100-bit
-   soundness is not claimed until they migrate.
-5. **Evidence over claims.** 223 unit tests, three adversarial suites
+   `Params::for_security(…, 100)`. FRI folds, STARK compositions,
+   `upcs`/Gemini points and betas, `sumcheck`, and `lookup` use quartic
+   extension-field (`Fp4`) challenges, raising per-challenge algebraic
+   bounds to ~124 bits. This is still a conjectured query/PoW schedule,
+   not an end-to-end soundness proof.
+5. **Evidence over claims.** 224 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught

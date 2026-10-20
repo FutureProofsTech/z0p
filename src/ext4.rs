@@ -38,6 +38,8 @@ impl Ext4 {
     pub const ZERO: Self = Self([Field::ZERO; 4]);
     /// Multiplicative identity.
     pub const ONE: Self = Self([Field::ONE, Field::ZERO, Field::ZERO, Field::ZERO]);
+    /// Additive inverse of one.
+    pub const NEG_ONE: Self = Self([Field::NEG_ONE, Field::ZERO, Field::ZERO, Field::ZERO]);
 
     /// Build an element from its four coordinates.
     #[must_use]

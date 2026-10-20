@@ -38,11 +38,10 @@
 //! but weak (`~18` query bits); production callers want blowup `16`, `40`
 //! queries, and `20`-bit grinding (a ~100-bit query/PoW schedule), set via
 //! `Params::with_grinding_bits` on [`fri`], [`air`], [`range`], [`table`],
-//! and [`fold`]. FRI folds and the main STARK composition batches use
-//! [`ext4::Ext4`] challenges; `upcs`/`gemini` points and
-//! `sumcheck`/`lookup` rounds still use base-field challenges. See the
-//! challenge-field notes in [`fri`] before treating any schedule as a
-//! 100-bit end-to-end guarantee.
+//! and [`fold`]. FRI folds, STARK composition batches, `upcs`/`gemini`
+//! points, `sumcheck` rounds, and lookup challenges all use
+//! [`ext4::Ext4`]. See the challenge-field notes in [`fri`] for the
+//! distinction between query/PoW sizing and soundness.
 //!
 //! # Example
 //! ```

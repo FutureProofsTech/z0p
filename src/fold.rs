@@ -121,7 +121,7 @@ impl Params {
     }
 
     /// Production parameters: blowup 16, strength sized for a `target_bits`
-    /// query/grinding schedule (see the field-size ceiling in
+    /// query/grinding schedule (see the soundness notes in
     /// [`crate::fri`]), and size-optimal final size and cap height.
     ///
     /// The cap tunes for a single step; multi-step accumulations may bump

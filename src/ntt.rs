@@ -12,9 +12,25 @@
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};
+use crate::ext4::Ext4;
 
 /// In-place bit-reversal permutation.
 pub(crate) fn bit_reverse_permute(values: &mut [Field]) {
+    let n = values.len();
+    if n <= 1 {
+        return;
+    }
+    let bits = n.trailing_zeros();
+    for i in 0..n {
+        let rev = i.reverse_bits() >> (usize::BITS - bits);
+        if i < rev {
+            values.swap(i, rev);
+        }
+    }
+}
+
+/// In-place bit-reversal permutation for extension-field values.
+pub(crate) fn bit_reverse_permute_ext(values: &mut [Ext4]) {
     let n = values.len();
     if n <= 1 {
         return;
@@ -225,6 +241,71 @@ pub fn evaluate_on_coset(coeffs: &[Field], blowup: usize, shift: Field) -> Resul
     Ok(extended)
 }
 
+/// Interpolate extension-field evaluations into ascending coefficients.
+///
+/// Each coordinate is interpolated independently over the base field.
+///
+/// # Errors
+/// Returns [`Error::InvalidDomainSize`] for an empty, non-power-of-two, or
+/// oversized evaluation vector.
+pub fn interpolate_ext(evals: &[Ext4]) -> Result<Vec<Ext4>> {
+    let mut coordinates = split_coordinates(evals);
+    for values in &mut coordinates {
+        *values = interpolate(values)?;
+    }
+    Ok(join_coordinates(&coordinates))
+}
+
+/// Evaluate an extension-field coefficient polynomial at `point`.
+#[must_use]
+pub fn evaluate_ext(coeffs: &[Ext4], point: Ext4) -> Ext4 {
+    let mut acc = Ext4::ZERO;
+    for &coefficient in coeffs.iter().rev() {
+        acc = acc * point + coefficient;
+    }
+    acc
+}
+
+/// Evaluate extension-field coefficients on the coset `shift * <omega_m>`.
+///
+/// # Errors
+/// Returns the same domain errors as [`evaluate_on_coset`].
+pub fn evaluate_on_coset_ext(coeffs: &[Ext4], blowup: usize, shift: Field) -> Result<Vec<Ext4>> {
+    if coeffs.is_empty() {
+        return Err(Error::EmptyInput);
+    }
+    let mut coordinates = split_coordinates(coeffs);
+    for values in &mut coordinates {
+        *values = evaluate_on_coset(values, blowup, shift)?;
+    }
+    Ok(join_coordinates(&coordinates))
+}
+
+fn split_coordinates(values: &[Ext4]) -> [Vec<Field>; 4] {
+    std::array::from_fn(|coordinate| {
+        values
+            .iter()
+            .map(|value| value.coordinates()[coordinate])
+            .collect()
+    })
+}
+
+fn join_coordinates(coordinates: &[Vec<Field>; 4]) -> Vec<Ext4> {
+    debug_assert!(coordinates
+        .iter()
+        .all(|values| values.len() == coordinates[0].len()));
+    (0..coordinates[0].len())
+        .map(|i| {
+            Ext4::new(
+                coordinates[0][i],
+                coordinates[1][i],
+                coordinates[2][i],
+                coordinates[3][i],
+            )
+        })
+        .collect()
+}
+
 /// Reed-Solomon extend small-domain evaluations by `blowup` on the
 /// `GENERATOR` coset.
 ///
@@ -302,6 +383,45 @@ mod tests {
             assert_eq!(evaluate(&coeffs, point), got, "coset mismatch at {i}");
             point *= omega;
         }
+    }
+
+    #[test]
+    fn ext_interpolation_and_coset_match_horner() {
+        let mut seed = 0x1357_9bdf_2468_ace0u64;
+        let coeffs: Vec<Ext4> = (0..8)
+            .map(|_| {
+                Ext4::new(
+                    Field::from_u64(splitmix64(&mut seed)),
+                    Field::from_u64(splitmix64(&mut seed)),
+                    Field::from_u64(splitmix64(&mut seed)),
+                    Field::from_u64(splitmix64(&mut seed)),
+                )
+            })
+            .collect();
+        let ntt_omega = Field::primitive_root(coeffs.len()).unwrap();
+        let mut eval_point = Ext4::ONE;
+        let mut evals = Vec::with_capacity(coeffs.len());
+        for _ in 0..coeffs.len() {
+            evals.push(evaluate_ext(&coeffs, eval_point));
+            eval_point *= Ext4::from_base(ntt_omega);
+        }
+        let interp = interpolate_ext(&evals).unwrap();
+        assert_eq!(interp, coeffs, "extension interpolation roundtrip");
+
+        let blowup = 4;
+        let coset = evaluate_on_coset_ext(&coeffs, blowup, Field::GENERATOR).unwrap();
+        let omega = Field::primitive_root(coeffs.len() * blowup).unwrap();
+        let mut point = Ext4::from_base(Field::GENERATOR);
+        for (i, &got) in coset.iter().enumerate() {
+            assert_eq!(
+                evaluate_ext(&coeffs, point),
+                got,
+                "ext coset mismatch at {i}"
+            );
+            point *= Ext4::from_base(omega);
+        }
+        assert!(interpolate_ext(&[]).is_err());
+        assert!(evaluate_on_coset_ext(&[], blowup, Field::GENERATOR).is_err());
     }
 
     #[test]

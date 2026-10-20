@@ -32,14 +32,11 @@
 //!
 //! Each layer is a low-degree polynomial certified by `upcs`. A fold
 //! identity has degree below `2^{n-i+1}`, so one random check per layer
-//! misses a nonzero identity with probability at most `2^{n-i+1} / p`.
-//! Over `n` layers the algebraic error is at most `n 2^n / p` (about
-//! `2^-18` for `n = 8` on `BabyBear`, but only `2^-10` for `n = 20`): the
-//! 31-bit base field limits these checks. FRI's `Fp4` folds do not remove
-//! this ceiling because Gemini's betas and `upcs` evaluation points are
-//! still base-field; wide instances need extension-field PCS points or
-//! repeated checks. Treat the bit level as conjectured and size instances
-//! accordingly.
+//! misses a nonzero identity with probability at most `2^{n-i+1} / p^4`.
+//! Over `n` layers the algebraic error is at most `n 2^n / p^4` (below
+//! `2^-99` for `n = 20`). Fold betas, unfolding coordinates, and `upcs`
+//! evaluation points all live in the quartic extension field. Treat the
+//! query/PoW bit level as conjectured and size instances accordingly.
 //!
 //! For `n >= 1` the proof carries one multi-point `upcs` opening per layer
 //! and `n - 1` layer commitments (`n = 0` carries one opening and no
@@ -53,6 +50,7 @@
 use crate::babybear::Field;
 use crate::codec::{Reader, Writer, MAX_QUERIES, VERSION};
 use crate::error::{Error, Result};
+use crate::ext4::Ext4;
 use crate::fri;
 use crate::transcript::Transcript;
 use crate::upcs;
@@ -233,7 +231,7 @@ pub struct Proof {
     /// Commitments to the folded layers `g_1, ..., g_{n-1}`.
     pub layers: Vec<upcs::Commitment>,
     /// Layer-opening values, layer by layer and point by point.
-    pub values: Vec<Field>,
+    pub values: Vec<Ext4>,
     /// One multi-point `upcs` opening per layer, `g_0` first.
     pub openings: Vec<upcs::Proof>,
 }
@@ -252,7 +250,7 @@ impl Proof {
         }
         writer.count(self.values.len());
         for value in &self.values {
-            writer.field(*value);
+            writer.ext4(*value);
         }
         writer.count(self.openings.len());
         for opening in &self.openings {
@@ -282,7 +280,7 @@ impl Proof {
         }
         let mut values = Vec::new();
         for _ in 0..reader.count(MAX_VALUES)? {
-            values.push(reader.field()?);
+            values.push(reader.ext4()?);
         }
         let mut openings = Vec::new();
         for _ in 0..reader.count(MAX_OPENINGS)? {
@@ -344,8 +342,8 @@ pub fn commit_evals(evals: &[Field], blowup: usize) -> Result<ProverState> {
 /// propagates `upcs`/FRI errors.
 pub fn open(
     state: &ProverState,
-    point: &[Field],
-    value: Field,
+    point: &[Ext4],
+    value: Ext4,
     params: Params,
     transcript: &mut Transcript,
 ) -> Result<Proof> {
@@ -380,7 +378,7 @@ pub fn open(
 
     let mut layer_states = Vec::with_capacity(layer_polys.len());
     for coeffs in &layer_polys {
-        layer_states.push(upcs::commit(coeffs, params.blowup)?);
+        layer_states.push(upcs::commit_ext(coeffs, params.blowup)?);
     }
     let layer_commitments: Vec<upcs::Commitment> = layer_states
         .iter()
@@ -395,7 +393,7 @@ pub fn open(
         betas.push(challenge_nonzero(transcript)?);
     }
 
-    let final_point = if n_vars == 0 { Field::ZERO } else { point[0] };
+    let final_point = if n_vars == 0 { Ext4::ZERO } else { point[0] };
     let mut states = Vec::with_capacity(n_vars.max(1));
     states.push(&state.top);
     states.extend(layer_states.iter());
@@ -438,8 +436,8 @@ pub fn open(
 #[allow(clippy::too_many_lines)]
 pub fn verify(
     commitment: &Commitment,
-    point: &[Field],
-    value: Field,
+    point: &[Ext4],
+    value: Ext4,
     proof: &Proof,
     params: Params,
     transcript: &mut Transcript,
@@ -493,12 +491,12 @@ pub fn verify(
     }
 
     let top = commitment.to_upcs();
-    let final_point = if n_vars == 0 { Field::ZERO } else { point[0] };
+    let final_point = if n_vars == 0 { Ext4::ZERO } else { point[0] };
     let mut commitments: Vec<&upcs::Commitment> = Vec::with_capacity(n_vars.max(1));
     commitments.push(&top);
     commitments.extend(proof.layers.iter());
 
-    let mut layer_values: Vec<Vec<Field>> = Vec::with_capacity(commitments.len());
+    let mut layer_values: Vec<Vec<Ext4>> = Vec::with_capacity(commitments.len());
     let mut cursor = 0;
     for (index, layer) in commitments.iter().enumerate() {
         let points = layer_points(index, n_vars, &betas, final_point);
@@ -535,9 +533,9 @@ pub fn verify(
         let left = previous[plus];
         let left_neg = previous[minus];
         let folded = layer_values[i][0];
-        let half = Field::TWO.inv();
-        let expected =
-            (left + left_neg) * half + coordinate * (left - left_neg) * (Field::TWO * beta).inv();
+        let half = Ext4::from_base(Field::TWO.inv());
+        let expected = (left + left_neg) * half
+            + coordinate * (left - left_neg) * (Ext4::from_base(Field::TWO) * beta).inv();
         if folded != expected {
             return Err(Error::FriVerificationFailed);
         }
@@ -555,7 +553,7 @@ pub fn verify(
 }
 
 /// Points at which layer `index` is opened by the fold checks/final claim.
-fn layer_points(index: usize, n_vars: usize, betas: &[Field], final_point: Field) -> Vec<Field> {
+fn layer_points(index: usize, n_vars: usize, betas: &[Ext4], final_point: Ext4) -> Vec<Ext4> {
     if n_vars <= 1 {
         return vec![final_point];
     }
@@ -595,7 +593,7 @@ fn validate_blowup(blowup: usize) -> Result<()> {
 }
 
 /// Fold the least-significant variable: `out[j] = in[2j] + r in[2j+1]`.
-fn fold(coeffs: &[Field], coordinate: Field) -> Vec<Field> {
+fn fold(coeffs: &[Ext4], coordinate: Ext4) -> Vec<Ext4> {
     let half = coeffs.len() / 2;
     let mut out = Vec::with_capacity(half);
     for i in 0..half {
@@ -624,10 +622,10 @@ fn coeffs_from_evals(evals: &[Field]) -> Result<Vec<Field>> {
 }
 
 /// Draw a nonzero fold challenge, redrawing degenerate zeros.
-fn challenge_nonzero(transcript: &mut Transcript) -> Result<Field> {
+fn challenge_nonzero(transcript: &mut Transcript) -> Result<Ext4> {
     for _ in 0..8 {
-        let beta = transcript.challenge_bb(b"gemini/beta");
-        if beta != Field::ZERO {
+        let beta = transcript.challenge_ext(b"gemini/beta");
+        if beta != Ext4::ZERO {
             return Ok(beta);
         }
     }
@@ -640,16 +638,16 @@ fn challenge_nonzero(transcript: &mut Transcript) -> Result<Field> {
 fn absorb_statement(
     transcript: &mut Transcript,
     commitment: &Commitment,
-    point: &[Field],
-    value: Field,
+    point: &[Ext4],
+    value: Ext4,
 ) {
     let mut writer = Writer::new();
     writer.bytes(&commitment.to_bytes());
     writer.count(point.len());
     for coordinate in point {
-        writer.field(*coordinate);
+        writer.ext4(*coordinate);
     }
-    writer.field(value);
+    writer.ext4(value);
     transcript.absorb(b"gemini/statement", &writer.finish());
 }
 
@@ -678,28 +676,36 @@ mod tests {
             .collect()
     }
 
-    fn point(n_vars: usize) -> Vec<Field> {
+    fn point(n_vars: usize) -> Vec<Ext4> {
         (0..n_vars)
-            .map(|i| Field::new(u32::try_from(i).unwrap() * 3 + 2))
+            .map(|i| {
+                let i = u32::try_from(i).unwrap();
+                Ext4::new(
+                    Field::new(i * 3 + 2),
+                    Field::new(i + 1),
+                    Field::new(i * 2 + 3),
+                    Field::new(i + 5),
+                )
+            })
             .collect()
     }
 
-    fn direct_eval(coeffs: &[Field], point: &[Field]) -> Field {
+    fn direct_eval(coeffs: &[Field], point: &[Ext4]) -> Ext4 {
         let n_vars = point.len();
-        let mut total = Field::ZERO;
+        let mut total = Ext4::ZERO;
         for (index, coefficient) in coeffs.iter().enumerate() {
-            let mut weight = Field::ONE;
+            let mut weight = Ext4::ONE;
             for (variable, coordinate) in point.iter().enumerate() {
                 if (index >> (n_vars - 1 - variable)) & 1 == 1 {
                     weight *= *coordinate;
                 }
             }
-            total += *coefficient * weight;
+            total += Ext4::from_base(*coefficient) * weight;
         }
         total
     }
 
-    fn prove(coeffs: &[Field], point: &[Field]) -> (Commitment, Proof, Field) {
+    fn prove(coeffs: &[Field], point: &[Ext4]) -> (Commitment, Proof, Ext4) {
         let state = commit(coeffs, params().blowup).unwrap();
         let commitment = state.commitment().clone();
         let value = direct_eval(coeffs, point);
@@ -710,8 +716,8 @@ mod tests {
 
     fn verify_with(
         commitment: &Commitment,
-        point: &[Field],
-        value: Field,
+        point: &[Ext4],
+        value: Ext4,
         proof: &Proof,
     ) -> Result<()> {
         let mut transcript = Transcript::new(b"gemini-test");
@@ -722,7 +728,7 @@ mod tests {
     fn honest_openings_verify() {
         for n_vars in 0..=5 {
             let coeffs = coefficients(n_vars);
-            for point in [point(n_vars), vec![Field::ZERO; n_vars]] {
+            for point in [point(n_vars), vec![Ext4::ZERO; n_vars]] {
                 let (commitment, proof, value) = prove(&coeffs, &point);
                 verify_with(&commitment, &point, value, &proof).unwrap();
             }
@@ -735,7 +741,7 @@ mod tests {
             let evals: Vec<Field> = (0..(1usize << n_vars))
                 .map(|i| Field::new(u32::try_from(i).unwrap() * 7 + 3))
                 .collect();
-            let mle = Mle::new(evals.clone()).unwrap();
+            let mle = Mle::from_base(evals.clone()).unwrap();
             let point = point(n_vars);
             let value = mle.evaluate(&point).unwrap();
             let state = commit_evals(&evals, 8).unwrap();
@@ -746,7 +752,7 @@ mod tests {
             assert!(verify(
                 state.commitment(),
                 &point,
-                value + Field::ONE,
+                value + Ext4::ONE,
                 &proof,
                 params(),
                 &mut transcript
@@ -759,10 +765,10 @@ mod tests {
     fn zero_coordinates_verify() {
         let n_vars = 3;
         let coeffs = coefficients(n_vars);
-        let point = vec![Field::ZERO, Field::new(7), Field::ZERO];
+        let point = vec![Ext4::ZERO, Ext4::from_base(Field::new(7)), Ext4::ZERO];
         let (commitment, proof, value) = prove(&coeffs, &point);
         verify_with(&commitment, &point, value, &proof).unwrap();
-        assert!(verify_with(&commitment, &point, value + Field::ONE, &proof).is_err());
+        assert!(verify_with(&commitment, &point, value + Ext4::ONE, &proof).is_err());
     }
 
     #[test]
@@ -771,7 +777,7 @@ mod tests {
         let coeffs = coefficients(n_vars);
         let point = point(n_vars);
         let (commitment, proof, value) = prove(&coeffs, &point);
-        assert!(verify_with(&commitment, &point, value + Field::ONE, &proof).is_err());
+        assert!(verify_with(&commitment, &point, value + Ext4::ONE, &proof).is_err());
         assert!(verify_with(&commitment, &point, value, &proof).is_ok());
     }
 
@@ -782,7 +788,7 @@ mod tests {
         let point = point(n_vars);
         let (commitment, proof, value) = prove(&coeffs, &point);
         let mut other = point.clone();
-        other[1] += Field::ONE;
+        other[1] += Ext4::ONE;
         assert!(verify_with(&commitment, &other, value, &proof).is_err());
     }
 
@@ -802,7 +808,7 @@ mod tests {
         let coeffs = coefficients(n_vars);
         let point = point(n_vars);
         let (commitment, mut proof, value) = prove(&coeffs, &point);
-        proof.values[0] += Field::ONE;
+        proof.values[0] += Ext4::ONE;
         assert!(verify_with(&commitment, &point, value, &proof).is_err());
     }
 
@@ -835,7 +841,7 @@ mod tests {
         let coeffs = coefficients(n_vars);
         let point = point(n_vars);
         let (commitment, mut proof, value) = prove(&coeffs, &point);
-        proof.openings[0].openings[0].value += Field::ONE;
+        proof.openings[0].openings[0].value += Ext4::ONE;
         assert!(verify_with(&commitment, &point, value, &proof).is_err());
     }
 
@@ -927,12 +933,12 @@ mod tests {
         let state = commit(&[Field::ONE], 8).unwrap();
         let commitment = state.commitment().clone();
         let mut transcript = Transcript::new(b"gemini-test");
-        assert!(open(&state, &[Field::ONE], Field::ONE, params(), &mut transcript).is_err());
+        assert!(open(&state, &[Ext4::ONE], Ext4::ONE, params(), &mut transcript).is_err());
         let mut transcript = Transcript::new(b"gemini-test");
         assert!(verify(
             &commitment,
-            &[Field::ONE],
-            Field::ONE,
+            &[Ext4::ONE],
+            Ext4::ONE,
             &Proof {
                 layers: Vec::new(),
                 values: Vec::new(),
@@ -952,13 +958,6 @@ mod tests {
         let state = commit(&coeffs, 8).unwrap();
         let value = direct_eval(&coeffs, &point);
         let mut transcript = Transcript::new(b"gemini-test");
-        assert!(open(
-            &state,
-            &point,
-            value + Field::ONE,
-            params(),
-            &mut transcript
-        )
-        .is_err());
+        assert!(open(&state, &point, value + Ext4::ONE, params(), &mut transcript).is_err());
     }
 }

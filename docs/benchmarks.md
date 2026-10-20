@@ -12,23 +12,23 @@ so a passing run also gates correctness and wire stability.
 - `tools/check.py` pins all 19 rows: sizes must match byte-for-byte, times
   must stay within 3× of `tools/baseline.json`
 
-## Production shapes (`for_security(100)` — 100-bit query/PoW; Fp4 FRI/composition)
+## Production shapes (`for_security(100)` — 100-bit query/PoW; Fp4 challenges)
 
 Blowup 16, rate 1/16, 40 queries, 20-bit grinding, size-optimal final
 layer and Merkle cap height.
 
 | Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
 |---|---|---|---|---|
-| `fri prod B16Q40G20C4F16` (poly-256) | 14.45 | 0.76 | 29,378 | 28.7 |
-| `air prod B16Q40G20C4F16` (fib-64) | 17.47 | 0.82 | 35,861 | 35.0 |
-| `fri prod P1024 B16Q40G20C4F16` | 62.16 | 0.93 | 43,174 | 42.2 |
-| `air prod N1024 B16Q40G20C4F16` | 35.42 | 1.21 | 71,373 | 69.7 |
-| `air prod N8192 B16Q40G20C4F32` | 107.07 | 1.60 | 104,033 | 101.6 |
-| `air prod N65536 B16Q40G20C4F16` | 304.21 | 1.99 | 144,441 | 141.1 |
-| `air prod N1048576 B16Q40G20C4F16` | 4,980.54 | 2.60 | 206,353 | 201.5 |
+| `fri prod B16Q40G20C4F16` (poly-256) | 9.57 | 0.74 | 29,378 | 28.7 |
+| `air prod B16Q40G20C4F16` (fib-64) | 17.51 | 1.05 | 35,861 | 35.0 |
+| `fri prod P1024 B16Q40G20C4F16` | 71.36 | 0.93 | 43,174 | 42.2 |
+| `air prod N1024 B16Q40G20C4F16` | 48.94 | 1.21 | 71,373 | 69.7 |
+| `air prod N8192 B16Q40G20C4F32` | 82.19 | 1.62 | 104,033 | 101.6 |
+| `air prod N65536 B16Q40G20C4F16` | 325.90 | 1.98 | 144,441 | 141.1 |
+| `air prod N1048576 B16Q40G20C4F16` | 5,015.14 | 2.31 | 206,353 | 201.5 |
 
-Marginal cost per step (1M row): `4980.54 / 1048576 ≈ 4.75 µs/step`
-(≈210k steps/s). The 20-bit PoW grind is amortized over the trace at
+Marginal cost per step (1M row): `5015.14 / 1048576 ≈ 4.78 µs/step`
+(≈209k steps/s). The 20-bit PoW grind is amortized over the trace at
 scale; on small production rows it dominates run-to-run variance
 (the N8192 row fluctuates ~75–100 ms between runs).
 
@@ -43,23 +43,28 @@ building that table.
 
 | Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
 |---|---|---|---|---|
-| `fri poly256 B4 Q12` | 0.90 | 0.13 | 11,522 | 11.3 |
-| `air fib64` | 0.87 | 0.17 | 16,305 | 15.9 |
+| `fri poly256 B4 Q12` | 0.91 | 0.13 | 11,522 | 11.3 |
+| `air fib64` | 0.88 | 0.17 | 16,305 | 15.9 |
 | `range 16-bit` | 0.39 | 0.09 | 5,217 | 5.1 |
-| `table 4-entry` | 0.32 | 0.06 | 4,673 | 4.6 |
-| `lookup 64-in-16` | 0.11 | 0.10 | 688 | 0.7 |
-| `fold 4x8 fib` | 0.72 | 0.22 | 16,845 | 16.5 |
-| `air fib1024` | 6.46 | 0.37 | 29,097 | 28.4 |
+| `table 4-entry` | 0.33 | 0.06 | 4,673 | 4.6 |
+| `lookup 64-in-16` | 0.78 | 0.54 | 2,860 | 2.8 |
+| `fold 4x8 fib` | 0.74 | 0.22 | 16,845 | 16.5 |
+| `air fib1024` | 5.57 | 0.30 | 29,097 | 28.4 |
+
+Lookup's v3 proof is larger and slower than its former base-field form:
+multiplicities, quotients, and four sumcheck proofs now carry 16-byte
+`Fp4` values (688 -> 2,860 B). The AIR/FRI production rows above are
+unchanged by this migration.
 
 ## Primitives
 
 | Row | Result |
 |---|---|
-| `blake3 1MiB` | 1.37 ms (~732 MB/s) |
-| `gf2 F64 mul` | 282.91 ms for 1M ops (3.5 Mops/s) |
-| `bb field mul` | 6.70 ms for 1M ops (~149 Mops/s) |
-| `ntt forward 2^14` | 0.32 ms |
-| `merkle 64k leaves` | 3.93 ms |
+| `blake3 1MiB` | 2.93 ms (~342 MB/s) |
+| `gf2 F64 mul` | 281.54 ms for 1M ops (3.6 Mops/s) |
+| `bb field mul` | 6.61 ms for 1M ops (~151 Mops/s) |
+| `ntt forward 2^14` | 0.33 ms |
+| `merkle 64k leaves` | 3.73 ms |
 
 ## Vectorized hashing (`--features simd`, nightly; v1-era rows)
 
@@ -75,8 +80,8 @@ paired runs on this box (which is not idle), nightly:
 
 SIMD is faster in every paired run; absolute gains depend heavily on box
 load (the scalar baseline row itself ranged 3.3–13.9 ms across sessions).
-The proof rows above predate the v2 `Fp4` wire format and have not been
-re-baselined with SIMD; rerun nightly before quoting them for v2.
+The proof rows above predate the v3 `Fp4` wire format and have not been
+re-baselined with SIMD; rerun nightly before quoting them for v3.
 End-to-end gains are bounded because NTT, composition, and the transcript
 are the other large prove costs. Builds without the feature are unaffected
 (scalar fallback, stable MSRV 1.74).

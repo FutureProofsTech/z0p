@@ -29,13 +29,13 @@ by a single crate under \texttt{\#![forbid(unsafe\_code)]}. The system is
 transparent (no trusted setup) and hash-based, hence plausibly
 post-quantum. Production parameters target a $\approx 100$-bit
 query/proof-of-work schedule (rate $1/16$, 40 queries, 20-bit grinding).
-FRI folds and the main STARK composition batches draw challenges from a
-quartic extension $\mathbb{F}_{p^4}$, raising their algebraic term to
-$\approx 124$ bits; some auxiliary paths remain base-field (see
-Section~\ref{sec:security}). Measured on a
+FRI folds, STARK composition batches, \texttt{upcs}/Gemini points and
+betas, sumcheck rounds, and lookup identities draw challenges from a
+quartic extension $\mathbb{F}_{p^4}$, raising per-challenge algebraic
+bounds to $\approx 124$ bits (see Section~\ref{sec:security}). Measured on a
 16-core machine, a 1,048,576-step computation proves in 4.98~s
 ($\approx 4.75\,\mu$s/step), verifies in 2.6~ms, with a 206,353-byte proof.
-Validation combines 223 unit tests with three adversarial suites
+Validation combines 224 unit tests with three adversarial suites
 ($\approx 800$ hostile attempts per run, zero acceptances, zero panics),
 wire-exact size assertions on every benchmark, and machine-checked
 regression gates.
@@ -61,11 +61,10 @@ FRI Reed--Solomon commitments over BabyBear. No curves, no ceremonies.
 \item Production parameter sizing in one call
 (\texttt{Params::for\_security(\dots, 100)}): blowup 16, queries,
 grinding, final layer, and cap height jointly optimized for a
-$\approx 100$-bit query/PoW schedule. The FRI/composition path uses a
-quartic extension field; remaining base-field components are stated
-below.
+$\approx 100$-bit query/PoW schedule. All algebraic challenges use a
+quartic extension field.
 \item Competitive scalar performance with parallelism over
-\texttt{std::thread} only: 1M-step proofs at $\approx 163$k steps/s,
+\texttt{std::thread} only: 1M-step proofs at $\approx 210$k steps/s,
 millisecond verification, logarithmically growing proofs.
 \item Adversarial validation as a first-class artifact: every forgery
 class we could construct is tested continuously, including a fuzzer that
@@ -122,8 +121,8 @@ levels from revealed values).
 transcript with a full domain-separation schedule (FRI:
 \texttt{fri-dims} first, then per-digest \texttt{fri-layer-root}, three
 \texttt{fri-fold} challenges per layer, \texttt{fri-final},
-\texttt{fri-pow}, per-query \texttt{fri-query}; per-protocol
-\texttt{params}/\texttt{column}/\texttt{alpha} labels; IVC
+\texttt{fri-pow}, and per-query \texttt{fri-query}; per-protocol
+\texttt{params}, \texttt{column}, and \texttt{alpha} labels; IVC
 \texttt{fold/step}, \texttt{fold/trace}, six \texttt{fold/alpha} per
 step plus per-step \texttt{fold/gamma}; lookup and sumcheck labels
 analogously). Proof-of-work grinding finds the smallest nonce with $d$
@@ -159,13 +158,13 @@ rate $\rho = 1/8$ with 12 queries gives $\approx 18$ bits (bench
 shape); rate $\rho = 1/16$ with 40 queries plus 20-bit grinding gives
 an $80 + 20 = 100$-bit query/PoW schedule (production shape). Caps affect
 size only. These counts exclude the finite-field algebraic term. FRI
-folds and the AIR/range/table/fold composition batches draw
-$\mathbb{F}_{p^4}$ challenges, so a nonzero degree-$d$ identity vanishes
-with probability about $d/p^4$ there. `upcs`/`gemini` evaluation points
-and fold betas, plus `sumcheck`/`lookup` rounds, still use
-$\mathbb{F}_p$ challenges and retain an approximately 31-bit algebraic
-ceiling. The production schedule is therefore not an end-to-end 100-bit
-soundness guarantee until those components migrate.
+folds, the AIR/range/table/fold composition batches, \texttt{upcs}/Gemini
+evaluation points and fold betas, sumcheck rounds, and lookup's
+rational-identity challenge all draw $\mathbb{F}_{p^4}$ challenges, so a
+nonzero degree-$d$ identity vanishes with probability about $d/p^4$ per
+challenge. The former approximately 31-bit algebraic ceiling is gone.
+The production schedule remains a query/PoW formula, not an end-to-end
+soundness proof.
 \end{conjecture}
 
 \section{AIR systems}
@@ -218,9 +217,10 @@ and masked false statements still fail.
 
 \section{Encodings and parameters}
 
-Wire format (\texttt{VERSION}~=~1): counts as $u32$, dimensions as
-$u64$, fields as 4 canonical bytes ($<p$ enforced), digests as 32
-bytes, direction bits $0/1$. The decoder fails closed on wrong
+Wire format (\texttt{VERSION}~=~3): counts as $u32$, dimensions as
+$u64$, base fields as 4 canonical bytes and extension values as 16
+canonical bytes ($<p$ per coordinate), digests as 32 bytes, direction
+bits $0/1$. The decoder fails closed on wrong
 versions, trailing bytes, truncation, non-canonical fields, and counts
 past hard caps ($2^{20}$ queries, $64$ folds, $128$ path steps,
 $256$ cap digests, $2^{27}$ elements, $2^{20}$ IVC steps) before any
@@ -239,7 +239,7 @@ check at true folded points; cap/path shape pins before hashing;
 \texttt{fri-dims} dimension binding; canonical-only decoding; PoW
 bound to history with queries sampled after.
 
-\paragraph{Adversarial validation.} Three layers: 223 unit tests
+\paragraph{Adversarial validation.} Three layers: 224 unit tests
 (KATs, Horner cross-checks, parallel-vs-sequential identity); a
 13-vector security suite (tampering of every query/fold/value/path/
 digest, 300 single-bit-flip fuzz trials, PoW forgery, rate gates both

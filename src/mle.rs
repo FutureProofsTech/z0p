@@ -1,4 +1,4 @@
-//! Multilinear polynomials in hypercube-evaluation form over [`BabyBear`].
+//! Multilinear polynomials in hypercube-evaluation form over [`Ext4`].
 //!
 //! An [`Mle`] with `n` variables stores `2^n` evaluations ordered so that the
 //! element index, read most-significant-bit first, is the variable
@@ -6,16 +6,17 @@
 //! [`Mle::evaluate`] folds the least-significant variable first, which matches
 //! [`Mle::eq_evals`] construction order; both are cross-tested.
 //!
-//! [`BabyBear`]: crate::babybear::Field
+//! [`Ext4`]: crate::ext4::Ext4
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};
+use crate::ext4::Ext4;
 
 /// Dense multilinear polynomial: evaluations over `{0,1}^n`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mle {
     n_vars: usize,
-    evals: Vec<Field>,
+    evals: Vec<Ext4>,
 }
 
 impl Mle {
@@ -24,7 +25,7 @@ impl Mle {
     /// # Errors
     /// Returns [`Error::EmptyInput`] for empty input and
     /// [`Error::InvalidDomainSize`] for non-power-of-two lengths.
-    pub fn new(evals: Vec<Field>) -> Result<Self> {
+    pub fn new(evals: Vec<Ext4>) -> Result<Self> {
         if evals.is_empty() {
             return Err(Error::EmptyInput);
         }
@@ -35,6 +36,14 @@ impl Mle {
             n_vars: evals.len().trailing_zeros() as usize,
             evals,
         })
+    }
+
+    /// Build from base-field hypercube evaluations.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Mle::new`].
+    pub fn from_base(evals: Vec<Field>) -> Result<Self> {
+        Self::new(evals.into_iter().map(Ext4::from_base).collect())
     }
 
     /// Number of variables.
@@ -57,7 +66,7 @@ impl Mle {
 
     /// Raw evaluations in index order.
     #[must_use]
-    pub fn evals(&self) -> &[Field] {
+    pub fn evals(&self) -> &[Ext4] {
         &self.evals
     }
 
@@ -65,7 +74,7 @@ impl Mle {
     ///
     /// # Errors
     /// Returns [`Error::MalformedInput`] on dimension mismatch.
-    pub fn evaluate(&self, point: &[Field]) -> Result<Field> {
+    pub fn evaluate(&self, point: &[Ext4]) -> Result<Ext4> {
         if point.len() != self.n_vars {
             return Err(Error::MalformedInput {
                 reason: "point dimension must match n_vars",
@@ -85,7 +94,7 @@ impl Mle {
 
     /// Fix the least-significant variable at `r`, halving the table.
     #[must_use]
-    pub fn fix_last(&self, r: Field) -> Self {
+    pub fn fix_last(&self, r: Ext4) -> Self {
         let half = self.evals.len() / 2;
         let mut out = Vec::with_capacity(half.max(1));
         if self.evals.len() == 1 {
@@ -106,12 +115,12 @@ impl Mle {
     /// Infallible: any point yields a valid table (`[1]` for empty points).
     /// Index order matches [`Mle::new`] (MSB-first).
     #[must_use]
-    pub fn eq_evals(point: &[Field]) -> Self {
-        let mut buf = vec![Field::ONE];
+    pub fn eq_evals(point: &[Ext4]) -> Self {
+        let mut buf = vec![Ext4::ONE];
         for &r in point {
             let mut next = Vec::with_capacity(buf.len() * 2);
             for &v in &buf {
-                next.push(v * (Field::ONE - r));
+                next.push(v * (Ext4::ONE - r));
                 next.push(v * r);
             }
             buf = next;
@@ -124,8 +133,8 @@ impl Mle {
 
     /// Sum of all evaluations (the all-ones linear form).
     #[must_use]
-    pub fn sum(&self) -> Field {
-        self.evals.iter().fold(Field::ZERO, |acc, &v| acc + v)
+    pub fn sum(&self) -> Ext4 {
+        self.evals.iter().fold(Ext4::ZERO, |acc, &v| acc + v)
     }
 }
 
@@ -137,7 +146,7 @@ mod tests {
     fn rejects_bad_tables() {
         assert_eq!(Mle::new(vec![]), Err(Error::EmptyInput));
         assert_eq!(
-            Mle::new(vec![Field::ONE; 3]),
+            Mle::from_base(vec![Field::ONE; 3]),
             Err(Error::InvalidDomainSize { size: 3 })
         );
     }
@@ -145,32 +154,41 @@ mod tests {
     #[test]
     fn corners_match() {
         // f(00)=1, f(01)=2, f(10)=3, f(11)=4.
-        let mle = Mle::new(vec![
+        let mle = Mle::from_base(vec![
             Field::ONE,
             Field::new(2),
             Field::new(3),
             Field::new(4),
         ])
         .unwrap();
-        let (zero, one) = (Field::ZERO, Field::ONE);
-        assert_eq!(mle.evaluate(&[zero, zero]).unwrap(), Field::ONE);
-        assert_eq!(mle.evaluate(&[zero, one]).unwrap(), Field::new(2));
-        assert_eq!(mle.evaluate(&[one, zero]).unwrap(), Field::new(3));
-        assert_eq!(mle.evaluate(&[one, one]).unwrap(), Field::new(4));
+        let (zero, one) = (Ext4::ZERO, Ext4::ONE);
+        assert_eq!(mle.evaluate(&[zero, zero]).unwrap(), Ext4::ONE);
+        assert_eq!(
+            mle.evaluate(&[zero, one]).unwrap(),
+            Ext4::from_base(Field::new(2))
+        );
+        assert_eq!(
+            mle.evaluate(&[one, zero]).unwrap(),
+            Ext4::from_base(Field::new(3))
+        );
+        assert_eq!(
+            mle.evaluate(&[one, one]).unwrap(),
+            Ext4::from_base(Field::new(4))
+        );
     }
 
     #[test]
     fn midpoint_matches_manual() {
-        let mle = Mle::new(vec![
+        let mle = Mle::from_base(vec![
             Field::ONE,
             Field::new(2),
             Field::new(3),
             Field::new(4),
         ])
         .unwrap();
-        let half = Field::new(2).inv(); // 1/2
-                                        // (1+2+3+4)/4 = 10/4 = 5/2.
-        let expected = Field::new(5) * half;
+        let half = Ext4::from_base(Field::new(2).inv()); // 1/2
+                                                         // (1+2+3+4)/4 = 10/4 = 5/2.
+        let expected = Ext4::from_base(Field::new(5)) * half;
         assert_eq!(mle.evaluate(&[half, half]).unwrap(), expected);
         assert!(mle.evaluate(&[]).is_err());
     }
@@ -178,36 +196,36 @@ mod tests {
     #[test]
     fn eq_sums_to_one_and_symmetric() {
         let mut seed = 0x1234_5678_8765_4321u64;
-        let r: Vec<Field> = (0..4)
-            .map(|_| Field::from_u64(crate::gf2::splitmix64(&mut seed)))
+        let r: Vec<Ext4> = (0..4)
+            .map(|_| Ext4::from_base(Field::from_u64(crate::gf2::splitmix64(&mut seed))))
             .collect();
-        let s: Vec<Field> = (0..4)
-            .map(|_| Field::from_u64(crate::gf2::splitmix64(&mut seed)))
+        let s: Vec<Ext4> = (0..4)
+            .map(|_| Ext4::from_base(Field::from_u64(crate::gf2::splitmix64(&mut seed))))
             .collect();
         let eq_r = Mle::eq_evals(&r);
-        assert_eq!(eq_r.sum(), Field::ONE);
+        assert_eq!(eq_r.sum(), Ext4::ONE);
         let left = eq_r.evaluate(&s).unwrap();
         let right = Mle::eq_evals(&s).evaluate(&r).unwrap();
         assert_eq!(left, right);
         // Direct formula check.
-        let mut direct = Field::ONE;
+        let mut direct = Ext4::ONE;
         for (ri, si) in r.iter().zip(&s) {
-            direct *= *ri * *si + (Field::ONE - *ri) * (Field::ONE - *si);
+            direct *= *ri * *si + (Ext4::ONE - *ri) * (Ext4::ONE - *si);
         }
         assert_eq!(left, direct);
     }
 
     #[test]
     fn fix_last_halves() {
-        let mle = Mle::new(vec![
+        let mle = Mle::from_base(vec![
             Field::ONE,
             Field::new(2),
             Field::new(3),
             Field::new(4),
         ])
         .unwrap();
-        let folded = mle.fix_last(Field::ZERO);
-        assert_eq!(folded.evals(), &[Field::ONE, Field::new(3)]);
+        let folded = mle.fix_last(Ext4::ZERO);
+        assert_eq!(folded.evals(), &[Ext4::ONE, Ext4::from_base(Field::new(3))]);
         assert_eq!(folded.n_vars(), 1);
     }
 }

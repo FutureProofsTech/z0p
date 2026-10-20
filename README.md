@@ -17,19 +17,20 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
   public APIs (`Result`, never `unwrap` on public paths), documented items.
 - **Transparent setup, PQ-oriented** — BLAKE3-256 digests, FRI Reed–Solomon
   commitments over BabyBear; nothing to ceremony, nothing pairing-based.
-- **Extension-field challenges** — FRI folds and the AIR/range/table/fold
-  composition batching use `Fp4 = Fp[v,u]/(v²-u, u²-11)` over BabyBear,
-  raising the main STARK algebraic challenge entropy from ~31 bits to
-  ~124 bits. Wire format v2 stores extension values canonically (16 bytes).
+- **Extension-field challenges** — FRI folds, STARK composition batches,
+  `upcs`/Gemini points and betas, sumcheck rounds, and lookup identities
+  use `Fp4 = Fp[v,u]/(v²-u, u²-11)` over BabyBear, raising algebraic
+  challenge entropy from ~31 bits to ~124 bits. Wire format v3 stores
+  extension values canonically (16 bytes).
 - **Production parameter sizing** — `Params::for_security(steps, …, 100)`
   sizes blowup 16, queries, grinding, final size, and cap height for a
   ~100-bit query/proof-of-work schedule. See [Soundness](#soundness) for
-  the remaining base-field components.
+  what that schedule does and does not cover.
 - **Fast at scale** — 1,048,576-step production proof in ~4.98 s
   (~4.75 µs/step, ~210k steps/s), verified in **~2.6 ms**, 206,353 bytes.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 223 unit tests plus three attack suites
+- **Adversarially tested** — 224 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -66,8 +67,7 @@ let mut verifier = Transcript::new(b"my-app/fib");
 air::verify(params, &proof, &mut verifier).expect("verify");
 ```
 
-Production query/PoW schedule (~100 bits before the field-size ceiling) in
-one call:
+Production query/PoW schedule (~100 bits) in one call:
 
 ```rust
 let params = air::Params::for_security(steps, Field::ONE, Field::ONE, b_last, 100)
@@ -85,18 +85,18 @@ Full table with methodology: [docs/benchmarks.md](docs/benchmarks.md).
 
 | Proof (production query/PoW schedule) | Prove | Verify | Size |
 |---|---|---|---|
-| AIR Fibonacci, 1,024 steps | 35 ms | 1.2 ms | 71,373 B |
-| AIR Fibonacci, 8,192 steps | 107 ms | 1.6 ms | 104,033 B |
-| AIR Fibonacci, 65,536 steps | 304 ms | 2.0 ms | 144,441 B |
+| AIR Fibonacci, 1,024 steps | 49 ms | 1.2 ms | 71,373 B |
+| AIR Fibonacci, 8,192 steps | 82 ms | 1.6 ms | 104,033 B |
+| AIR Fibonacci, 65,536 steps | 326 ms | 2.0 ms | 144,441 B |
 | AIR Fibonacci, **1,048,576 steps** | **4.98 s** | **2.6 ms** | **206,353 B** |
-| FRI poly-1024 | 62 ms | 0.9 ms | 43,174 B |
+| FRI poly-1024 | 71 ms | 0.9 ms | 43,174 B |
 
 | Primitive | Result |
 |---|---|
-| BLAKE3 1 MiB | 1.37 ms (~732 MB/s) |
+| BLAKE3 1 MiB | 2.93 ms (~342 MB/s) |
 | BabyBear mul | ~151 Mops/s |
 | NTT forward 2¹⁴ | 0.33 ms |
-| Merkle 65,536 leaves | 4.0 ms |
+| Merkle 65,536 leaves | 3.7 ms |
 
 Proof sizes are deterministic and asserted byte-for-byte against the wire
 format on every benchmark run.
@@ -117,22 +117,20 @@ hashes and denies a forger a `2^-d` shortcut. Size the queries from the
 rate first, then top up with grinding — `for_security` does exactly this,
 plus the size-optimal final layer and Merkle cap height.
 
-**Challenge fields.** The totals above count query sampling and grinding,
-not finite-field algebraic error. FRI folding and the main STARK
-composition batches now draw challenges from the quartic extension
-`Fp4`, so the previous ~31-bit folding ceiling is removed from the
-AIR/range/table/fold path. Some components still use base-field
-challenges: `upcs`/`gemini` evaluation points and fold betas, and
-`sumcheck`/`lookup` rounds. Those paths retain a ~31-bit algebraic
-ceiling until they migrate. Do not claim end-to-end 100-bit soundness
-for them, and do not deploy any high-value system before an external
-audit.
+**Challenge fields.** The totals above count query sampling and grinding.
+All algebraic challenges now draw from the quartic extension `Fp4`:
+FRI folds, STARK composition batches, `upcs`/Gemini evaluation points
+and fold betas, sumcheck rounds, and lookup's rational-identity
+challenge. Per-challenge collision probability is about `degree / p^4`,
+so the former ~31-bit algebraic ceiling is gone. These are still
+conjectured bounds with concrete parameters; do not deploy a high-value
+system before an external audit.
 
 ## Security testing
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 223 tests across 22 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 224 tests across 22 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 8 vectors: hostile `Params`, decoder bit-flip fuzz, RNG uniformity | this README |
@@ -205,10 +203,9 @@ CHANGELOG.md     release history (Keep a Changelog)
   `batch_digests_match_reference`), up to ~2.6× on the Merkle primitive
   and ~11% end-to-end at 1M steps. The default build stays scalar, stable,
   and MSRV 1.74; the feature is additive with a scalar fallback.
-- **Extension-field FRI — done for the main path.** FRI folds and
-  AIR/range/table/fold composition use `Fp4` challenges; the wire format is
-  v2. Remaining extension work: PCS evaluation points, Gemini fold betas,
-  and sumcheck/lookup challenges.
+- **Extension-field challenges — done across the stack.** FRI, STARK
+  compositions, `upcs`/Gemini points and betas, sumcheck, and lookup use
+  `Fp4` challenges; the wire format is v3.
 - **Recursion — fragment done.** `recursion.rs` proves one FRI query's
   fold chain as a STARK: public `(lde_len, leaf, challenges, initial quad,
   output)`, committed quads, shifted-index transition openings, FRI over

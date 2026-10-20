@@ -108,8 +108,8 @@ impl Commitment {
 /// Prover-side commitment data: coefficients, LDE, and evaluation tree.
 #[derive(Clone, Debug)]
 pub struct ProverState {
-    coeffs: Vec<Field>,
-    lde: Vec<Field>,
+    coeffs: Vec<Ext4>,
+    lde: Vec<Ext4>,
     tree: MerkleTree,
     commitment: Commitment,
 }
@@ -123,7 +123,7 @@ impl ProverState {
 
     /// Coefficients in ascending order.
     #[must_use]
-    pub fn coeffs(&self) -> &[Field] {
+    pub fn coeffs(&self) -> &[Ext4] {
         &self.coeffs
     }
 }
@@ -132,7 +132,7 @@ impl ProverState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Opening {
     /// Claimed evaluation at the position.
-    pub value: Field,
+    pub value: Ext4,
     /// Full Merkle path (leaf to root).
     pub path: Vec<([u8; 32], bool)>,
 }
@@ -165,7 +165,7 @@ impl Proof {
         self.q_fri.write_body(&mut writer);
         writer.count(self.openings.len());
         for opening in &self.openings {
-            writer.field(opening.value);
+            writer.ext4(opening.value);
             writer.path(&opening.path);
         }
         writer.finish()
@@ -187,7 +187,7 @@ impl Proof {
         let mut openings = Vec::new();
         for _ in 0..reader.count(MAX_QUERIES)? {
             openings.push(Opening {
-                value: reader.field()?,
+                value: reader.ext4()?,
                 path: reader.path()?,
             });
         }
@@ -212,9 +212,18 @@ impl Proof {
 /// domains, and [`Error::InvalidBlowup`] for a blowup below two or not a
 /// power of two.
 pub fn commit(coeffs: &[Field], blowup: usize) -> Result<ProverState> {
+    let coeffs: Vec<Ext4> = coeffs.iter().copied().map(Ext4::from_base).collect();
+    commit_ext(&coeffs, blowup)
+}
+
+/// Commit extension-field coefficients.
+///
+/// # Errors
+/// Same shape errors as [`commit`].
+pub fn commit_ext(coeffs: &[Ext4], blowup: usize) -> Result<ProverState> {
     let lde_len = check_dims(coeffs.len(), blowup)?;
-    let mut lde = ntt::evaluate_on_coset(coeffs, blowup, LDE_SHIFT)?;
-    ntt::bit_reverse_permute(&mut lde);
+    let mut lde = ntt::evaluate_on_coset_ext(coeffs, blowup, LDE_SHIFT)?;
+    ntt::bit_reverse_permute_ext(&mut lde);
     if lde.len() != lde_len {
         return Err(Error::InvalidDomainSize { size: lde.len() });
     }
@@ -244,8 +253,8 @@ pub fn commit(coeffs: &[Field], blowup: usize) -> Result<ProverState> {
 /// mismatch, or any FRI/Merkle error.
 pub fn open(
     state: &ProverState,
-    point: Field,
-    value: Field,
+    point: Ext4,
+    value: Ext4,
     params: fri::Params,
     transcript: &mut Transcript,
 ) -> Result<Proof> {
@@ -259,7 +268,7 @@ pub fn open(
             reason: "upcs openings require cap_height = 0",
         });
     }
-    if ntt::evaluate(&state.coeffs, point) != value {
+    if ntt::evaluate_ext(&state.coeffs, point) != value {
         return Err(Error::MalformedInput {
             reason: "claimed evaluation does not match the committed polynomial",
         });
@@ -274,9 +283,9 @@ pub fn open(
 /// deliberately wrong quotient.
 fn open_with_quotient(
     state: &ProverState,
-    point: Field,
-    value: Field,
-    quotient: &[Field],
+    point: Ext4,
+    value: Ext4,
+    quotient: &[Ext4],
     params: fri::Params,
     transcript: &mut Transcript,
 ) -> Result<Proof> {
@@ -284,7 +293,7 @@ fn open_with_quotient(
 
     // Low-degree proof for `g`, and cross-check that the FRI base tree is the
     // statement commitment (both cover the same bit-reversed LDE).
-    let g_state = fri::commit(&state.coeffs, params, transcript)?;
+    let g_state = fri::commit_ext(&state.coeffs, params, transcript)?;
     let g_commitment = fri::public_commitment(&g_state);
     if g_commitment.caps.first().and_then(|cap| cap.first()) != Some(&state.commitment.root) {
         return Err(Error::MalformedInput {
@@ -297,10 +306,10 @@ fn open_with_quotient(
     // evaluation check. The true quotient has degree at most `n - 2`, so
     // declare that tight bound rather than the commitment default `n - 1`.
     let mut padded = quotient.to_vec();
-    padded.resize(state.commitment.poly_len, Field::ZERO);
-    let q_lde = ntt::evaluate_on_coset(&padded, params.blowup, LDE_SHIFT)?;
+    padded.resize(state.commitment.poly_len, Ext4::ZERO);
+    let q_lde = ntt::evaluate_on_coset_ext(&padded, params.blowup, LDE_SHIFT)?;
     let degree_bound = state.commitment.poly_len.saturating_sub(2);
-    let q_state = fri::commit_evals(&q_lde, degree_bound, params, transcript)?;
+    let q_state = fri::commit_ext_evals(&q_lde, degree_bound, params, transcript)?;
     let q_commitment = fri::public_commitment(&q_state);
     let (q_fri, indices) = fri::open(&q_state, transcript)?;
 
@@ -334,10 +343,10 @@ fn open_with_quotient(
 /// propagates FRI/Merkle errors.
 pub fn open_multi(
     state: &ProverState,
-    points: &[Field],
+    points: &[Ext4],
     params: fri::Params,
     transcript: &mut Transcript,
-) -> Result<(Proof, Vec<Field>)> {
+) -> Result<(Proof, Vec<Ext4>)> {
     if state.commitment.blowup != params.blowup {
         return Err(Error::InvalidBlowup {
             factor: params.blowup,
@@ -356,14 +365,14 @@ pub fn open_multi(
             reason: "too many multi-point openings",
         });
     }
-    let values: Vec<Field> = points
+    let values: Vec<Ext4> = points
         .iter()
-        .map(|point| ntt::evaluate(&state.coeffs, *point))
+        .map(|point| ntt::evaluate_ext(&state.coeffs, *point))
         .collect();
     check_points(state.commitment.poly_len, points, &values)?;
 
     let (quotient, degree_bound) = if points.len() == state.commitment.poly_len {
-        (vec![Field::ZERO], 0)
+        (vec![Ext4::ZERO], 0)
     } else {
         let interp = interpolate(points, &values)?;
         let vanishing = interpolation_vanishing(points);
@@ -391,9 +400,9 @@ pub fn open_multi(
 /// Prover body with an explicit quotient, exposed to tests.
 fn open_multi_with_quotient(
     state: &ProverState,
-    points: &[Field],
-    values: &[Field],
-    quotient: &[Field],
+    points: &[Ext4],
+    values: &[Ext4],
+    quotient: &[Ext4],
     degree_bound: usize,
     params: fri::Params,
     transcript: &mut Transcript,
@@ -406,7 +415,7 @@ fn open_multi_with_quotient(
     }
     absorb_statement_multi(transcript, &state.commitment, points, values);
 
-    let g_state = fri::commit(&state.coeffs, params, transcript)?;
+    let g_state = fri::commit_ext(&state.coeffs, params, transcript)?;
     let g_commitment = fri::public_commitment(&g_state);
     if g_commitment.caps.first().and_then(|cap| cap.first()) != Some(&state.commitment.root) {
         return Err(Error::MalformedInput {
@@ -416,9 +425,9 @@ fn open_multi_with_quotient(
     let (g_fri, _) = fri::open(&g_state, transcript)?;
 
     let mut padded = quotient.to_vec();
-    padded.resize(state.commitment.poly_len, Field::ZERO);
-    let q_lde = ntt::evaluate_on_coset(&padded, params.blowup, LDE_SHIFT)?;
-    let q_state = fri::commit_evals(&q_lde, degree_bound, params, transcript)?;
+    padded.resize(state.commitment.poly_len, Ext4::ZERO);
+    let q_lde = ntt::evaluate_on_coset_ext(&padded, params.blowup, LDE_SHIFT)?;
+    let q_state = fri::commit_ext_evals(&q_lde, degree_bound, params, transcript)?;
     let q_commitment = fri::public_commitment(&q_state);
     let (q_fri, indices) = fri::open(&q_state, transcript)?;
 
@@ -447,8 +456,8 @@ fn open_multi_with_quotient(
 /// invalid commitments or nonzero cap heights.
 pub fn verify_multi(
     commitment: &Commitment,
-    points: &[Field],
-    values: &[Field],
+    points: &[Ext4],
+    values: &[Ext4],
     proof: &Proof,
     params: fri::Params,
     transcript: &mut Transcript,
@@ -513,16 +522,16 @@ pub fn verify_multi(
         }
         if !MerkleTree::verify(
             &commitment.root,
-            &Ext4::from_base(opening.value).to_le_bytes(),
+            &opening.value.to_le_bytes(),
             index,
             &opening.path,
         ) {
             return Err(Error::BadMerklePath);
         }
         let z = fri::point_at(lde_len, 0, index)?;
-        let expected = Ext4::from_base(eval_poly(&interp, z))
-            + Ext4::from_base(eval_poly(&vanishing, z)) * *q_value;
-        if Ext4::from_base(opening.value) != expected {
+        let expected = eval_poly(&interp, Ext4::from_base(z))
+            + eval_poly(&vanishing, Ext4::from_base(z)) * *q_value;
+        if opening.value != expected {
             return Err(Error::FriVerificationFailed);
         }
     }
@@ -537,8 +546,8 @@ pub fn verify_multi(
 /// invalid commitments or nonzero cap heights.
 pub fn verify(
     commitment: &Commitment,
-    point: Field,
-    value: Field,
+    point: Ext4,
+    value: Ext4,
     proof: &Proof,
     params: fri::Params,
     transcript: &mut Transcript,
@@ -596,14 +605,14 @@ pub fn verify(
         }
         if !MerkleTree::verify(
             &commitment.root,
-            &Ext4::from_base(opening.value).to_le_bytes(),
+            &opening.value.to_le_bytes(),
             index,
             &opening.path,
         ) {
             return Err(Error::BadMerklePath);
         }
         let z = fri::point_at(lde_len, 0, index)?;
-        if Ext4::from_base(z - point) * *q_value != Ext4::from_base(opening.value - value) {
+        if (Ext4::from_base(z) - point) * *q_value != opening.value - value {
             return Err(Error::FriVerificationFailed);
         }
     }
@@ -611,7 +620,7 @@ pub fn verify(
 }
 
 /// Validate a multi-point statement.
-fn check_points(poly_len: usize, points: &[Field], values: &[Field]) -> Result<()> {
+fn check_points(poly_len: usize, points: &[Ext4], values: &[Ext4]) -> Result<()> {
     if points.is_empty() {
         return Err(Error::EmptyInput);
     }
@@ -641,24 +650,24 @@ fn check_points(poly_len: usize, points: &[Field], values: &[Field]) -> Result<(
 }
 
 /// Interpolate `(points, values)` into ascending coefficients.
-fn interpolate(points: &[Field], values: &[Field]) -> Result<Vec<Field>> {
+fn interpolate(points: &[Ext4], values: &[Ext4]) -> Result<Vec<Ext4>> {
     if points.len() != values.len() || points.is_empty() {
         return Err(Error::MalformedInput {
             reason: "invalid interpolation statement",
         });
     }
     let k = points.len();
-    let mut coefficients = vec![Field::ZERO; k];
+    let mut coefficients = vec![Ext4::ZERO; k];
     for (j, &point_j) in points.iter().enumerate() {
-        let mut basis = vec![Field::ZERO; k];
-        basis[0] = Field::ONE;
+        let mut basis = vec![Ext4::ZERO; k];
+        basis[0] = Ext4::ONE;
         let mut degree = 0;
-        let mut denominator = Field::ONE;
+        let mut denominator = Ext4::ONE;
         for (m, &point_m) in points.iter().enumerate() {
             if m == j {
                 continue;
             }
-            let mut next = vec![Field::ZERO; k];
+            let mut next = vec![Ext4::ZERO; k];
             for (i, &coefficient) in basis.iter().enumerate().take(degree + 1) {
                 next[i] -= point_m * coefficient;
                 next[i + 1] += coefficient;
@@ -676,10 +685,10 @@ fn interpolate(points: &[Field], values: &[Field]) -> Result<Vec<Field>> {
 }
 
 /// Vanishing polynomial `prod_j (X - point_j)` in ascending coefficients.
-fn interpolation_vanishing(points: &[Field]) -> Vec<Field> {
-    let mut polynomial = vec![Field::ONE];
+fn interpolation_vanishing(points: &[Ext4]) -> Vec<Ext4> {
+    let mut polynomial = vec![Ext4::ONE];
     for &point in points {
-        let mut next = vec![Field::ZERO; polynomial.len() + 1];
+        let mut next = vec![Ext4::ZERO; polynomial.len() + 1];
         for (i, &coefficient) in polynomial.iter().enumerate() {
             next[i] -= point * coefficient;
             next[i + 1] += coefficient;
@@ -690,20 +699,20 @@ fn interpolation_vanishing(points: &[Field]) -> Vec<Field> {
 }
 
 /// Exact division by a monic vanishing polynomial.
-fn divide_exact(numerator: &[Field], divisor: &[Field]) -> Result<Vec<Field>> {
+fn divide_exact(numerator: &[Ext4], divisor: &[Ext4]) -> Result<Vec<Ext4>> {
     let Some(&leading) = divisor.last() else {
         return Err(Error::MalformedInput {
             reason: "empty divisor",
         });
     };
     let k = divisor.len() - 1;
-    if k == 0 || leading != Field::ONE || numerator.len() < k {
+    if k == 0 || leading != Ext4::ONE || numerator.len() < k {
         return Err(Error::MalformedInput {
             reason: "invalid vanishing polynomial",
         });
     }
     let mut remainder = numerator.to_vec();
-    let mut quotient = vec![Field::ZERO; numerator.len() - k];
+    let mut quotient = vec![Ext4::ZERO; numerator.len() - k];
     for i in (k..numerator.len()).rev() {
         let coefficient = remainder[i];
         quotient[i - k] = coefficient;
@@ -711,7 +720,7 @@ fn divide_exact(numerator: &[Field], divisor: &[Field]) -> Result<Vec<Field>> {
             remainder[i - k + j] -= coefficient * divisor_coefficient;
         }
     }
-    if remainder[..k].iter().any(|value| *value != Field::ZERO) {
+    if remainder[..k].iter().any(|value| *value != Ext4::ZERO) {
         return Err(Error::MalformedInput {
             reason: "polynomial division is not exact",
         });
@@ -720,8 +729,8 @@ fn divide_exact(numerator: &[Field], divisor: &[Field]) -> Result<Vec<Field>> {
 }
 
 /// Horner evaluation of ascending coefficients.
-fn eval_poly(coefficients: &[Field], point: Field) -> Field {
-    let mut value = Field::ZERO;
+fn eval_poly(coefficients: &[Ext4], point: Ext4) -> Ext4 {
+    let mut value = Ext4::ZERO;
     for &coefficient in coefficients.iter().rev() {
         value = value * point + coefficient;
     }
@@ -732,8 +741,8 @@ fn eval_poly(coefficients: &[Field], point: Field) -> Field {
 fn absorb_statement_multi(
     transcript: &mut Transcript,
     commitment: &Commitment,
-    points: &[Field],
-    values: &[Field],
+    points: &[Ext4],
+    values: &[Ext4],
 ) {
     transcript.absorb(b"upcs-multi/root", &commitment.root);
     let mut writer = Writer::new();
@@ -741,10 +750,10 @@ fn absorb_statement_multi(
     writer.u64_le(commitment.blowup as u64);
     writer.count(points.len());
     for point in points {
-        writer.field(*point);
+        writer.ext4(*point);
     }
     for value in values {
-        writer.field(*value);
+        writer.ext4(*value);
     }
     transcript.absorb(b"upcs-multi/statement", &writer.finish());
 }
@@ -773,23 +782,23 @@ fn check_dims(poly_len: usize, blowup: usize) -> Result<usize> {
 fn absorb_statement(
     transcript: &mut Transcript,
     commitment: &Commitment,
-    point: Field,
-    value: Field,
+    point: Ext4,
+    value: Ext4,
 ) {
     transcript.absorb(b"upcs/root", &commitment.root);
     let mut writer = Writer::new();
     writer.u64_le(commitment.poly_len as u64);
     writer.u64_le(commitment.blowup as u64);
-    writer.field(point);
-    writer.field(value);
+    writer.ext4(point);
+    writer.ext4(value);
     transcript.absorb(b"upcs/statement", &writer.finish());
 }
 
-/// Merkle tree over 4-byte LDE leaves.
-fn tree_over(lde: &[Field]) -> Result<MerkleTree> {
+/// Merkle tree over 16-byte extension-field leaves.
+fn tree_over(lde: &[Ext4]) -> Result<MerkleTree> {
     let mut flat = vec![0u8; 16 * lde.len()];
     for (chunk, value) in flat.chunks_exact_mut(16).zip(lde) {
-        chunk.copy_from_slice(&Ext4::from_base(*value).to_le_bytes());
+        chunk.copy_from_slice(&value.to_le_bytes());
     }
     MerkleTree::from_flat(&flat, 16)
 }
@@ -798,9 +807,9 @@ fn tree_over(lde: &[Field]) -> Result<MerkleTree> {
 ///
 /// Returns [`Error::MalformedInput`] when the division is not exact (the
 /// claimed value is wrong). The quotient's leading coefficient is zero.
-fn quotient(coeffs: &[Field], point: Field, value: Field) -> Result<Vec<Field>> {
+fn quotient(coeffs: &[Ext4], point: Ext4, value: Ext4) -> Result<Vec<Ext4>> {
     let n = coeffs.len();
-    let mut q = vec![Field::ZERO; n];
+    let mut q = vec![Ext4::ZERO; n];
     if n == 1 {
         if coeffs[0] != value {
             return Err(Error::MalformedInput {
@@ -817,7 +826,7 @@ fn quotient(coeffs: &[Field], point: Field, value: Field) -> Result<Vec<Field>> 
         q[i - 1] = carry;
     }
     let remainder = (coeffs[0] - value) + point * q[0];
-    if remainder != Field::ZERO {
+    if remainder != Ext4::ZERO {
         return Err(Error::MalformedInput {
             reason: "claimed evaluation does not divide the polynomial",
         });
@@ -843,11 +852,16 @@ mod tests {
             .collect()
     }
 
-    fn prove_roundtrip(coeffs: &[Field], point: Field) -> (Commitment, fri::Params, Field, Proof) {
+    fn ext_poly(coeffs: &[Field]) -> Vec<Ext4> {
+        coeffs.iter().copied().map(Ext4::from_base).collect()
+    }
+
+    fn prove_roundtrip(coeffs: &[Field], point: Field) -> (Commitment, fri::Params, Ext4, Proof) {
         let params = params(coeffs.len());
         let state = commit(coeffs, params.blowup).unwrap();
         let commitment = state.commitment().clone();
-        let value = ntt::evaluate(coeffs, point);
+        let point = Ext4::from_base(point);
+        let value = ntt::evaluate_ext(state.coeffs(), point);
         let mut prover_t = Transcript::new(b"upcs-test");
         let proof = open(&state, point, value, params, &mut prover_t).unwrap();
         (commitment, params, value, proof)
@@ -856,24 +870,31 @@ mod tests {
     fn verify_with(
         commitment: &Commitment,
         point: Field,
-        value: Field,
+        value: Ext4,
         proof: &Proof,
         params: fri::Params,
     ) -> Result<()> {
         let mut verifier_t = Transcript::new(b"upcs-test");
-        verify(commitment, point, value, proof, params, &mut verifier_t)
+        verify(
+            commitment,
+            Ext4::from_base(point),
+            value,
+            proof,
+            params,
+            &mut verifier_t,
+        )
     }
 
-    fn multi_points(_poly_len: usize, k: usize) -> Vec<Field> {
+    fn multi_points(_poly_len: usize, k: usize) -> Vec<Ext4> {
         (0..k)
-            .map(|i| Field::new(u32::try_from(i).unwrap() * 5 + 2))
+            .map(|i| Ext4::from_base(Field::new(u32::try_from(i).unwrap() * 5 + 2)))
             .collect()
     }
 
     fn prove_multi_roundtrip(
         coeffs: &[Field],
-        points: &[Field],
-    ) -> (Commitment, fri::Params, Vec<Field>, Proof) {
+        points: &[Ext4],
+    ) -> (Commitment, fri::Params, Vec<Ext4>, Proof) {
         let params = params(coeffs.len());
         let state = commit(coeffs, params.blowup).unwrap();
         let commitment = state.commitment().clone();
@@ -884,8 +905,8 @@ mod tests {
 
     fn verify_multi_with(
         commitment: &Commitment,
-        points: &[Field],
-        values: &[Field],
+        points: &[Ext4],
+        values: &[Ext4],
         proof: &Proof,
         params: fri::Params,
     ) -> Result<()> {
@@ -910,7 +931,7 @@ mod tests {
         let coeffs = poly(8);
         let point = Field::new(5);
         let (commitment, params, value, proof) = prove_roundtrip(&coeffs, point);
-        assert!(verify_with(&commitment, point, value + Field::ONE, &proof, params).is_err());
+        assert!(verify_with(&commitment, point, value + Ext4::ONE, &proof, params).is_err());
         assert!(verify_with(&commitment, point, value, &proof, params).is_ok());
     }
 
@@ -919,7 +940,16 @@ mod tests {
         let coeffs = poly(16);
         let point = Field::new(9);
         let (commitment, params, value, proof) = prove_roundtrip(&coeffs, point);
-        assert!(verify_with(&commitment, point + Field::ONE, value, &proof, params).is_err());
+        let mut verifier_t = Transcript::new(b"upcs-test");
+        assert!(verify(
+            &commitment,
+            Ext4::from_base(point) + Ext4::ONE,
+            value,
+            &proof,
+            params,
+            &mut verifier_t,
+        )
+        .is_err());
     }
 
     #[test]
@@ -938,7 +968,7 @@ mod tests {
         let coeffs = poly(8);
         let point = Field::new(11);
         let (commitment, params, value, mut proof) = prove_roundtrip(&coeffs, point);
-        proof.openings[0].value += Field::ONE;
+        proof.openings[0].value += Ext4::ONE;
         assert!(verify_with(&commitment, point, value, &proof, params).is_err());
     }
 
@@ -988,14 +1018,25 @@ mod tests {
     fn wrong_quotient_is_rejected() {
         let coeffs = poly(8);
         let point = Field::new(23);
-        let value = ntt::evaluate(&coeffs, point);
+        let ext_coeffs = ext_poly(&coeffs);
+        let point = Ext4::from_base(point);
+        let value = ntt::evaluate_ext(&ext_coeffs, point);
         let params = params(coeffs.len());
         let state = commit(&coeffs, params.blowup).unwrap();
-        let mut bad = quotient(&coeffs, point, value).unwrap();
-        bad[0] += Field::ONE;
+        let mut bad = quotient(&ext_coeffs, point, value).unwrap();
+        bad[0] += Ext4::ONE;
         let mut prover_t = Transcript::new(b"upcs-test");
         let proof = open_with_quotient(&state, point, value, &bad, params, &mut prover_t).unwrap();
-        assert!(verify_with(state.commitment(), point, value, &proof, params).is_err());
+        let mut verifier_t = Transcript::new(b"upcs-test");
+        assert!(verify(
+            state.commitment(),
+            point,
+            value,
+            &proof,
+            params,
+            &mut verifier_t
+        )
+        .is_err());
     }
 
     #[test]
@@ -1044,9 +1085,10 @@ mod tests {
         let mut bad = state.commitment().clone();
         bad.poly_len = 6;
         let point = Field::new(2);
-        let value = ntt::evaluate(&poly(8), point);
+        let ext_point = Ext4::from_base(point);
+        let value = ntt::evaluate_ext(&ext_poly(&poly(8)), ext_point);
         let mut prover_t = Transcript::new(b"upcs-test");
-        let proof = open(&state, point, value, params(8), &mut prover_t).unwrap();
+        let proof = open(&state, ext_point, value, params(8), &mut prover_t).unwrap();
         assert!(verify_with(&bad, point, value, &proof, params(8)).is_err());
     }
 
@@ -1054,24 +1096,25 @@ mod tests {
     fn open_rejects_wrong_value_and_blowup() {
         let coeffs = poly(8);
         let point = Field::new(31);
+        let ext_point = Ext4::from_base(point);
         let state = commit(&coeffs, 8).unwrap();
-        let value = ntt::evaluate(&coeffs, point);
+        let value = ntt::evaluate_ext(state.coeffs(), ext_point);
         let mut transcript = Transcript::new(b"upcs-test");
         assert!(open(
             &state,
-            point,
-            value + Field::ONE,
+            ext_point,
+            value + Ext4::ONE,
             params(8),
             &mut transcript
         )
         .is_err());
         let mut transcript = Transcript::new(b"upcs-test");
         let other = fri::Params::new(16, 8, 8).unwrap();
-        assert!(open(&state, point, value, other, &mut transcript).is_err());
+        assert!(open(&state, ext_point, value, other, &mut transcript).is_err());
         let mut capped = params(8);
         capped.cap_height = 1;
         let mut transcript = Transcript::new(b"upcs-test");
-        assert!(open(&state, point, value, capped, &mut transcript).is_err());
+        assert!(open(&state, ext_point, value, capped, &mut transcript).is_err());
     }
 
     #[test]
@@ -1080,7 +1123,15 @@ mod tests {
         let point = Field::new(37);
         let (commitment, params, value, proof) = prove_roundtrip(&coeffs, point);
         let mut other_t = Transcript::new(b"upcs-other-domain");
-        assert!(verify(&commitment, point, value, &proof, params, &mut other_t).is_err());
+        assert!(verify(
+            &commitment,
+            Ext4::from_base(point),
+            value,
+            &proof,
+            params,
+            &mut other_t
+        )
+        .is_err());
     }
 
     #[test]
@@ -1091,8 +1142,9 @@ mod tests {
                 let points = multi_points(n, k);
                 let (commitment, params, values, proof) = prove_multi_roundtrip(&coeffs, &points);
                 verify_multi_with(&commitment, &points, &values, &proof, params).unwrap();
+                let ext_coeffs = ext_poly(&coeffs);
                 for (point, value) in points.iter().zip(&values) {
-                    assert_eq!(ntt::evaluate(&coeffs, *point), *value);
+                    assert_eq!(ntt::evaluate_ext(&ext_coeffs, *point), *value);
                 }
             }
         }
@@ -1103,7 +1155,7 @@ mod tests {
         let coeffs = poly(8);
         let points = multi_points(8, 3);
         let (commitment, params, mut values, proof) = prove_multi_roundtrip(&coeffs, &points);
-        values[1] += Field::ONE;
+        values[1] += Ext4::ONE;
         assert!(verify_multi_with(&commitment, &points, &values, &proof, params).is_err());
     }
 
@@ -1113,7 +1165,7 @@ mod tests {
         let points = multi_points(16, 4);
         let (commitment, params, values, proof) = prove_multi_roundtrip(&coeffs, &points);
         let mut other = points;
-        other[2] += Field::ONE;
+        other[2] += Ext4::ONE;
         assert!(verify_multi_with(&commitment, &other, &values, &proof, params).is_err());
     }
 
@@ -1121,7 +1173,10 @@ mod tests {
     fn multi_duplicate_points_are_rejected() {
         let coeffs = poly(8);
         let state = commit(&coeffs, 8).unwrap();
-        let points = [Field::new(3), Field::new(3)];
+        let points = [
+            Ext4::from_base(Field::new(3)),
+            Ext4::from_base(Field::new(3)),
+        ];
         let mut transcript = Transcript::new(b"upcs-multi-test");
         assert!(open_multi(&state, &points, params(8), &mut transcript).is_err());
 
@@ -1143,9 +1198,9 @@ mod tests {
         let points = multi_points(n, n);
         let (commitment, params, values, proof) = prove_multi_roundtrip(&coeffs[..n], &points);
         let mut too_many_points = points;
-        too_many_points.push(Field::new(100));
+        too_many_points.push(Ext4::from_base(Field::new(100)));
         let mut too_many_values = values;
-        too_many_values.push(Field::ZERO);
+        too_many_values.push(Ext4::ZERO);
         assert!(verify_multi_with(
             &commitment,
             &too_many_points,
@@ -1171,18 +1226,19 @@ mod tests {
         let points = multi_points(8, 3);
         let params = params(8);
         let state = commit(&coeffs, params.blowup).unwrap();
-        let values: Vec<Field> = points
+        let ext_coeffs = ext_poly(&coeffs);
+        let values: Vec<Ext4> = points
             .iter()
-            .map(|point| ntt::evaluate(&coeffs, *point))
+            .map(|point| ntt::evaluate_ext(&ext_coeffs, *point))
             .collect();
         let interp = interpolate(&points, &values).unwrap();
         let vanishing = interpolation_vanishing(&points);
-        let mut numerator = coeffs.clone();
+        let mut numerator = ext_coeffs;
         for (slot, coefficient) in numerator.iter_mut().zip(&interp) {
             *slot -= *coefficient;
         }
         let mut quotient = divide_exact(&numerator, &vanishing).unwrap();
-        quotient[0] += Field::ONE;
+        quotient[0] += Ext4::ONE;
         let mut prover_t = Transcript::new(b"upcs-multi-test");
         let proof = open_multi_with_quotient(
             &state,
@@ -1216,7 +1272,7 @@ mod tests {
         assert!(verify_multi_with(&commitment, &points, &values, &bad, params).is_err());
 
         let mut bad = proof.clone();
-        bad.openings[0].value += Field::ONE;
+        bad.openings[0].value += Ext4::ONE;
         assert!(verify_multi_with(&commitment, &points, &values, &bad, params).is_err());
 
         let mut bad = proof;
@@ -1251,9 +1307,9 @@ mod tests {
     #[test]
     fn interpolation_matches_claims() {
         let points = multi_points(8, 5);
-        let values: Vec<Field> = points
+        let values: Vec<Ext4> = points
             .iter()
-            .map(|point| *point * *point + Field::new(7))
+            .map(|point| *point * *point + Ext4::from_base(Field::new(7)))
             .collect();
         let interp = interpolate(&points, &values).unwrap();
         for (point, value) in points.iter().zip(&values) {
@@ -1261,8 +1317,8 @@ mod tests {
         }
         let vanishing = interpolation_vanishing(&points);
         for point in &points {
-            assert_eq!(eval_poly(&vanishing, *point), Field::ZERO);
+            assert_eq!(eval_poly(&vanishing, *point), Ext4::ZERO);
         }
-        assert_eq!(*vanishing.last().unwrap(), Field::ONE);
+        assert_eq!(*vanishing.last().unwrap(), Ext4::ONE);
     }
 }

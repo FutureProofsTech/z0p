@@ -114,7 +114,7 @@ impl Params {
 
     /// Production parameters for plain (non-masked) columns: blowup 16,
     /// strength sized for a `target_bits` query/grinding schedule (see the
-    /// field-size ceiling in [`crate::fri`]), and size-optimal final size
+    /// soundness notes in [`crate::fri`]), and size-optimal final size
     /// and cap height.
     ///
     /// Masked ([`prove_zk`]) callers size manually.

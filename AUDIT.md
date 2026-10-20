@@ -19,11 +19,30 @@ The review surface is the Rust crate in `src/` and its public API:
 
 The formal specification is [docs/yellowpaper.md](docs/yellowpaper.md). The
 design and performance overview is [docs/whitepaper.md](docs/whitepaper.md).
+The adversary capabilities and out-of-scope threats are in
+[SECURITY.md](SECURITY.md#threat-model).
+
+## Suggested review order
+
+1. **Encoding and transcript** (`codec`, `transcript`): canonical decoding,
+   hard caps, absorption order, and query sampling after grinding.
+2. **Algebra** (`babybear`, `ext4`, `gf2`): canonical representatives,
+   inverses, and tower laws.
+3. **Commitments** (`hash`, `merkle`): BLAKE3 KATs, domain separation, caps,
+   and path shape checks.
+4. **Polynomial core** (`ntt`, `fri`, `mle`, `sumcheck`, `upcs`): rate gate,
+   fold identities, and degree bounds.
+5. **Statements** (`air`, `range`, `table`, `fold`, `lookup_pcs`, `vm`):
+   transition/boundary constraints and public-input binding.
+6. **Masking** (`blind`, `rng`): randomness budget, seed handling, and the
+   documented non-hiding surfaces.
+7. **Adversarial suites** (`tests/`): map each fix or invariant to a
+   regression test before reviewing performance.
 
 ## Reproduce the gates
 
 ```sh
-python3 tools/check.py          # fmt, clippy, debug+release tests, bench regression
+python3 tools/check.py          # fmt, rustdoc, clippy, debug+release tests, bench regression
 RUSTC_BOOTSTRAP=1 cargo test --features simd
 BENCH_ROW=N1048576 cargo bench  # 1M-step AIR row
 ```
@@ -61,6 +80,8 @@ tests, 10 red-team tests, and 5 doc tests.
 - [docs/unit-tests.md](docs/unit-tests.md) — per-module test breakdown.
 - [docs/benchmarks.md](docs/benchmarks.md) — methodology and exact sizes.
 - [CHANGELOG.md](CHANGELOG.md) — wire-format history and fixes.
+- [RELEASING.md](RELEASING.md) — how tagged builds are produced and what a
+  tag implies.
 
 ## Known limitations
 

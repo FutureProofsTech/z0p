@@ -20,13 +20,14 @@ below keep it auditable.
 Run the full gate and make sure it is green:
 
 ```sh
-python3 tools/check.py          # fmt, clippy, tests, bench regression
+python3 tools/check.py          # fmt, rustdoc, clippy, tests, bench regression
 ```
 
 or manually:
 
 ```sh
 cargo fmt --check
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo test --release
@@ -50,6 +51,11 @@ abuse and decoder fuzzing go in `tests/hardening.rs`. Each vector should:
 Bump `codec::VERSION`, keep decoders fail-closed with hard caps, and update the
 byte-exact size assertions in `benches/speed_size.rs` and
 `tools/baseline.json`.
+
+## Releasing
+
+Tags are immutable. Follow [RELEASING.md](RELEASING.md); do not create a tag
+until the exact commit is green in CI.
 
 ## Commit / PR style
 

@@ -6,6 +6,18 @@ All notable changes to `z0p` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `RELEASING.md` and `tools/release_check.py` for immutable, reproducible
+  releases and version/tag consistency checks.
+- An explicit project-status banner and an audit review order covering the
+  encoding, algebra, commitment, polynomial, statement, and masking layers.
+
+### Changed
+- README, CONTRIBUTING, and AUDIT now document the rustdoc gate added in
+  v0.2.1.
+- CI uses checkout v5, cancels superseded runs, supports manual dispatch,
+  bounds job runtime, and validates release-tag metadata.
+
 ## [0.2.1] - 2026-10-20
 
 ### Fixed

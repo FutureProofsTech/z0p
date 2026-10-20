@@ -6,6 +6,11 @@
 [![Rust 1.74+](https://img.shields.io/badge/rust-1.74%2B-orange.svg)](Cargo.toml)
 [![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](Cargo.toml)
 
+> **Project status:** v0.2.1, unaudited research software. The advertised
+> ~100-bit figure is a conjectured query/proof-of-work budget, not an
+> end-to-end soundness proof. See [SECURITY.md](SECURITY.md) and
+> [AUDIT.md](AUDIT.md).
+
 A from-scratch, zero-dependency zero-knowledge proving stack in safe Rust:
 binary fields, an NTT-friendly prime field, BLAKE3, Merkle trees, FRI
 polynomial commitments, and STARKs (Fibonacci AIR, range checks, table
@@ -46,12 +51,15 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
 
 ## Quick start
 
+`z0p` is not published on crates.io; build from source or use this repository
+as a path/git dependency. The default build is stable Rust 1.74+.
+
 ```sh
 cargo build --release
 cargo test                 # debug: lib + security + red-team suites
 cargo test --release       # same, optimized
 cargo bench                # speed/size report (release, median of runs)
-python3 tools/check.py     # platinum gates: fmt, clippy, tests, bench regression
+python3 tools/check.py     # platinum gates: fmt, rustdoc, clippy, tests, bench regression
 ```
 
 `BENCH_ROW=substr` runs only matching benchmark rows, e.g.
@@ -224,6 +232,7 @@ benches/
   speed_size.rs speed + wire-exact size harness
 tools/
   check.py      platinum gates · baseline.json  pinned regression table
+  release_check.py  version/changelog/tag consistency check
 .github/
   workflows/ci.yml  fmt, clippy, test, MSRV 1.74, rustdoc gates
 docs/
@@ -236,8 +245,11 @@ docs/
 papers/
   z0p-eprint.tex     ePrint submission source (nul0, Future Proofs Tech)
   z0p-eprint.pdf     compiled submission-ready PDF
+AUDIT.md         auditor entry point, invariants, reproduction commands
+CITATION.cff     software citation metadata
 SECURITY.md      threat model + vulnerability reporting
 CONTRIBUTING.md  ground rules, gates, wire-format policy
+RELEASING.md     immutable tag and release checklist
 CHANGELOG.md     release history (Keep a Changelog)
 ```
 

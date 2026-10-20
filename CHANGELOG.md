@@ -15,6 +15,10 @@ All notable changes to `z0p` are documented here. The format follows
   decoder, including a canonical `to_bytes`/`from_bytes` round-trip check.
 
 ### Changed
+- `upcs` now supports optional Merkle caps: the FRI base cap is hashed
+  back to the statement commitment root, and evaluation paths are shortened
+  by the requested cap height. `gemini::Params::with_cap_height` threads
+  caps through every layer opening.
 - README, CONTRIBUTING, and AUDIT now document the rustdoc gate added in
   v0.2.1.
 - CI uses checkout v5, cancels superseded runs, supports manual dispatch,

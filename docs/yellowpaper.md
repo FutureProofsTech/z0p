@@ -278,7 +278,8 @@ $g_{i-1}(X)=A_i(X^2)+X B_i(X^2)$, opens each committed layer once with a
 multi-point `upcs` proof, and checks
 $g_i(\beta^2)=A_i(\beta^2)+r_i B_i(\beta^2)$ at a fresh $\beta$.
 The proof has one root plus $n-1$ layer commitments and $n$ opening
-proofs, so it is linear-size.
+proofs, so it is linear-size. Optional Merkle caps shorten every layer
+path and are authenticated against that layer's commitment root.
 
 The experimental `basefold` prototype replaces the per-layer openings
 with sumcheck and one FRI instance. Let
@@ -380,7 +381,7 @@ cap/path shape pins before hashing; `fri-dims` dimension binding
 (closes proof malleability of echoed dimensions); canonical-only
 decoding; PoW bound to history with queries sampled after.
 
-**Validation.** 267 unit tests (KATs, cross-checks against Horner/`%`,
+**Validation.** 271 unit tests (KATs, cross-checks against Horner/`%`,
 parallel-vs-sequential identity), 13-test security suite and 10-test
 red-team suite (~800 hostile attempts/run, zero acceptances, zero
 panics), wire-exact size assertions on every benchmark, and a

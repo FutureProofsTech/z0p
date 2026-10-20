@@ -44,7 +44,7 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
   `--features simd` on nightly brings the same row to **~1.56 s**.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 267 unit tests plus three attack suites
+- **Adversarially tested** — 271 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -181,7 +181,7 @@ system before an external audit.
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 267 tests across 25 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 271 tests across 25 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 9 vectors: hostile `Params` (incl. VM), decoder bit-flip fuzz, RNG uniformity | this README |
@@ -281,14 +281,16 @@ CHANGELOG.md     release history (Keep a Changelog)
   `(g - y)/(X - beta)`, two FRI low-degree proofs, and Merkle-checked
   identity at the quotient's query points. `open_multi` batches up to 16
   distinct points behind one quotient (`(g - I)/Z`) and one FRI pair.
-  Transparent, non-hiding (`v1`); cap height must be `0`. This is the
-  opening primitive for a multilinear PCS.
+  Transparent, non-hiding (`v1`); optional Merkle caps shorten each path
+  and are authenticated against the commitment root. This is the opening
+  primitive for a multilinear PCS.
 - **Multilinear commitments — Gemini done, BaseFold prototype done.**
   `gemini.rs` commits the monomial-coefficient encoding and proves
   `f(r) = y` with Gemini-style fold-chain checks; `commit_evals` applies
   the Möbius transform. Each layer is opened once with a multi-point
   `upcs` proof, so the `v1` proof carries `n` openings rather than
-  `3n - 2`; it remains `O(n)`. `basefold.rs` now adds a compact prototype:
+  `3n - 2`; it remains `O(n)`. `Params::with_cap_height` threads optional
+  Merkle caps through every layer opening. `basefold.rs` now adds a compact prototype:
   one commitment root, sumcheck reduces `f(r)` to `c(rho)`, and Möbius
   FRI folds reuse the sumcheck challenges. At 1,024 coefficients and the
   production-shaped `B16 Q40 G20` schedule it proves in 44 ms, verifies

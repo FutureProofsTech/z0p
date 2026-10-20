@@ -32,16 +32,17 @@
 //! claimed evaluations are correct.
 //!
 //! The commitment root, dimensions, points, and values are absorbed before
-//! any challenge. Cap height must be `0` so the FRI base root (the
-//! statement) covers every leaf the opening paths touch.
+//! any challenge. Optional Merkle caps are authenticated by hashing the FRI
+//! base cap back to the statement commitment root; opening paths are then
+//! shortened by the same cap height.
 //!
 //! # Scope (`v1`)
 //!
 //! Transparent (hash-only) and **not hiding**: FRI is a low-degree test,
 //! not a zero-knowledge protocol. Proofs carry two FRI instances plus one
-//! Merkle path per query. Single- and multi-point openings for one
-//! polynomial are implemented; batching across distinct polynomials is
-//! roadmap work.
+//! Merkle path (or cap entry) per query. Single- and multi-point openings
+//! for one polynomial are implemented; batching across distinct polynomials
+//! is roadmap work.
 //!
 //! [`LDE_SHIFT`]: crate::fri::LDE_SHIFT
 
@@ -50,8 +51,7 @@ use crate::codec::{Reader, Writer, MAX_QUERIES, VERSION};
 use crate::error::{Error, Result};
 use crate::ext4::Ext4;
 use crate::fri::{self, LDE_SHIFT};
-use crate::hash::leaf64_digest;
-use crate::merkle::MerkleTree;
+use crate::merkle::{hash_node, MerkleTree};
 use crate::ntt;
 use crate::transcript::Transcript;
 
@@ -256,13 +256,14 @@ pub fn commit_ext(coeffs: &[Ext4], blowup: usize) -> Result<ProverState> {
 /// Prove `g(beta) = value`, with FRI low-degree proofs for `g` and its
 /// quotient.
 ///
-/// `params.blowup` must match the commitment's blowup, `params.cap_height`
-/// must be `0`, and `value` must be the true evaluation.
+/// `params.blowup` must match the commitment's blowup and `value` must be
+/// the true evaluation. Merkle caps are supported: the FRI base cap must hash
+/// to the statement commitment root, and the evaluation paths are shortened
+/// by the same cap height.
 ///
 /// # Errors
-/// Returns [`Error::MalformedInput`] when `value` is not the evaluation or
-/// the cap height is nonzero, [`Error::InvalidBlowup`] on parameter
-/// mismatch, or any FRI/Merkle error.
+/// Returns [`Error::MalformedInput`] when `value` is not the evaluation,
+/// [`Error::InvalidBlowup`] on parameter mismatch, or any FRI/Merkle error.
 pub fn open(
     state: &ProverState,
     point: Ext4,
@@ -273,11 +274,6 @@ pub fn open(
     if state.commitment.blowup != params.blowup {
         return Err(Error::InvalidBlowup {
             factor: params.blowup,
-        });
-    }
-    if params.cap_height != 0 {
-        return Err(Error::MalformedInput {
-            reason: "upcs openings require cap_height = 0",
         });
     }
     if ntt::evaluate_ext(&state.coeffs, point) != value {
@@ -307,9 +303,9 @@ fn open_with_quotient(
     // statement commitment (both cover the same bit-reversed LDE).
     let g_state = fri::commit_ext(&state.coeffs, params, transcript)?;
     let g_commitment = fri::public_commitment(&g_state);
-    if g_commitment.caps.first().and_then(|cap| cap.first()) != Some(&state.commitment.root) {
+    if !cap_matches_root(&g_commitment, &state.commitment.root) {
         return Err(Error::MalformedInput {
-            reason: "FRI base root does not match the commitment root",
+            reason: "FRI base cap does not match the commitment root",
         });
     }
     let (g_fri, _) = fri::open(&g_state, transcript)?;
@@ -336,7 +332,7 @@ fn open_with_quotient(
                 state.lde[base + 2],
                 state.lde[base + 3],
             ],
-            path: state.tree.prove(index / 4)?,
+            path: state.tree.prove_capped(index / 4, params.cap_height)?,
         });
     }
     Ok(Proof {
@@ -369,11 +365,6 @@ pub fn open_multi(
     if state.commitment.blowup != params.blowup {
         return Err(Error::InvalidBlowup {
             factor: params.blowup,
-        });
-    }
-    if params.cap_height != 0 {
-        return Err(Error::MalformedInput {
-            reason: "upcs openings require cap_height = 0",
         });
     }
     if points.is_empty() {
@@ -436,9 +427,9 @@ fn open_multi_with_quotient(
 
     let g_state = fri::commit_ext(&state.coeffs, params, transcript)?;
     let g_commitment = fri::public_commitment(&g_state);
-    if g_commitment.caps.first().and_then(|cap| cap.first()) != Some(&state.commitment.root) {
+    if !cap_matches_root(&g_commitment, &state.commitment.root) {
         return Err(Error::MalformedInput {
-            reason: "FRI base root does not match the commitment root",
+            reason: "FRI base cap does not match the commitment root",
         });
     }
     let (g_fri, _) = fri::open(&g_state, transcript)?;
@@ -461,7 +452,7 @@ fn open_multi_with_quotient(
                 state.lde[base + 2],
                 state.lde[base + 3],
             ],
-            path: state.tree.prove(index / 4)?,
+            path: state.tree.prove_capped(index / 4, params.cap_height)?,
         });
     }
     Ok(Proof {
@@ -479,7 +470,7 @@ fn open_multi_with_quotient(
 /// Returns [`Error::MalformedInput`] for invalid point/value sets,
 /// [`Error::FriVerificationFailed`] when any check fails,
 /// [`Error::BadMerklePath`] for malformed openings, or dimension errors for
-/// invalid commitments or nonzero cap heights.
+/// invalid commitments or malformed caps.
 pub fn verify_multi(
     commitment: &Commitment,
     points: &[Ext4],
@@ -492,11 +483,6 @@ pub fn verify_multi(
     if commitment.blowup != params.blowup {
         return Err(Error::InvalidBlowup {
             factor: params.blowup,
-        });
-    }
-    if params.cap_height != 0 {
-        return Err(Error::MalformedInput {
-            reason: "upcs openings require cap_height = 0",
         });
     }
     check_points(commitment.poly_len, points, values)?;
@@ -514,7 +500,7 @@ pub fn verify_multi(
     if proof.g_commitment.lde_len != lde_len
         || proof.g_commitment.poly_len != commitment.poly_len
         || proof.g_commitment.degree_bound != commitment.poly_len - 1
-        || proof.g_commitment.caps.first().and_then(|cap| cap.first()) != Some(&commitment.root)
+        || !cap_matches_root(&proof.g_commitment, &commitment.root)
         || proof.q_commitment.lde_len != lde_len
         || proof.q_commitment.poly_len != lde_len
         || proof.q_commitment.degree_bound != degree_bound
@@ -528,6 +514,8 @@ pub fn verify_multi(
         .map_err(|_| Error::InvalidDomainSize { size: lde_len })?
         .checked_sub(2)
         .ok_or(Error::InvalidDomainSize { size: lde_len })?;
+    let drop = params.cap_height.min(depth);
+    let cap = &proof.g_commitment.caps[0];
     let interp = interpolate(points, values)?;
     let vanishing = interpolation_vanishing(points);
 
@@ -545,14 +533,22 @@ pub fn verify_multi(
         let Some(q_value) = fold.values.get(index - base) else {
             return Err(Error::FriVerificationFailed);
         };
-        if opening.path.len() != depth {
+        if opening.path.len() != depth - drop {
             return Err(Error::BadMerklePath);
         }
         if opening.leaf.get(index - base) != Some(&opening.value) {
             return Err(Error::BadMerklePath);
         }
-        let digest = leaf64_digest(&quad_bytes(opening.leaf));
-        if !MerkleTree::verify_digest(&commitment.root, &digest, index / 4, &opening.path) {
+        let Some(entry) = cap.get((index / 4) >> (depth - drop)) else {
+            return Err(Error::BadMerklePath);
+        };
+        if !MerkleTree::verify_capped64(
+            entry,
+            &quad_bytes(opening.leaf),
+            index / 4,
+            depth,
+            &opening.path,
+        ) {
             return Err(Error::BadMerklePath);
         }
         let z = fri::point_at(lde_len, 0, index)?;
@@ -570,7 +566,7 @@ pub fn verify_multi(
 /// # Errors
 /// Returns [`Error::FriVerificationFailed`] when any check fails,
 /// [`Error::BadMerklePath`] for malformed openings, or dimension errors for
-/// invalid commitments or nonzero cap heights.
+/// invalid commitments or malformed caps.
 pub fn verify(
     commitment: &Commitment,
     point: Ext4,
@@ -585,11 +581,6 @@ pub fn verify(
             factor: params.blowup,
         });
     }
-    if params.cap_height != 0 {
-        return Err(Error::MalformedInput {
-            reason: "upcs openings require cap_height = 0",
-        });
-    }
     absorb_statement(transcript, commitment, point, value);
 
     // Replay both FRI instances in the prover's order. The first query set is
@@ -600,7 +591,7 @@ pub fn verify(
     if proof.g_commitment.lde_len != lde_len
         || proof.g_commitment.poly_len != commitment.poly_len
         || proof.g_commitment.degree_bound != commitment.poly_len - 1
-        || proof.g_commitment.caps.first().and_then(|cap| cap.first()) != Some(&commitment.root)
+        || !cap_matches_root(&proof.g_commitment, &commitment.root)
         || proof.q_commitment.lde_len != lde_len
         || proof.q_commitment.poly_len != lde_len
         || proof.q_commitment.degree_bound != commitment.poly_len.saturating_sub(2)
@@ -614,6 +605,8 @@ pub fn verify(
         .map_err(|_| Error::InvalidDomainSize { size: lde_len })?
         .checked_sub(2)
         .ok_or(Error::InvalidDomainSize { size: lde_len })?;
+    let drop = params.cap_height.min(depth);
+    let cap = &proof.g_commitment.caps[0];
 
     for ((query, opening), &index) in proof
         .q_fri
@@ -629,14 +622,22 @@ pub fn verify(
         let Some(q_value) = fold.values.get(index - base) else {
             return Err(Error::FriVerificationFailed);
         };
-        if opening.path.len() != depth {
+        if opening.path.len() != depth - drop {
             return Err(Error::BadMerklePath);
         }
         if opening.leaf.get(index - base) != Some(&opening.value) {
             return Err(Error::BadMerklePath);
         }
-        let digest = leaf64_digest(&quad_bytes(opening.leaf));
-        if !MerkleTree::verify_digest(&commitment.root, &digest, index / 4, &opening.path) {
+        let Some(entry) = cap.get((index / 4) >> (depth - drop)) else {
+            return Err(Error::BadMerklePath);
+        };
+        if !MerkleTree::verify_capped64(
+            entry,
+            &quad_bytes(opening.leaf),
+            index / 4,
+            depth,
+            &opening.path,
+        ) {
             return Err(Error::BadMerklePath);
         }
         let z = fri::point_at(lde_len, 0, index)?;
@@ -784,6 +785,32 @@ fn absorb_statement_multi(
         writer.ext4(*value);
     }
     transcript.absorb(b"upcs-multi/statement", &writer.finish());
+}
+
+/// Root of a Merkle cap, or `None` for an empty/non-power-of-two cap.
+fn cap_root(cap: &[[u8; 32]]) -> Option<[u8; 32]> {
+    if cap.is_empty() || !cap.len().is_power_of_two() {
+        return None;
+    }
+    let mut level = cap.to_vec();
+    while level.len() > 1 {
+        let mut next = Vec::with_capacity(level.len() / 2);
+        for pair in level.chunks_exact(2) {
+            next.push(hash_node(&pair[0], &pair[1]));
+        }
+        level = next;
+    }
+    level.first().copied()
+}
+
+/// Whether a FRI commitment's base cap hashes to the statement root.
+fn cap_matches_root(commitment: &fri::Commitment, root: &[u8; 32]) -> bool {
+    commitment
+        .caps
+        .first()
+        .and_then(|cap| cap_root(cap))
+        .as_ref()
+        == Some(root)
 }
 
 /// Validate commitment dimensions and return the LDE length.
@@ -1151,10 +1178,81 @@ mod tests {
         let mut transcript = Transcript::new(b"upcs-test");
         let other = fri::Params::new(16, 8, 8).unwrap();
         assert!(open(&state, ext_point, value, other, &mut transcript).is_err());
-        let mut capped = params(8);
-        capped.cap_height = 1;
-        let mut transcript = Transcript::new(b"upcs-test");
-        assert!(open(&state, ext_point, value, capped, &mut transcript).is_err());
+    }
+
+    #[test]
+    fn capped_openings_verify_and_shrink_paths() {
+        let coeffs = poly(8);
+        let point = Field::new(31);
+        let ext_point = Ext4::from_base(point);
+        let state = commit(&coeffs, 8).unwrap();
+        let value = ntt::evaluate_ext(state.coeffs(), ext_point);
+        for cap_height in 0..=4 {
+            let mut params = params(8);
+            params.cap_height = cap_height;
+            let mut prover_t = Transcript::new(b"upcs-test");
+            let proof = open(&state, ext_point, value, params, &mut prover_t).unwrap();
+            assert_eq!(proof.g_commitment.caps[0].len(), 1usize << cap_height);
+            assert_eq!(proof.q_commitment.caps[0].len(), 1usize << cap_height);
+            assert_eq!(proof.openings[0].path.len(), 4 - cap_height);
+            let mut verifier_t = Transcript::new(b"upcs-test");
+            verify(
+                state.commitment(),
+                ext_point,
+                value,
+                &proof,
+                params,
+                &mut verifier_t,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn capped_multi_openings_verify() {
+        let coeffs = poly(8);
+        let points = multi_points(8, 3);
+        let mut params = params(8);
+        params.cap_height = 2;
+        let state = commit(&coeffs, params.blowup).unwrap();
+        let mut prover_t = Transcript::new(b"upcs-multi-test");
+        let (proof, values) = open_multi(&state, &points, params, &mut prover_t).unwrap();
+        assert_eq!(proof.openings[0].path.len(), 2);
+        let mut verifier_t = Transcript::new(b"upcs-multi-test");
+        verify_multi(
+            state.commitment(),
+            &points,
+            &values,
+            &proof,
+            params,
+            &mut verifier_t,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn capped_tampering_is_rejected() {
+        let coeffs = poly(8);
+        let point = Field::new(41);
+        let ext_point = Ext4::from_base(point);
+        let state = commit(&coeffs, 8).unwrap();
+        let value = ntt::evaluate_ext(state.coeffs(), ext_point);
+        let mut params = params(8);
+        params.cap_height = 2;
+        let mut prover_t = Transcript::new(b"upcs-test");
+        let proof = open(&state, ext_point, value, params, &mut prover_t).unwrap();
+
+        let mut bad = proof.clone();
+        bad.openings[0].path[0].0[0] ^= 1;
+        assert!(verify_with(state.commitment(), point, value, &bad, params).is_err());
+
+        let mut bad = proof.clone();
+        bad.g_commitment.caps[0][0][0] ^= 1;
+        assert!(verify_with(state.commitment(), point, value, &bad, params).is_err());
+
+        let mut bad = proof.clone();
+        bad.g_commitment.caps[0].push([0u8; 32]);
+        assert!(verify_with(state.commitment(), point, value, &bad, params).is_err());
     }
 
     #[test]

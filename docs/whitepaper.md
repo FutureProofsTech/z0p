@@ -77,7 +77,7 @@ hash function and Reed–Solomon proximity testing.
    extension-field (`Fp4`) challenges, raising per-challenge algebraic
    bounds to ~124 bits. This is still a conjectured query/PoW schedule,
    not an end-to-end soundness proof.
-5. **Evidence over claims.** 267 unit tests, three adversarial suites
+5. **Evidence over claims.** 271 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught
@@ -186,14 +186,16 @@ portable scalar-safe-Rust throughput with parallelism over
    univariate polynomial at an arbitrary field point: quotient commitment,
    two FRI low-degree checks, and Merkle-checked identity at the quotient's
    query points. `open_multi` batches up to 16 distinct points behind one
-   quotient and one FRI pair. Transparent, non-hiding, cap height `0`; the
-   opening primitive for a multilinear PCS.
+   quotient and one FRI pair. Transparent, non-hiding; optional Merkle caps
+   shorten paths and are authenticated against the commitment root. This is
+   the opening primitive for a multilinear PCS.
 4. **Multilinear PCS — Gemini done, BaseFold prototype done.**
    `gemini.rs` commits the monomial-coefficient encoding and proves
    `f(r) = y` with Gemini-style fold-chain checks and `upcs` point
    openings; `commit_evals` applies the Möbius transform. Each layer is
    opened once with a multi-point proof, so the proof carries `n` openings
-   (not `3n - 2`) and remains `O(n)`. `basefold.rs` adds the compact
+   (not `3n - 2`) and remains `O(n)`; `Params::with_cap_height` threads
+   optional Merkle caps through every layer opening. `basefold.rs` adds the compact
    recipe: one root, sumcheck reduces `f(r)` to `c(rho)`, and Möbius FRI
    folds reuse the sumcheck challenges. At 1,024 coefficients it is
    ~127.7 KB / ~44 ms / ~1.1 ms, or ~80.0 KB / ~45 ms / ~0.9 ms with cap

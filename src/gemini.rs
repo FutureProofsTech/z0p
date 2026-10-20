@@ -69,9 +69,8 @@ const MAX_PROOF_BYTES: u32 = 1 << 27;
 /// Prover/verifier parameters for Gemini openings.
 ///
 /// `blowup` must be at least `8` and match the commitment. `num_queries`
-/// and `grinding_bits` size the inner FRI instances. Final-layer size and
-/// cap height are derived per layer (caps are disabled because `upcs`
-/// requires a single base root).
+/// and `grinding_bits` size the inner FRI instances. Final-layer size is
+/// derived per layer; `cap_height` is threaded into every `upcs` opening.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Params {
     /// LDE expansion factor (`>= 8`, power of two).
@@ -80,6 +79,8 @@ pub struct Params {
     pub num_queries: usize,
     /// FRI proof-of-work difficulty in leading-zero bits.
     pub grinding_bits: u32,
+    /// Merkle cap height for every layer's `upcs` opening (`0` disables caps).
+    pub cap_height: usize,
 }
 
 impl Params {
@@ -94,9 +95,20 @@ impl Params {
             blowup,
             num_queries,
             grinding_bits,
+            cap_height: 0,
         };
         params.validate()?;
         Ok(params)
+    }
+
+    /// Set the Merkle cap height for every layer's `upcs` opening.
+    ///
+    /// Caps shorten each layer's Merkle paths at the cost of a cap frontier
+    /// in the FRI commitment. The effective height is clamped per layer.
+    #[must_use]
+    pub const fn with_cap_height(mut self, height: usize) -> Self {
+        self.cap_height = height;
+        self
     }
 
     /// Re-check every invariant (fields are public).
@@ -126,7 +138,8 @@ impl Params {
         let log_m = lde_len.trailing_zeros();
         let final_size = if log_m % 2 == 0 { 4 } else { 2 };
         Ok(fri::Params::new(self.blowup, self.num_queries, final_size)?
-            .with_grinding_bits(self.grinding_bits))
+            .with_grinding_bits(self.grinding_bits)
+            .with_cap_height(self.cap_height))
     }
 }
 
@@ -733,6 +746,24 @@ mod tests {
                 verify_with(&commitment, &point, value, &proof).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn capped_layer_openings_verify() {
+        let n_vars = 5;
+        let coeffs = coefficients(n_vars);
+        let point = point(n_vars);
+        let value = direct_eval(&coeffs, &point);
+        let mut params = params();
+        params.cap_height = 2;
+        let state = commit(&coeffs, params.blowup).unwrap();
+        let commitment = state.commitment().clone();
+        let mut prover_t = Transcript::new(b"gemini-test");
+        let proof = open(&state, &point, value, params, &mut prover_t).unwrap();
+        assert_eq!(proof.openings[0].g_commitment.caps[0].len(), 4);
+        assert!(proof.openings[0].openings[0].path.len() < 6);
+        let mut verifier_t = Transcript::new(b"gemini-test");
+        verify(&commitment, &point, value, &proof, params, &mut verifier_t).unwrap();
     }
 
     #[test]

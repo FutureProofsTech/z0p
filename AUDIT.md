@@ -49,11 +49,11 @@ BENCH_ROW=N1048576 cargo bench  # 1M-step AIR row
 
 The gate pins proof sizes byte-for-byte and times within 3x of
 `tools/baseline.json`. The 1M-step AIR reference row is approximately
-1.76 s prove / 2.2 ms verify / 203,553 B on the development machine; the
+1.69 s prove / 1.9 ms verify / 203,553 B on the development machine; the
 SIMD path is approximately 1.56 s. Treat times as hardware-dependent and
 sizes as normative.
 
-Current test counts: 267 library tests, 9 hardening tests, 13 security
+Current test counts: 271 library tests, 9 hardening tests, 13 security
 tests, 10 red-team tests, and 5 doc tests.
 
 ## Security invariants to review

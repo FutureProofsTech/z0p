@@ -25,10 +25,10 @@ layer and Merkle cap height.
 | `air prod N1024 B16Q40G20C4F16` | 42.26 | 0.86 | 68,573 | 67.0 |
 | `air prod N8192 B16Q40G20C4F32` | 53.99 | 1.22 | 101,233 | 98.9 |
 | `air prod N65536 B16Q40G20C4F16` | 138.11 | 1.65 | 141,641 | 138.3 |
-| `air prod N1048576 B16Q40G20C4F16` | 1,758.45 | 2.17 | 203,553 | 198.8 |
+| `air prod N1048576 B16Q40G20C4F16` | 1,692.91 | 1.85 | 203,553 | 198.8 |
 
-Marginal cost per step (1M row): `1758.45 / 1048576 ≈ 1.68 µs/step`
-(≈596k steps/s). The 20-bit PoW grind is amortized over the trace at
+Marginal cost per step (1M row): `1692.91 / 1048576 ≈ 1.61 µs/step`
+(≈620k steps/s). The 20-bit PoW grind is amortized over the trace at
 scale; on small production rows it dominates run-to-run variance
 (the N8192 row fluctuates ~75–100 ms between runs).
 
@@ -138,19 +138,19 @@ unchanged by this migration.
 ## Vectorized hashing (`--features simd`, nightly)
 
 Tier 4 batches Merkle leaf/node BLAKE3 eight lanes at a time with
-`std::simd` (`u32x8`), byte-identical to the scalar path. Same-session
-paired runs on this box (which is not idle), nightly:
+`std::simd` (`u32x8`), byte-identical to the scalar path. The scalar path
+has since gained specialized one-compression leaf/node digests, so the
+gain is smaller than the hash-only microbenchmarks that motivated Tier 4.
+A representative paired run on this box (which is not idle), nightly:
 
 | Row | Scalar | `--features simd` |
 |---|---|---|
-| `merkle 64k leaves` | 4.45 ms | **2.21 ms** (~2.0×) |
-| `blake3 1MiB` | 2.24 ms | **1.68 ms** (~1.3×) |
-| `air prod N1048576` prove | 1,758.45 ms | **1,555.20 ms** (~12%) |
+| `air prod N1048576` prove | 1,692.91 ms | **1,591.43 ms** (~6%) |
 
-SIMD is faster in every paired run; absolute gains depend heavily on box
-load. End-to-end gains are bounded because NTT, composition, and folding
-are the other large prove costs. Builds without the feature are unaffected
-(scalar fallback, stable MSRV 1.74).
+Absolute gains depend heavily on box load. End-to-end gains are bounded
+because NTT, composition, and folding are the other large prove costs;
+hash-only gains are workload-dependent. Builds without the feature are
+unaffected (scalar fallback, stable MSRV 1.74).
 
 ## Reproduce
 

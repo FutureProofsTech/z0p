@@ -39,8 +39,8 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
   sizes blowup 16, queries, grinding, final size, and cap height for a
   ~100-bit query/proof-of-work schedule. See [Soundness](#soundness) for
   what that schedule does and does not cover.
-- **Fast at scale** — 1,048,576-step production proof in **~1.76 s**
-  (~1.68 µs/step, ~596k steps/s), verified in **~2.2 ms**, 203,553 bytes.
+- **Fast at scale** — 1,048,576-step production proof in **~1.69 s**
+  (~1.61 µs/step, ~620k steps/s), verified in **~1.9 ms**, 203,553 bytes.
   `--features simd` on nightly brings the same row to **~1.56 s**.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
@@ -115,7 +115,7 @@ overview is [docs/whitepaper.md](docs/whitepaper.md). Evidence lives in
 | AIR Fibonacci, 1,024 steps | 42 ms | 0.86 ms | 68,573 B |
 | AIR Fibonacci, 8,192 steps | 54 ms | 1.2 ms | 101,233 B |
 | AIR Fibonacci, 65,536 steps | 138 ms | 1.7 ms | 141,641 B |
-| AIR Fibonacci, **1,048,576 steps** | **1.76 s** | **2.2 ms** | **203,553 B** |
+| AIR Fibonacci, **1,048,576 steps** | **1.69 s** | **1.9 ms** | **203,553 B** |
 | FRI poly-1024 | 27 ms | 0.68 ms | 43,174 B |
 
 | Multilinear PCS, 1,024 coefficients, `B16 Q40 G20` | Prove | Verify | Commitment + proof |
@@ -263,9 +263,10 @@ CHANGELOG.md     release history (Keep a Changelog)
 - **Tier 4 — vectorized hashing (done).** `--features simd` (nightly)
   runs 8-lane portable-SIMD BLAKE3 over Merkle leaf/node batches,
   byte-identical to the scalar path (pinned by
-  `batch_digests_match_reference`), up to ~2× on the Merkle primitive
-  and ~12% end-to-end at 1M steps. The default build stays scalar, stable,
-  and MSRV 1.74; the feature is additive with a scalar fallback.
+  `batch_digests_match_reference`), ~6% end-to-end at 1M steps. The scalar
+  path also gained specialized one-compression leaf/node digests. The
+  default build stays scalar, stable, and MSRV 1.74; the feature is
+  additive with a scalar fallback.
 - **Extension-field challenges — done across the stack.** FRI, STARK
   compositions, `upcs`/Gemini points and betas, sumcheck, and lookup use
   `Fp4` challenges; the wire format is v5.

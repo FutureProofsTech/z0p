@@ -127,9 +127,9 @@ Measured, release profile, median of runs (full table:
 |---|---|---|---|
 | 1,024-step computation | 42 ms | 0.86 ms | 67 KiB |
 | 65,536-step computation | 138 ms | 1.7 ms | 138 KiB |
-| **1,048,576-step computation** | **1.76 s** | **2.2 ms** | **199 KiB** |
+| **1,048,576-step computation** | **1.69 s** | **1.9 ms** | **199 KiB** |
 
-Marginal cost is ~1.68 µs per step (~596k steps/s): proving scales
+Marginal cost is ~1.61 µs per step (~620k steps/s): proving scales
 linearly, verification stays in the low milliseconds *independent of
 computation size* (FRI domain points are derived on demand rather than
 materialized), and proof size grows logarithmically. No GPU, no assembly, no dependencies — this is

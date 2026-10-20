@@ -6,6 +6,8 @@ All notable changes to `z0p` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-20
+
 ### Added
 - **Quartic extension field `Fp4`.** `src/ext4.rs` implements the tower
   `Fp2 = Fp[u]/(u^2 - 11)`, `Fp4 = Fp2[v]/(v^2 - u)` with canonical
@@ -337,5 +339,6 @@ All notable changes to `z0p` are documented here. The format follows
   and security documentation.
 - Platinum gates: `tools/check.py` with a pinned `tools/baseline.json`.
 
-[Unreleased]: https://github.com/FutureProofsTech/z0p/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/FutureProofsTech/z0p/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/FutureProofsTech/z0p/releases/tag/v0.2.0
 [0.1.0]: https://github.com/FutureProofsTech/z0p/releases/tag/v0.1.0

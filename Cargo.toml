@@ -1,6 +1,6 @@
 [package]
 name = "z0p"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "From-scratch zero-knowledge core: binary fields, BLAKE3, Merkle, NTT, FRI, STARKs. Zero dependencies, no unsafe, no trusted setup."
 license = "GPL-3.0-only"

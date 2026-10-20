@@ -295,9 +295,22 @@ impl core::fmt::Display for Field {
 /// ```
 #[must_use]
 pub fn batch_invert(values: &[Field]) -> Vec<Field> {
+    let mut out = values.to_vec();
+    batch_invert_in_place(&mut out);
+    out
+}
+
+/// In-place Montgomery batch inversion.
+///
+/// Zeros map to zero and do not affect the running product. Reusing the
+/// input allocation avoids a second value-sized buffer in hot loops.
+pub(crate) fn batch_invert_in_place(values: &mut [Field]) {
+    if values.is_empty() {
+        return;
+    }
     let mut prefix = Vec::with_capacity(values.len());
     let mut acc = Field::ONE;
-    for &value in values {
+    for &value in &*values {
         // Zeros contribute nothing to the running product; their slots are
         // repaired (left as zero) in the backward pass.
         if value != Field::ZERO {
@@ -306,16 +319,15 @@ pub fn batch_invert(values: &[Field]) -> Vec<Field> {
         prefix.push(acc);
     }
     let mut suffix = acc.inv();
-    let mut out = vec![Field::ZERO; values.len()];
-    for (i, &value) in values.iter().enumerate().rev() {
+    for i in (0..values.len()).rev() {
+        let value = values[i];
         if value == Field::ZERO {
             continue;
         }
         let before = if i == 0 { Field::ONE } else { prefix[i - 1] };
-        out[i] = before * suffix;
+        values[i] = before * suffix;
         suffix *= value;
     }
-    out
 }
 
 #[cfg(test)]

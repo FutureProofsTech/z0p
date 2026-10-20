@@ -812,10 +812,14 @@ fn linked_lde(lde_a: &[Field], n: usize, actual_b_last: Field, a0: Field) -> Res
             x *= omega_m;
             xn *= ratio;
         }
-        let inv = crate::babybear::batch_invert(&den);
+        crate::babybear::batch_invert_in_place(&mut den);
         for (j, slot) in piece.iter_mut().enumerate() {
             let i = base + j;
-            *slot = lde_a[(i + offset) % m] + coeff * vanishing[j] * inv[j];
+            // `offset <= m`, so one conditional subtraction replaces a
+            // division in this per-element hot loop.
+            let shifted = i + offset;
+            let shifted = if shifted >= m { shifted - m } else { shifted };
+            *slot = lde_a[shifted] + coeff * vanishing[j] * den[j];
         }
     });
     Ok(out)
@@ -834,7 +838,10 @@ fn compose(
     alphas: &[Ext4; 5],
 ) -> Vec<Ext4> {
     let m = cols[0].len();
-    let shifted = |j: usize, i: usize| cols[j][(i + offset) % m];
+    let shifted = |j: usize, i: usize| {
+        let index = i + offset;
+        cols[j][if index >= m { index - m } else { index }]
+    };
     if points.len() < 2 {
         // Degenerate (unreachable at real domain sizes): scalar fallback.
         return points
@@ -861,36 +868,38 @@ fn compose(
     let ratio = (points[1] * points[0].inv()).pow(n as u64);
     let mut out = vec![Ext4::ZERO; points.len()];
     crate::par::for_each_indexed(&mut out, 2048, |base, piece| {
-        // Chunk denominators, inverted in two Montgomery batches (one
-        // inversion per batch; zeros map to zero exactly like the
-        // scalar path, including the singular rows).
+        // Chunk denominators, inverted in three Montgomery batches (zeros
+        // map to zero exactly like the scalar path, including singular rows).
         let mut den_a = Vec::with_capacity(piece.len());
         let mut den_b = Vec::with_capacity(piece.len());
-        let mut vanishing = Vec::with_capacity(piece.len());
+        let mut inv_z = Vec::with_capacity(piece.len());
         let mut cur = p0 * ratio.pow(base as u64);
         for j in 0..piece.len() {
             let i = base + j;
             den_a.push(points[i] - w_last);
             den_b.push(points[i] - Field::ONE);
-            vanishing.push(cur - Field::ONE);
+            inv_z.push(cur - Field::ONE);
             cur *= ratio;
         }
-        let inv_a = crate::babybear::batch_invert(&den_a);
-        let inv_b = crate::babybear::batch_invert(&den_b);
-        let mut z_trans = Vec::with_capacity(piece.len());
-        for (v, a) in vanishing.iter().zip(&inv_a) {
-            z_trans.push(*v * *a);
+        crate::babybear::batch_invert_in_place(&mut den_a);
+        crate::babybear::batch_invert_in_place(&mut den_b);
+        for (v, a) in inv_z.iter_mut().zip(&den_a) {
+            *v *= *a;
         }
-        let inv_z = crate::babybear::batch_invert(&z_trans);
+        crate::babybear::batch_invert_in_place(&mut inv_z);
         // Combine: identical arithmetic to `composition_at` (exact field
         // math has no rounding), so the vector is bit-identical.
         for (j, slot) in piece.iter_mut().enumerate() {
             let i = base + j;
-            let trans1 = (shifted(0, i) - cols[1][i]) * inv_z[j];
-            let trans2 = (shifted(1, i) - (cols[0][i] + cols[1][i])) * inv_z[j];
-            let bound_a = (cols[0][i] - a0) * inv_b[j];
-            let bound_b = (cols[1][i] - b0) * inv_b[j];
-            let bound_out = (cols[1][i] - b_last) * inv_a[j];
+            // The next-row index wraps at most once; computing it once
+            // avoids two divisions per element in the dominant loop.
+            let next = i + offset;
+            let next = if next >= m { next - m } else { next };
+            let trans1 = (cols[0][next] - cols[1][i]) * inv_z[j];
+            let trans2 = (cols[1][next] - (cols[0][i] + cols[1][i])) * inv_z[j];
+            let bound_a = (cols[0][i] - a0) * den_b[j];
+            let bound_b = (cols[1][i] - b0) * den_b[j];
+            let bound_out = (cols[1][i] - b_last) * den_a[j];
             *slot = alphas[0].mul_base(trans1)
                 + alphas[1].mul_base(trans2)
                 + alphas[2].mul_base(bound_a)
@@ -1168,6 +1177,38 @@ mod tests {
                     [cols[0][i], cols[1][i]],
                     [cols[0][(i + offset) % m], cols[1][(i + offset) % m]],
                     points[i],
+                    w_last,
+                    Field::ONE,
+                    Field::ONE,
+                    Field::TWO,
+                    n,
+                    &alphas,
+                )
+            })
+            .collect();
+        assert_eq!(batched, scalar);
+
+        // Unit domain: rows at `1` and `w_last` hit zero denominators, and
+        // every n-th root makes the transition vanishing polynomial zero.
+        let omega = Field::primitive_root(m).unwrap();
+        let unit_points: Vec<Field> = (0..m).map(|i| omega.pow(i as u64)).collect();
+        let batched = compose(
+            &cols,
+            &unit_points,
+            w_last,
+            Field::ONE,
+            Field::ONE,
+            Field::TWO,
+            n,
+            offset,
+            &alphas,
+        );
+        let scalar: Vec<Ext4> = (0..m)
+            .map(|i| {
+                composition_at(
+                    [cols[0][i], cols[1][i]],
+                    [cols[0][(i + offset) % m], cols[1][(i + offset) % m]],
+                    unit_points[i],
                     w_last,
                     Field::ONE,
                     Field::ONE,

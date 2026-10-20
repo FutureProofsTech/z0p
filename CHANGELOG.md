@@ -15,6 +15,10 @@ All notable changes to `z0p` are documented here. The format follows
   decoder, including a canonical `to_bytes`/`from_bytes` round-trip check.
 
 ### Changed
+- Profile-guided proving optimizations: specialized single-block BLAKE3
+  leaf/node paths, explicit BLAKE3 round unrolling, base-scalar FRI
+  folding, owned bit-reversal buffers, in-place Montgomery inversion, and
+  division-free index wrapping in composition and linked-LDE loops.
 - `upcs` now supports optional Merkle caps: the FRI base cap is hashed
   back to the statement commitment root, and evaluation paths are shortened
   by the requested cap height. `gemini::Params::with_cap_height` threads

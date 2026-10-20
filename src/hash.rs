@@ -43,6 +43,8 @@ pub(crate) const CHUNK_LEN: usize = 1024;
 /// Maximum chaining-value stack depth (covers any input length).
 const MAX_STACK: usize = 54;
 
+#[allow(clippy::inline_always)]
+#[inline(always)]
 fn quarter_round(
     state: &mut [u32; 16],
     a: usize,
@@ -66,6 +68,8 @@ fn quarter_round(
     state[b] = state[b].rotate_right(7);
 }
 
+#[allow(clippy::inline_always)]
+#[inline(always)]
 fn round(state: &mut [u32; 16], message: &[u32; 16]) {
     quarter_round(state, 0, 4, 8, 12, message[0], message[1]);
     quarter_round(state, 1, 5, 9, 13, message[2], message[3]);
@@ -77,15 +81,15 @@ fn round(state: &mut [u32; 16], message: &[u32; 16]) {
     quarter_round(state, 3, 4, 9, 14, message[14], message[15]);
 }
 
-fn permute(message: &mut [u32; 16]) {
-    let mut permuted = [0u32; 16];
-    for (i, &slot) in PERMUTATION.iter().enumerate() {
-        permuted[i] = message[slot];
-    }
-    *message = permuted;
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn permute(message: [u32; 16]) -> [u32; 16] {
+    std::array::from_fn(|i| message[PERMUTATION[i]])
 }
 
 /// Raw compression: 16 output words from chaining value, block, and params.
+#[allow(clippy::inline_always)]
+#[inline(always)]
 fn compress(
     chaining: &[u32; 8],
     block_words: &[u32; 16],
@@ -106,10 +110,19 @@ fn compress(
     state[14] = block_len;
     state[15] = flags;
     let mut message = *block_words;
-    for _ in 0..7 {
-        round(&mut state, &message);
-        permute(&mut message);
-    }
+    round(&mut state, &message);
+    message = permute(message);
+    round(&mut state, &message);
+    message = permute(message);
+    round(&mut state, &message);
+    message = permute(message);
+    round(&mut state, &message);
+    message = permute(message);
+    round(&mut state, &message);
+    message = permute(message);
+    round(&mut state, &message);
+    message = permute(message);
+    round(&mut state, &message);
     for i in 0..8 {
         state[i] ^= state[i + 8];
     }
@@ -356,7 +369,14 @@ pub(crate) fn leaf_digest(data: &[u8]) -> [u8; 32] {
 /// coordinates. Hashing the block directly avoids the two-compression
 /// `0x00 || data` preimage used by generic variable-length leaves.
 pub(crate) fn leaf64_digest(block: &[u8; 64]) -> [u8; 32] {
-    chunk_output(block, 0, true)
+    let words = words_from_block(block);
+    chaining_bytes(&compress(
+        &IV,
+        &words,
+        0,
+        BLOCK_LEN_U32,
+        CHUNK_START | CHUNK_END | ROOT,
+    ))
 }
 
 /// Batch 64-byte leaf digests: `flat.len() == 64 * out.len()`.
@@ -378,11 +398,31 @@ pub(crate) fn leaf64_digests(flat: &[u8], out: &mut [[u8; 32]]) {
 
 /// Scalar node digest: BLAKE3 of `0x01 || left || right`.
 pub(crate) fn node_digest(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut prefixed = [0u8; 65];
-    prefixed[0] = 0x01;
-    prefixed[1..33].copy_from_slice(left);
-    prefixed[33..65].copy_from_slice(right);
-    blake3_256_small(&prefixed)
+    // `0x01 || left || right` is 65 bytes: one full block plus a one-byte
+    // final block. Hash those blocks directly instead of routing the
+    // preimage through the generic chunk loop.
+    let mut first = [0u8; 64];
+    first[0] = 0x01;
+    first[1..33].copy_from_slice(left);
+    first[33..64].copy_from_slice(&right[..31]);
+    let output = compress(
+        &IV,
+        &words_from_block(&first),
+        0,
+        BLOCK_LEN_U32,
+        CHUNK_START,
+    );
+    let mut chaining = [0u32; 8];
+    chaining.copy_from_slice(&output[..8]);
+    let mut last = [0u8; 64];
+    last[0] = right[31];
+    chaining_bytes(&compress(
+        &chaining,
+        &words_from_block(&last),
+        0,
+        1,
+        CHUNK_END | ROOT,
+    ))
 }
 
 /// Batch leaf digests for `flat` tiled into `leaf_len`-byte leaves.

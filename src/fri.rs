@@ -524,7 +524,7 @@ pub fn commit_ext_evals_owned(
 }
 
 fn commit_inner(
-    mut current: Vec<Ext4>,
+    current: Vec<Ext4>,
     degree_bound: usize,
     poly_len: usize,
     params: Params,
@@ -549,9 +549,9 @@ fn commit_inner(
     // layer's first points are the every-fourth-power of the current ones.
     // Materializing the full point stack (and bit-reversing it) is wasted
     // work: keep just the quarter-sized first-point vector.
-    let mut first_points = coset_points_with_step(lde_len / 4, Field::primitive_root(lde_len)?);
-    bit_reverse_permute_ext(&mut current);
-    bit_reverse_permute(&mut first_points);
+    let first_points = coset_points_with_step(lde_len / 4, Field::primitive_root(lde_len)?);
+    let current = bit_reverse_permute_ext(current);
+    let mut first_points = bit_reverse_permute(first_points);
     let unit = Field::two_adic_generator(2)?;
 
     let mut layers: Vec<Vec<Ext4>> = Vec::new();
@@ -1233,15 +1233,17 @@ pub(crate) fn fold_values(
     let even_sum = (quad[0] + quad[1]) + (quad[2] + quad[3]);
     let odd_diff = quad[0] - quad[1];
     let skew_diff = quad[2] - quad[3];
-    let inv = Ext4::from_base(inv_point);
     let mean = even_sum.halve().halve();
     let odd = (odd_diff - skew_diff.mul_base(unit)).halve().halve();
     let even = ((quad[0] + quad[1]) - (quad[2] + quad[3])).halve().halve();
     let skew = (odd_diff + skew_diff.mul_base(unit)).halve().halve();
-    // Horner in `inv`: one shared factor instead of materializing
-    // inv^2/inv^3 and three separate challenge products.
-    let acc = (challenges[2] * skew * inv + challenges[1] * even) * inv + challenges[0] * odd;
-    mean + acc * inv
+    // Horner in the base-field scalar `inv_point`: multiplying an `Ext4`
+    // by an embedded scalar costs four base multiplications, not a full
+    // tower multiplication.
+    let acc = ((challenges[2] * skew).mul_base(inv_point) + challenges[1] * even)
+        .mul_base(inv_point)
+        + challenges[0] * odd;
+    mean + acc.mul_base(inv_point)
 }
 
 /// Check `values` at distinct `points` interpolate to degree `<= bound`.
@@ -1386,8 +1388,7 @@ mod tests {
         // Reference: the old full layer stack (bit-reversed coset, then
         // square every fourth predecessor). Cross-check the O(log) formula.
         fn reference(lde_len: usize, final_size: usize) -> Vec<Vec<Field>> {
-            let mut points = coset_points(lde_len).unwrap();
-            bit_reverse_permute(&mut points);
+            let points = bit_reverse_permute(coset_points(lde_len).unwrap());
             let mut layers = vec![points];
             while layers[layers.len() - 1].len() > final_size {
                 let prev = &layers[layers.len() - 1];

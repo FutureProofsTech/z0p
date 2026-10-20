@@ -18,7 +18,7 @@ use crate::ext4::Ext4;
 ///
 /// Large arrays gather in parallel into a fresh buffer (scattered reads,
 /// sequential writes); small arrays stay in place to avoid the allocation.
-pub(crate) fn bit_reverse_permute(values: &mut [Field]) {
+fn bit_reverse_permute_in_place(values: &mut [Field]) {
     let n = values.len();
     if n <= 1 {
         return;
@@ -43,15 +43,40 @@ pub(crate) fn bit_reverse_permute(values: &mut [Field]) {
     values.copy_from_slice(&out);
 }
 
+/// Bit-reversal permutation for base-field values.
+///
+/// Large arrays return a freshly gathered buffer, avoiding a copy back into
+/// the caller's allocation; small arrays are permuted in place.
+pub(crate) fn bit_reverse_permute(mut values: Vec<Field>) -> Vec<Field> {
+    let n = values.len();
+    if n <= 1 {
+        return values;
+    }
+    let bits = n.trailing_zeros();
+    if n < (1 << 18) {
+        bit_reverse_permute_in_place(&mut values);
+        return values;
+    }
+    let mut out = vec![Field::ZERO; n];
+    crate::par::for_each_indexed(&mut out, 1 << 14, |base, piece| {
+        for (k, slot) in piece.iter_mut().enumerate() {
+            let i = base + k;
+            *slot = values[i.reverse_bits() >> (usize::BITS - bits)];
+        }
+    });
+    out
+}
+
 /// Bit-reversal permutation for extension-field values.
 ///
 /// Large arrays use a parallel gather into a fresh buffer: reads are
 /// scattered but writes stay sequential, which hides memory latency across
-/// workers. Small arrays stay in place to avoid the allocation.
-pub(crate) fn bit_reverse_permute_ext(values: &mut [Ext4]) {
+/// workers. Small arrays stay in place to avoid the allocation. The buffer
+/// is moved in and out so the large path does not copy the result back.
+pub(crate) fn bit_reverse_permute_ext(mut values: Vec<Ext4>) -> Vec<Ext4> {
     let n = values.len();
     if n <= 1 {
-        return;
+        return values;
     }
     let bits = n.trailing_zeros();
     if n < (1 << 24) {
@@ -61,7 +86,7 @@ pub(crate) fn bit_reverse_permute_ext(values: &mut [Ext4]) {
                 values.swap(i, rev);
             }
         }
-        return;
+        return values;
     }
     let mut out = vec![Ext4::ZERO; n];
     crate::par::for_each_indexed(&mut out, 1 << 14, |base, piece| {
@@ -70,7 +95,7 @@ pub(crate) fn bit_reverse_permute_ext(values: &mut [Ext4]) {
             *slot = values[i.reverse_bits() >> (usize::BITS - bits)];
         }
     });
-    values.copy_from_slice(&out);
+    out
 }
 
 /// Forward NTT: coefficients -> evaluations at `omega^0..omega^(n-1)`.
@@ -95,14 +120,32 @@ pub fn forward(values: &mut [Field]) -> Result<()> {
         return Ok(());
     }
     let omega = Field::primitive_root(n)?;
+    bit_reverse_permute_in_place(values);
+    forward_stages(values, n, omega);
+    Ok(())
+}
+
+/// Owned forward NTT: the large array is moved through bit reversal instead
+/// of being gathered into a scratch buffer and copied back.
+pub(crate) fn forward_owned(mut values: Vec<Field>) -> Result<Vec<Field>> {
+    let n = values.len();
+    check_domain(n)?;
+    if n == 1 {
+        return Ok(values);
+    }
+    let omega = Field::primitive_root(n)?;
+    values = bit_reverse_permute(values);
+    forward_stages(&mut values, n, omega);
+    Ok(values)
+}
+
+fn forward_stages(values: &mut [Field], n: usize, omega: Field) {
     let twiddles = twiddle_table(omega, n);
-    bit_reverse_permute(values);
     let mut len = 2;
     while len <= n {
         butterfly_stage(values, len, &twiddles, n / len, None);
         len *= 2;
     }
-    Ok(())
 }
 
 /// Inverse NTT: evaluations -> coefficients.
@@ -122,7 +165,7 @@ pub fn inverse(values: &mut [Field]) -> Result<()> {
     let twiddles = twiddle_table(omega_inv, n);
     // `n <= 2^27 < p`, so the inversion is exact and nonzero.
     let n_inv = Field::from_u64(n as u64).inv();
-    bit_reverse_permute(values);
+    bit_reverse_permute_in_place(values);
     let mut len = 2;
     while len < n {
         butterfly_stage(values, len, &twiddles, n / len, None);
@@ -316,8 +359,7 @@ pub fn evaluate_on_coset(coeffs: &[Field], blowup: usize, shift: Field) -> Resul
     // Powers of `shift` beyond `n` continue for the zero-padded tail.
     // (`extended[n..] = 0`, so no work needed there.)
     let _ = power;
-    forward(&mut extended)?;
-    Ok(extended)
+    forward_owned(extended)
 }
 
 /// Interpolate extension-field evaluations into ascending coefficients.

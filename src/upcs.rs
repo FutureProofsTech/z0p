@@ -234,8 +234,7 @@ pub fn commit(coeffs: &[Field], blowup: usize) -> Result<ProverState> {
 /// Same shape errors as [`commit`].
 pub fn commit_ext(coeffs: &[Ext4], blowup: usize) -> Result<ProverState> {
     let lde_len = check_dims(coeffs.len(), blowup)?;
-    let mut lde = ntt::evaluate_on_coset_ext(coeffs, blowup, LDE_SHIFT)?;
-    ntt::bit_reverse_permute_ext(&mut lde);
+    let lde = ntt::bit_reverse_permute_ext(ntt::evaluate_on_coset_ext(coeffs, blowup, LDE_SHIFT)?);
     if lde.len() != lde_len {
         return Err(Error::InvalidDomainSize { size: lde.len() });
     }

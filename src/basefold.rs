@@ -362,8 +362,7 @@ pub fn commit_ext(coeffs: &[Ext4], blowup: usize) -> Result<ProverState> {
         return Err(Error::InvalidDomainSize { size: lde_len });
     }
 
-    let mut lde = evaluate_on_coset_ext(coeffs, blowup, Field::ONE)?;
-    bit_reverse_permute_ext(&mut lde);
+    let lde = bit_reverse_permute_ext(evaluate_on_coset_ext(coeffs, blowup, Field::ONE)?);
     let tree = commit_layer(&lde)?;
     let root = tree.root();
     let commitment = Commitment {
@@ -962,8 +961,7 @@ fn bit_reversed_points(len: usize) -> Result<Vec<Field>> {
         points.push(current);
         current *= omega;
     }
-    bit_reverse_permute(&mut points);
-    Ok(points)
+    Ok(bit_reverse_permute(points))
 }
 
 fn domain_point(layer_len: usize, index: usize) -> Result<Field> {

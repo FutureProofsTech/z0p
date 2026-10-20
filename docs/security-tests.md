@@ -147,5 +147,7 @@ Regression: `blind::tests::rejects_bad_shapes`.
 - **`check_degree` hostile inputs.** Mismatched/empty slices and a
   `usize::MAX` bound no longer rely on debug assertions or overflow.
 - **Field-size ceiling documented.** The ~100-bit production figure is a
-  query/PoW schedule, not total soundness; 31-bit challenges cap the
-  algebraic term. See README, `fri` docs, and the ePrint.
+  query/PoW schedule, not total soundness. FRI folds and the main STARK
+  composition batches now use `Fp4` challenges; `upcs`/`gemini`,
+  `sumcheck`, and `lookup` still use base-field challenges. See README,
+  `fri` docs, and the ePrint.

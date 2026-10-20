@@ -19,6 +19,7 @@
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};
+use crate::ext4::Ext4;
 use crate::fri::{self, Commitment as FriCommitment, Proof as FriProof};
 use crate::merkle::MerkleTree;
 use crate::ntt::{evaluate_on_coset, interpolate};
@@ -447,12 +448,12 @@ fn prove_from_columns(
     transcript.absorb(b"range/column", &crate::merkle::cap_bytes(&column_cap));
 
     // One challenge for decomposition, one per boolean, one for boundary.
-    let alpha_decomp = transcript.challenge_bb(b"range/alpha");
+    let alpha_decomp = transcript.challenge_ext(b"range/alpha");
     let mut alpha_bits = Vec::with_capacity(params.n_bits);
     for _ in 0..params.n_bits {
-        alpha_bits.push(transcript.challenge_bb(b"range/alpha"));
+        alpha_bits.push(transcript.challenge_ext(b"range/alpha"));
     }
-    let alpha_bound = transcript.challenge_bb(b"range/alpha");
+    let alpha_bound = transcript.challenge_ext(b"range/alpha");
 
     let points = lde_points(m)?;
     let composition = compose(
@@ -467,7 +468,7 @@ fn prove_from_columns(
     );
 
     let fri_params = params.fri_params()?;
-    let fri_state = fri::commit_evals(&composition, degree_bound, fri_params, transcript)?;
+    let fri_state = fri::commit_ext_evals(&composition, degree_bound, fri_params, transcript)?;
     let fri_commitment = fri::public_commitment(&fri_state);
     let (fri_proof, fri_indices) = fri::open(&fri_state, transcript)?;
 
@@ -545,12 +546,12 @@ pub fn verify(params: Params, proof: &Proof, transcript: &mut Transcript) -> Res
         b"range/column",
         &crate::merkle::cap_bytes(&proof.column_cap),
     );
-    let alpha_decomp = transcript.challenge_bb(b"range/alpha");
+    let alpha_decomp = transcript.challenge_ext(b"range/alpha");
     let mut alpha_bits = Vec::with_capacity(params.n_bits);
     for _ in 0..params.n_bits {
-        alpha_bits.push(transcript.challenge_bb(b"range/alpha"));
+        alpha_bits.push(transcript.challenge_ext(b"range/alpha"));
     }
-    let alpha_bound = transcript.challenge_bb(b"range/alpha");
+    let alpha_bound = transcript.challenge_ext(b"range/alpha");
 
     let fri_params = params.fri_params()?;
     let fri_indices = fri::verify(
@@ -665,10 +666,10 @@ fn compose(
     points: &[Field],
     value: Field,
     n: usize,
-    alpha_decomp: Field,
-    alpha_bits: &[Field],
-    alpha_bound: Field,
-) -> Vec<Field> {
+    alpha_decomp: Ext4,
+    alpha_bits: &[Ext4],
+    alpha_bound: Ext4,
+) -> Vec<Ext4> {
     if points.len() < 2 {
         // Degenerate (unreachable at real domain sizes): scalar fallback.
         return points
@@ -691,7 +692,7 @@ fn compose(
     }
     let p0 = points[0].pow(n as u64);
     let ratio = (points[1] * points[0].inv()).pow(n as u64);
-    let mut out = vec![Field::ZERO; points.len()];
+    let mut out = vec![Ext4::ZERO; points.len()];
     crate::par::for_each_indexed(&mut out, 2048, |base, piece| {
         let mut den_z = Vec::with_capacity(piece.len());
         let mut den_b = Vec::with_capacity(piece.len());
@@ -712,12 +713,12 @@ fn compose(
                 reconstructed += power * col[i];
                 power += power;
             }
-            let mut acc = alpha_decomp * (lde_v[i] - reconstructed) * inv_z[j];
+            let mut acc = alpha_decomp.mul_base((lde_v[i] - reconstructed) * inv_z[j]);
             for (col, &alpha) in lde_bits.iter().zip(alpha_bits.iter()) {
                 let bit = col[i];
-                acc += alpha * bit * (bit - Field::ONE) * inv_z[j];
+                acc += alpha.mul_base(bit * (bit - Field::ONE) * inv_z[j]);
             }
-            acc += alpha_bound * (lde_v[i] - value) * inv_b[j];
+            acc += alpha_bound.mul_base((lde_v[i] - value) * inv_b[j]);
             *slot = acc;
         }
     });
@@ -733,10 +734,10 @@ fn composition_at(
     point: Field,
     value: Field,
     n: usize,
-    alpha_decomp: Field,
-    alpha_bits: &[Field],
-    alpha_bound: Field,
-) -> Field {
+    alpha_decomp: Ext4,
+    alpha_bits: &[Ext4],
+    alpha_bound: Ext4,
+) -> Ext4 {
     debug_assert_eq!(bits.len(), alpha_bits.len());
     let vanishing = point.pow(n as u64) - Field::ONE;
     let z_inv = vanishing.inv();
@@ -747,13 +748,13 @@ fn composition_at(
         reconstructed += power * bit;
         power += power;
     }
-    let mut acc = alpha_decomp * (v - reconstructed) * z_inv;
+    let mut acc = alpha_decomp.mul_base((v - reconstructed) * z_inv);
     // Booleanity per bit, over the same vanishing poly.
     for (j, &bit) in bits.iter().enumerate() {
-        acc += alpha_bits[j] * bit * (bit - Field::ONE) * z_inv;
+        acc += alpha_bits[j].mul_base(bit * (bit - Field::ONE) * z_inv);
     }
     // Boundary binding the public claim at row 0 (`x = 1`).
-    acc += alpha_bound * (v - value) * (point - Field::ONE).inv();
+    acc += alpha_bound.mul_base((v - value) * (point - Field::ONE).inv());
     acc
 }
 

@@ -26,6 +26,14 @@ Multiplication uses Barrett reduction with $\mu = \lfloor 2^{64}/p
 batch inversion is Montgomery's trick. All operation counts are
 input-independent for fixed parameters.
 
+**Quartic extension field.** FRI folds and the main STARK composition
+batches use $\mathbb{F}_{p^4} = \mathbb{F}_{p^2}[v]/(v^2-u)$ with
+$\mathbb{F}_{p^2} = \mathbb{F}_p[u]/(u^2-11)$, represented as
+$a + bu + cv + duv$ (four canonical field coordinates, 16 bytes).
+Inversion is Fermat with exponent $p^4-2$; multiplication is the tower
+formula. `11` is a quadratic non-residue and `u` is a non-square in
+$\mathbb{F}_{p^2}$.
+
 ### 1.2 Binary fields
 
 $GF(2^8)$, $GF(2^{64})$, $GF(2^{128})$ hold program words (XOR addition,
@@ -114,13 +122,17 @@ $$\mathrm{fold}(e_0,e_1,e_2,e_3) = A + r_0 B + r_1 C + r_2 D,$$
 solved as: $A$ = mean; $B = ((e_0-e_1) - j_0(e_2-e_3))/4 \cdot x^{-1}$;
 $C = ((e_0+e_1)-(e_2+e_3))/4 \cdot x^{-2}$;
 $D = ((e_0-e_1) + j_0(e_2-e_3))/4 \cdot x^{-3}$,
-with $(r_0, r_1, r_2)$ the layer's `fri-fold` challenges and point
-inverses batch-inverted once per layer. Each fold quarters the degree.
+with $(r_0, r_1, r_2) \in \mathbb{F}_{p^4}$ the layer's `fri-fold`
+challenges, values in $\mathbb{F}_{p^4}$ (base values embed in the first
+coordinate), and point inverses (base field) batch-inverted once per
+layer. Each fold quarters the degree.
 
 ### 3.3 Proof and verification
 
 `Proof { final_poly, queries, pow_nonce }`, where each query opens all
-four values of every folded quad plus the middle Merkle path segment.
+four $\mathbb{F}_{p^4}$ values (16 bytes each) of every folded quad plus
+the middle Merkle path segment; leaves hash the canonical 16-byte
+encoding.
 The verifier:
 
 1. checks dimensions, the rate gate, cap shapes ($2^{\mathrm{drop}}$
@@ -150,15 +162,16 @@ survival $\le 1 - \delta$):
   $\le 32$ and caps $0..=4$ minimizing the exact byte estimator. Merkle
   caps are size-only and do not affect bit-levels.
 
-**Field-size ceiling.** This heuristic counts query sampling and grinding
-only. Folding and algebraic identities use 31-bit BabyBear challenges, so
-a nonzero polynomial of degree $d$ can vanish at a random challenge with
-probability up to about $d/p$; for $d = 2^{20}$ that is roughly
-$2^{-11}$ per independent challenge, and the union over folds is worse.
-The production schedule is therefore not a 100-bit soundness guarantee;
-until extension-field challenges or repeated independent checks are
-implemented, treat effective conjectured security as at most about 31
-bits, and lower for wide or deeply folded instances.
+**Challenge fields.** This heuristic counts query sampling and grinding
+only. FRI folds and the AIR/range/table/fold composition batches now use
+the quartic extension field $\mathbb{F}_{p^4}$ (tower
+$\mathbb{F}_p[u]/(u^2-11)$, then $\mathbb{F}_{p^2}[v]/(v^2-u)$), so a
+degree-$d$ identity collides with probability about $d/p^4$ on those
+paths. `upcs`/`gemini` evaluation points and fold betas, plus
+`sumcheck`/`lookup` rounds, still use base-field challenges: their
+algebraic term remains bounded by $\approx 31$ bits. The production
+schedule is therefore not a 100-bit end-to-end soundness guarantee until
+those components migrate.
 
 ## 4. AIR systems
 
@@ -234,12 +247,13 @@ the composition degree (callers size finals accordingly). Query openings
 become uniform and witness-independent; verification is identical, and
 masked false statements still fail.
 
-## 5. Encodings (normative wire format, `VERSION = 1`)
+## 5. Encodings (normative wire format, `VERSION = 2`)
 
 ```
 proof      := VERSION || body
 u32/u64    := little-endian, counts as u32
 field      := 4 canonical LE bytes (< p, else MalformedInput)
+ext4       := 16 canonical LE bytes (four field coordinates)
 digest     := 32 bytes
 direction  := 0 | 1 (else MalformedInput)
 path       := count || (digest || direction)*
@@ -278,7 +292,7 @@ cap/path shape pins before hashing; `fri-dims` dimension binding
 (closes proof malleability of echoed dimensions); canonical-only
 decoding; PoW bound to history with queries sampled after.
 
-**Validation.** 221 unit tests (KATs, cross-checks against Horner/`%`,
+**Validation.** 223 unit tests (KATs, cross-checks against Horner/`%`,
 parallel-vs-sequential identity), 13-test security suite and 10-test
 red-team suite (~800 hostile attempts/run, zero acceptances, zero
 panics), wire-exact size assertions on every benchmark, and a

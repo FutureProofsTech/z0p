@@ -40,6 +40,7 @@
 //! the exact call sequence.
 
 use crate::babybear::Field as Bb;
+use crate::ext4::Ext4;
 use crate::gf2::{F128, F64};
 use crate::hash::{blake3_256, blake3_256_small, CHUNK_LEN};
 
@@ -87,6 +88,11 @@ impl Transcript {
         self.absorb(label, &x.to_le_bytes());
     }
 
+    /// Absorb an [`Ext4`] challenge-field element.
+    pub fn absorb_ext(&mut self, label: &[u8], x: Ext4) {
+        self.absorb(label, &x.to_le_bytes());
+    }
+
     /// Squeeze 32 raw challenge bytes.
     pub fn challenge_bytes(&mut self, label: &[u8]) -> [u8; 32] {
         self.squeeze_raw(label)
@@ -117,6 +123,18 @@ impl Transcript {
         let mut word = [0u8; 8];
         word.copy_from_slice(&bytes[..8]);
         Bb::from_u64(u64::from_le_bytes(word))
+    }
+
+    /// Squeeze a high-entropy [`Ext4`] challenge.
+    ///
+    /// The four coordinates are reduced independently modulo `p`, giving
+    /// roughly 124 bits of challenge entropy (the small reduction bias is
+    /// below `2^-31` per coordinate).
+    pub fn challenge_ext(&mut self, label: &[u8]) -> Ext4 {
+        let bytes = self.squeeze_raw(label);
+        let mut word = [0u8; 16];
+        word.copy_from_slice(&bytes[..16]);
+        Ext4::from_le_bytes(word)
     }
 
     /// Squeeze a query index below `domain_size`.
@@ -413,6 +431,19 @@ mod tests {
         u.challenge_bb(b"same");
         u.absorb(b"mid", b"data");
         assert_ne!(u.challenge_bb(b"same"), second);
+    }
+
+    #[test]
+    fn ext_challenges_are_deterministic_and_bound() {
+        let mut a = Transcript::new(b"ext-a");
+        let mut b = Transcript::new(b"ext-a");
+        let mut c = Transcript::new(b"ext-b");
+        assert_eq!(a.challenge_ext(b"fold"), b.challenge_ext(b"fold"));
+        assert_ne!(a.challenge_ext(b"fold"), c.challenge_ext(b"fold"));
+        // An absorbed extension element changes every later squeeze.
+        let mut d = Transcript::new(b"ext-a");
+        d.absorb_ext(b"state", crate::ext4::Ext4::ONE);
+        assert_ne!(d.challenge_ext(b"fold"), b.challenge_ext(b"fold"));
     }
 
     #[test]

@@ -25,6 +25,7 @@
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};
+use crate::ext4::Ext4;
 use crate::fri::{self, Commitment as FriCommitment, Proof as FriProof};
 use crate::merkle::MerkleTree;
 use crate::ntt::{evaluate_on_coset, interpolate};
@@ -361,7 +362,7 @@ struct StepData {
     claims: StepClaims,
     ldes: [Vec<Field>; 2],
     tree: MerkleTree,
-    composition: Vec<Field>,
+    composition: Vec<Ext4>,
 }
 
 impl Accumulator {
@@ -450,9 +451,9 @@ impl Accumulator {
             &crate::merkle::cap_bytes(&tree.cap(step_drop)),
         );
 
-        let mut alphas = [Field::ZERO; ALPHAS];
+        let mut alphas = [Ext4::ZERO; ALPHAS];
         for slot in &mut alphas {
-            *slot = transcript.challenge_bb(b"fold/alpha");
+            *slot = transcript.challenge_ext(b"fold/alpha");
         }
         let points = lde_points(self.params.lde_len())?;
         let w_last = omega_base.pow((s - 1) as u64);
@@ -487,13 +488,13 @@ impl Accumulator {
         // Combination challenges, one per step, after every step committed.
         let mut gammas = Vec::with_capacity(self.steps.len());
         for _ in &self.steps {
-            gammas.push(transcript.challenge_bb(b"fold/gamma"));
+            gammas.push(transcript.challenge_ext(b"fold/gamma"));
         }
-        let mut combined = vec![Field::ZERO; m];
+        let mut combined = vec![Ext4::ZERO; m];
         crate::par::for_each_indexed(&mut combined, 2048, |base, piece| {
             for (j, slot) in piece.iter_mut().enumerate() {
                 let i = base + j;
-                let mut acc = Field::ZERO;
+                let mut acc = Ext4::ZERO;
                 for (step, &gamma) in self.steps.iter().zip(&gammas) {
                     acc += gamma * step.composition[i];
                 }
@@ -503,7 +504,7 @@ impl Accumulator {
         let fri_params = self.params.fri_params()?;
         // Each composition has degree `< S`; the combination too.
         let fri_state =
-            fri::commit_evals(&combined, self.params.seg_steps - 1, fri_params, transcript)?;
+            fri::commit_ext_evals(&combined, self.params.seg_steps - 1, fri_params, transcript)?;
         let fri_commitment = fri::public_commitment(&fri_state);
         let (fri_proof, fri_indices) = fri::open(&fri_state, transcript)?;
 
@@ -579,13 +580,13 @@ pub fn verify(params: Params, proof: &IvcProof, transcript: &mut Transcript) -> 
     // Replay per-step commitments and challenges.
     let omega_base = Field::primitive_root(s)?;
     let w_last = omega_base.pow((s - 1) as u64);
-    let mut all_alphas: Vec<[Field; ALPHAS]> = Vec::with_capacity(proof.steps.len());
+    let mut all_alphas: Vec<[Ext4; ALPHAS]> = Vec::with_capacity(proof.steps.len());
     for step in &proof.steps {
         absorb_step(&step.claims, transcript);
         transcript.absorb(b"fold/trace", &crate::merkle::cap_bytes(&step.column_cap));
-        let mut alphas = [Field::ZERO; ALPHAS];
+        let mut alphas = [Ext4::ZERO; ALPHAS];
         for slot in &mut alphas {
-            *slot = transcript.challenge_bb(b"fold/alpha");
+            *slot = transcript.challenge_ext(b"fold/alpha");
         }
         all_alphas.push(alphas);
         if step.openings.len() != params.num_queries {
@@ -594,7 +595,7 @@ pub fn verify(params: Params, proof: &IvcProof, transcript: &mut Transcript) -> 
     }
     let mut gammas = Vec::with_capacity(proof.steps.len());
     for _ in &proof.steps {
-        gammas.push(transcript.challenge_bb(b"fold/gamma"));
+        gammas.push(transcript.challenge_ext(b"fold/gamma"));
     }
 
     let fri_params = params.fri_params()?;
@@ -614,7 +615,7 @@ pub fn verify(params: Params, proof: &IvcProof, transcript: &mut Transcript) -> 
         // full vector entry, negligible work. Shared by every step.
         let point = lde_point_at(m, index)?;
         // Combined composition value from every step at this position.
-        let mut combined = Field::ZERO;
+        let mut combined = Ext4::ZERO;
         for ((step, alphas), &gamma) in proof.steps.iter().zip(&all_alphas).zip(&gammas) {
             let opening = &step.openings[query_index];
             if opening.index != index {
@@ -772,8 +773,8 @@ fn compose_step(
     claims: StepClaims,
     s: usize,
     offset: usize,
-    alphas: &[Field; ALPHAS],
-) -> Vec<Field> {
+    alphas: &[Ext4; ALPHAS],
+) -> Vec<Ext4> {
     let m = cols[0].len();
     let shifted = |j: usize, i: usize| cols[j][(i + offset) % m];
     if points.len() < 2 {
@@ -796,7 +797,7 @@ fn compose_step(
     }
     let p0 = points[0].pow(s as u64);
     let ratio = (points[1] * points[0].inv()).pow(s as u64);
-    let mut out = vec![Field::ZERO; points.len()];
+    let mut out = vec![Ext4::ZERO; points.len()];
     crate::par::for_each_indexed(&mut out, 2048, |base, piece| {
         let mut den_a = Vec::with_capacity(piece.len());
         let mut den_b = Vec::with_capacity(piece.len());
@@ -824,12 +825,12 @@ fn compose_step(
             let bound_in_b = (cols[1][i] - claims.in_b) * inv_b[j];
             let bound_out_a = (cols[0][i] - claims.out_a) * inv_a[j];
             let bound_out_b = (cols[1][i] - claims.out_b) * inv_a[j];
-            *slot = alphas[0] * trans1
-                + alphas[1] * trans2
-                + alphas[2] * bound_in_a
-                + alphas[3] * bound_in_b
-                + alphas[4] * bound_out_a
-                + alphas[5] * bound_out_b;
+            *slot = alphas[0].mul_base(trans1)
+                + alphas[1].mul_base(trans2)
+                + alphas[2].mul_base(bound_in_a)
+                + alphas[3].mul_base(bound_in_b)
+                + alphas[4].mul_base(bound_out_a)
+                + alphas[5].mul_base(bound_out_b);
         }
     });
     out
@@ -843,8 +844,8 @@ fn composition_at(
     w_last: Field,
     claims: StepClaims,
     s: usize,
-    alphas: &[Field; ALPHAS],
-) -> Field {
+    alphas: &[Ext4; ALPHAS],
+) -> Ext4 {
     let vanishing = point.pow(s as u64) - Field::ONE;
     let z_trans = vanishing * (point - w_last).inv();
     let trans1 = (next[0] - cols[1]) * z_trans.inv();
@@ -853,12 +854,12 @@ fn composition_at(
     let bound_in_b = (cols[1] - claims.in_b) * (point - Field::ONE).inv();
     let bound_out_a = (cols[0] - claims.out_a) * (point - w_last).inv();
     let bound_out_b = (cols[1] - claims.out_b) * (point - w_last).inv();
-    alphas[0] * trans1
-        + alphas[1] * trans2
-        + alphas[2] * bound_in_a
-        + alphas[3] * bound_in_b
-        + alphas[4] * bound_out_a
-        + alphas[5] * bound_out_b
+    alphas[0].mul_base(trans1)
+        + alphas[1].mul_base(trans2)
+        + alphas[2].mul_base(bound_in_a)
+        + alphas[3].mul_base(bound_in_b)
+        + alphas[4].mul_base(bound_out_a)
+        + alphas[5].mul_base(bound_out_b)
 }
 
 fn bit_reverse_index(mut x: usize, bits: u32) -> usize {
@@ -944,9 +945,9 @@ mod tests {
                 b"fold/trace",
                 &crate::merkle::cap_bytes(&step.tree.cap(drop)),
             );
-            let mut alphas = [Field::ZERO; ALPHAS];
+            let mut alphas = [Ext4::ZERO; ALPHAS];
             for slot in &mut alphas {
-                *slot = t.challenge_bb(b"fold/alpha");
+                *slot = t.challenge_ext(b"fold/alpha");
             }
             step.composition = compose_step(
                 &[&step.ldes[0][..], &step.ldes[1][..]],

@@ -68,11 +68,12 @@ Reed–Solomon proximity testing.
    stated explicitly (rate + queries + grinding) rather than implied.
    Bench shapes are fast and labeled weak (~18 query bits); production
    shapes target a ~100-bit query/PoW schedule via
-   `Params::for_security(…, 100)`. This schedule does not remove the
-   finite-field algebraic term: with 31-bit challenges, effective
-   conjectured soundness is at most ~31 bits until extension-field
-   challenges or repeated independent checks are implemented.
-5. **Evidence over claims.** 221 unit tests, three adversarial suites
+   `Params::for_security(…, 100)`. FRI folds and the main STARK
+   composition batches use quartic extension-field (`Fp4`) challenges,
+   raising their algebraic term to ~124 bits. `upcs`/`gemini` points and
+   `sumcheck`/`lookup` rounds remain base-field, so end-to-end 100-bit
+   soundness is not claimed until they migrate.
+5. **Evidence over claims.** 223 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught
@@ -119,11 +120,11 @@ Measured, release profile, median of runs (full table:
 
 | Workload (production query/PoW schedule) | Prove | Verify | Size |
 |---|---|---|---|
-| 1,024-step computation | 25 ms | 1.1 ms | 60 KiB |
-| 65,536-step computation | 324 ms | 1.8 ms | 126 KiB |
-| **1,048,576-step computation** | **4.65 s** | **2.4 ms** | **183 KiB** |
+| 1,024-step computation | 35 ms | 1.2 ms | 70 KiB |
+| 65,536-step computation | 304 ms | 2.0 ms | 141 KiB |
+| **1,048,576-step computation** | **4.98 s** | **2.6 ms** | **202 KiB** |
 
-Marginal cost is ~4.4 µs per step (~226k steps/s): proving scales
+Marginal cost is ~4.75 µs per step (~210k steps/s): proving scales
 linearly, verification stays in the low milliseconds *independent of
 computation size* (FRI domain points are derived on demand rather than
 materialized), and proof size grows logarithmically. No GPU, no assembly, no dependencies — this is

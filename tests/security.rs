@@ -5,7 +5,7 @@
 //! rejection — a single acceptance fails the suite. Shapes are small and
 //! fast; grinding is 8 bits so proof-of-work gates execute for real.
 
-use z0p::{air, babybear::Field, fri, merkle::MerkleTree, transcript::Transcript};
+use z0p::{air, babybear::Field, ext4::Ext4, fri, merkle::MerkleTree, transcript::Transcript};
 
 /// Fixed transcript domain for the whole suite.
 const LABEL: &[u8] = b"security/air";
@@ -66,7 +66,7 @@ fn tampered_fri_values_rejected() {
         for f in 0..proof.fri_proof.queries[q].folds.len() {
             for v in 0..4 {
                 let mut bad = proof.clone();
-                bad.fri_proof.queries[q].folds[f].values[v] += Field::ONE;
+                bad.fri_proof.queries[q].folds[f].values[v] += Ext4::ONE;
                 attempts += 1;
                 rejected += usize::from(!verifies(params, &bad));
             }
@@ -83,7 +83,7 @@ fn tampered_final_poly_rejected() {
     let mut rejected = 0;
     for i in 0..proof.fri_proof.final_poly.len() {
         let mut bad = proof.clone();
-        bad.fri_proof.final_poly[i] += Field::ONE;
+        bad.fri_proof.final_poly[i] += Ext4::ONE;
         attempts += 1;
         rejected += usize::from(!verifies(params, &bad));
     }

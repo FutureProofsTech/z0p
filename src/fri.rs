@@ -67,18 +67,19 @@
 //! `2^d` hashes and denies the forger a `2^-d` shortcut. Size the query
 //! count from the rate first, then top up with grinding to the target.
 //!
-//! # Field-size ceiling (important)
-//! The totals above count query sampling and grinding only. Folding and
-//! algebraic identities draw their challenges from the 31-bit base field,
-//! so finite-field collision terms (roughly `degree / p` per independent
-//! challenge) cap effective conjectured soundness well below 100 bits for
-//! wide instances: a degree-`2^20` composition gives about `2^-11` per
-//! challenge, and the union over folds is worse. Treat the production
-//! schedule as query/PoW sizing, not a 100-bit guarantee. Higher assurance
-//! needs extension-field challenges (for example a `BabyBear` quartic) or
-//! repeated independent algebraic checks; both are roadmap work. Until
-//! then, do not claim more than about 31 bits, and less for high-degree or
-//! widely folded instances.
+//! # Challenge fields (important)
+//! The totals above count query sampling and grinding only. FRI fold
+//! challenges and the AIR/range/table/fold composition batches are drawn
+//! from the quartic extension field [`Ext4`] (tower
+//! `Fp[u]/(u^2 - 11)`, then `Fp2[v]/(v^2 - u)`), so the former ~31-bit
+//! algebraic ceiling is removed on those paths: a degree-`d` identity
+//! collides with probability roughly `d / p^4`.
+//!
+//! Some components still use base-field challenges: `upcs`/`gemini`
+//! evaluation points and fold betas, and `sumcheck`/`lookup` rounds.
+//! Those paths retain a ~31-bit algebraic ceiling until migrated. The
+//! production schedule is query/PoW sizing, not by itself a 100-bit
+//! end-to-end guarantee.
 //!
 //! Merkle caps are size-only: they shorten transmitted paths without
 //! changing the committed function or the query count, so the query/PoW
@@ -86,6 +87,7 @@
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};
+use crate::ext4::Ext4;
 use crate::merkle::{hash_leaf, hash_node, MerkleTree};
 use crate::ntt::{bit_reverse_permute, evaluate_on_coset};
 use crate::transcript::Transcript;
@@ -257,13 +259,13 @@ pub struct Commitment {
 #[derive(Clone, Debug)]
 pub struct ProverState {
     /// Evaluations per layer, bit-reversed order, halving each round.
-    pub layers: Vec<Vec<Field>>,
+    pub layers: Vec<Vec<Ext4>>,
     /// Merkle tree per layer, parallel to `layers`.
     pub trees: Vec<MerkleTree>,
     /// Caps in layer order (derived from `trees` at commit time).
     pub caps: Vec<Vec<[u8; 32]>>,
     /// Fold challenges, three per layer transition.
-    pub fold_challenges: Vec<[Field; 3]>,
+    pub fold_challenges: Vec<[Ext4; 3]>,
     /// Length of the LDE domain.
     pub lde_len: usize,
     /// Number of coefficients ([`commit`] path) or `lde_len`.
@@ -283,7 +285,7 @@ pub struct ProverState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FoldWitness {
     /// Evaluations at the four quad positions.
-    pub values: [Field; 4],
+    pub values: [Ext4; 4],
     /// Merkle path of the quad node (full path minus its first two steps).
     pub path: Vec<([u8; 32], bool)>,
 }
@@ -299,7 +301,7 @@ pub struct QueryProof {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Proof {
     /// Final layer in the clear.
-    pub final_poly: Vec<Field>,
+    pub final_poly: Vec<Ext4>,
     /// Query openings in transcript order.
     pub queries: Vec<QueryProof>,
     /// Proof-of-work nonce for `("fri-pow", grinding_bits)` (`0` when
@@ -334,7 +336,7 @@ impl Proof {
     pub(crate) fn write_body(&self, writer: &mut crate::codec::Writer) {
         writer.count(self.final_poly.len());
         for value in &self.final_poly {
-            writer.field(*value);
+            writer.ext4(*value);
         }
         writer.u64_le(self.pow_nonce);
         writer.count(self.queries.len());
@@ -342,7 +344,7 @@ impl Proof {
             writer.count(query.folds.len());
             for fold in &query.folds {
                 for value in &fold.values {
-                    writer.field(*value);
+                    writer.ext4(*value);
                 }
                 writer.path(&fold.path);
             }
@@ -353,7 +355,7 @@ impl Proof {
         use crate::codec::{MAX_ELEMS, MAX_FOLDS, MAX_QUERIES};
         let mut final_poly = Vec::new();
         for _ in 0..reader.count(MAX_ELEMS)? {
-            final_poly.push(reader.field()?);
+            final_poly.push(reader.ext4()?);
         }
         let pow_nonce = reader.u64_le()?;
         let mut queries = Vec::new();
@@ -361,10 +363,10 @@ impl Proof {
             let mut folds = Vec::new();
             for _ in 0..reader.count(MAX_FOLDS)? {
                 let values = [
-                    reader.field()?,
-                    reader.field()?,
-                    reader.field()?,
-                    reader.field()?,
+                    reader.ext4()?,
+                    reader.ext4()?,
+                    reader.ext4()?,
+                    reader.ext4()?,
                 ];
                 let path = reader.path()?;
                 folds.push(FoldWitness { values, path });
@@ -402,7 +404,13 @@ pub fn commit(
     }
     let lde = evaluate_on_coset(poly_coeffs, params.blowup, LDE_SHIFT)?;
     let degree_bound = poly_coeffs.len() - 1;
-    commit_inner(lde, degree_bound, poly_coeffs.len(), params, transcript)
+    commit_inner(
+        lde.into_iter().map(Ext4::from_base).collect(),
+        degree_bound,
+        poly_coeffs.len(),
+        params,
+        transcript,
+    )
 }
 
 /// Commit to already-expanded LDE evaluations of declared degree.
@@ -435,6 +443,42 @@ pub fn commit_evals(
         });
     }
     commit_inner(
+        lde_evals.iter().copied().map(Ext4::from_base).collect(),
+        degree_bound,
+        lde_evals.len(),
+        params,
+        transcript,
+    )
+}
+
+/// Commit already-expanded short-domain values in the extension field.
+///
+/// Used by STARK compositions whose batching and fold checks use [`Ext4`]
+/// challenges. The input must be a natural-order power-of-two LDE on the
+/// [`LDE_SHIFT`] coset.
+///
+/// # Errors
+/// Same shape and rate errors as [`commit_evals`].
+pub fn commit_ext_evals(
+    lde_evals: &[Ext4],
+    degree_bound: usize,
+    params: Params,
+    transcript: &mut Transcript,
+) -> Result<ProverState> {
+    if lde_evals.is_empty() {
+        return Err(Error::EmptyInput);
+    }
+    if !lde_evals.len().is_power_of_two() || lde_evals.len() > (1usize << Field::TWO_ADICITY) {
+        return Err(Error::InvalidDomainSize {
+            size: lde_evals.len(),
+        });
+    }
+    if degree_bound >= lde_evals.len() {
+        return Err(Error::MalformedInput {
+            reason: "degree bound must be below LDE size (rate < 1)",
+        });
+    }
+    commit_inner(
         lde_evals.to_vec(),
         degree_bound,
         lde_evals.len(),
@@ -444,7 +488,7 @@ pub fn commit_evals(
 }
 
 fn commit_inner(
-    mut current: Vec<Field>,
+    mut current: Vec<Ext4>,
     degree_bound: usize,
     poly_len: usize,
     params: Params,
@@ -468,14 +512,14 @@ fn commit_inner(
     // Domain points in matching bit-reversed order, plus the fixed fourth
     // root shared by every quad at every depth (see `fold_values`).
     let mut points = coset_points(lde_len)?;
-    bit_reverse_permute(&mut current);
+    bit_reverse_permute_ext(&mut current);
     bit_reverse_permute(&mut points);
     let unit = Field::two_adic_generator(2)?;
 
-    let mut layers: Vec<Vec<Field>> = Vec::new();
+    let mut layers: Vec<Vec<Ext4>> = Vec::new();
     let mut trees: Vec<MerkleTree> = Vec::new();
     let mut caps: Vec<Vec<[u8; 32]>> = Vec::new();
-    let mut fold_challenges: Vec<[Field; 3]> = Vec::new();
+    let mut fold_challenges: Vec<[Ext4; 3]> = Vec::new();
     layers.push(current);
     let mut layer_points = points;
 
@@ -493,9 +537,9 @@ fn commit_inner(
         if layers[idx].len() == params.final_size {
             break;
         }
-        let mut challenges = [Field::ZERO; 3];
+        let mut challenges = [Ext4::ZERO; 3];
         for slot in &mut challenges {
-            *slot = transcript.challenge_bb(b"fri-fold");
+            *slot = transcript.challenge_ext(b"fri-fold");
         }
         fold_challenges.push(challenges);
         let (next_values, next_points) = fold_layer(&layers[idx], &layer_points, challenges, unit);
@@ -635,9 +679,9 @@ pub fn verify(
             transcript.absorb(b"fri-layer-root", digest);
         }
         if i + 1 < commitment.caps.len() {
-            let mut challenges = [Field::ZERO; 3];
+            let mut challenges = [Ext4::ZERO; 3];
             for slot in &mut challenges {
-                *slot = transcript.challenge_bb(b"fri-fold");
+                *slot = transcript.challenge_ext(b"fri-fold");
             }
             fold_challenges.push(challenges);
         }
@@ -668,7 +712,7 @@ pub fn verify(
     for j in 0..params.final_size {
         final_points.push(point_at(commitment.lde_len, folds, j)?);
     }
-    if !check_degree(&final_points, &proof.final_poly, residual) {
+    if !check_degree_ext(&final_points, &proof.final_poly, residual) {
         return Err(Error::FriVerificationFailed);
     }
 
@@ -809,7 +853,7 @@ pub(crate) fn estimate_fri_bytes(layers: &[usize], num_queries: usize, cap_heigh
         total = total.saturating_add(32usize * (1usize << drop.min(16)));
         if i + 1 < layers.len() {
             let steps = depth.saturating_sub(2).saturating_sub(drop);
-            total += num_queries * (16 + 33 * steps);
+            total += num_queries * (64 + 33 * steps);
         }
     }
     total
@@ -911,6 +955,22 @@ pub(crate) fn tune_strength(target_bits: u32, millibits_per_query: u32) -> (usiz
     let queries = queries as usize;
     (queries, grinding)
 }
+
+/// In-place bit-reversal permutation for extension-field values.
+fn bit_reverse_permute_ext(values: &mut [Ext4]) {
+    let n = values.len();
+    if n <= 1 {
+        return;
+    }
+    let bits = n.trailing_zeros();
+    for i in 0..n {
+        let rev = i.reverse_bits() >> (usize::BITS - bits);
+        if i < rev {
+            values.swap(i, rev);
+        }
+    }
+}
+
 fn coset_points(len: usize) -> Result<Vec<Field>> {
     let omega = Field::primitive_root(len)?;
     let mut points = Vec::with_capacity(len);
@@ -967,7 +1027,7 @@ fn check_layers(lde_len: usize, final_size: usize) -> Result<()> {
 struct QueryCheck<'a> {
     commitment: &'a Commitment,
     proof: &'a Proof,
-    fold_challenges: &'a [[Field; 3]],
+    fold_challenges: &'a [[Ext4; 3]],
     query: &'a QueryProof,
     leaf_index: usize,
     unit: Field,
@@ -1103,18 +1163,18 @@ fn open_one(state: &ProverState, leaf_index: usize) -> Result<QueryProof> {
 /// Point inverses are batch-inverted once per layer (one inversion total
 /// instead of one Fermat power per quad); values fold in parallel.
 fn fold_layer(
-    values: &[Field],
+    values: &[Ext4],
     points: &[Field],
-    challenges: [Field; 3],
+    challenges: [Ext4; 3],
     unit: Field,
-) -> (Vec<Field>, Vec<Field>) {
+) -> (Vec<Ext4>, Vec<Field>) {
     use crate::babybear::batch_invert;
     debug_assert_eq!(values.len() % 4, 0);
     debug_assert_eq!(values.len(), points.len());
     let quarter = values.len() / 4;
     let first_points: Vec<Field> = points.chunks_exact(4).map(|quad| quad[0]).collect();
     let inv_points = batch_invert(&first_points);
-    let mut next_values = vec![Field::ZERO; quarter];
+    let mut next_values = vec![Ext4::ZERO; quarter];
     crate::par::for_each_indexed(&mut next_values, 512, |base, piece| {
         for (j, slot) in piece.iter_mut().enumerate() {
             let i = base + j;
@@ -1142,19 +1202,20 @@ fn fold_layer(
 /// diagonal difference; divisions use `halve` plus the caller-supplied
 /// `x` inverse (batch-inverted once per layer).
 pub(crate) fn fold_values(
-    quad: [Field; 4],
+    quad: [Ext4; 4],
     inv_point: Field,
-    challenges: [Field; 3],
+    challenges: [Ext4; 3],
     unit: Field,
-) -> Field {
+) -> Ext4 {
     let even_sum = (quad[0] + quad[1]) + (quad[2] + quad[3]);
     let odd_diff = quad[0] - quad[1];
     let skew_diff = quad[2] - quad[3];
+    let inv = Ext4::from_base(inv_point);
+    let unit = Ext4::from_base(unit);
     let mean = even_sum.halve().halve();
-    let linear = (odd_diff - unit * skew_diff).halve().halve() * inv_point;
-    let quadratic =
-        ((quad[0] + quad[1]) - (quad[2] + quad[3])).halve().halve() * inv_point * inv_point;
-    let cubic = (odd_diff + unit * skew_diff).halve().halve() * inv_point * inv_point * inv_point;
+    let linear = (odd_diff - unit * skew_diff).halve().halve() * inv;
+    let quadratic = ((quad[0] + quad[1]) - (quad[2] + quad[3])).halve().halve() * inv * inv;
+    let cubic = (odd_diff + unit * skew_diff).halve().halve() * inv * inv * inv;
     mean + challenges[0] * linear + challenges[1] * quadratic + challenges[2] * cubic
 }
 
@@ -1163,6 +1224,32 @@ pub(crate) fn fold_values(
 /// Uses divided differences: degree `<= bound` iff every difference of order
 /// `> bound` vanishes. Vacuous (`true`) when `bound >= len - 1`; empty
 /// inputs return `false`.
+#[must_use]
+pub fn check_degree_ext(points: &[Field], values: &[Ext4], bound: usize) -> bool {
+    if points.len() != values.len() || values.is_empty() {
+        return false;
+    }
+    let n = values.len();
+    if bound >= n.saturating_sub(1) {
+        return true;
+    }
+    let mut table = values.to_vec();
+    for order in 1..n {
+        for i in 0..n - order {
+            let denom = points[i + order] - points[i];
+            if denom == Field::ZERO {
+                return false;
+            }
+            table[i] = (table[i + 1] - table[i]) * Ext4::from_base(denom.inv());
+        }
+        if order > bound && table[..n - order].iter().any(|&v| v != Ext4::ZERO) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Base-field degree check (legacy fragment and tests).
 #[must_use]
 pub fn check_degree(points: &[Field], values: &[Field], bound: usize) -> bool {
     if points.len() != values.len() || values.is_empty() {
@@ -1191,16 +1278,16 @@ pub fn check_degree(points: &[Field], values: &[Field], bound: usize) -> bool {
     true
 }
 
-fn commit_layer(layer: &[Field]) -> Result<MerkleTree> {
-    let mut flat = vec![0u8; 4 * layer.len()];
-    for (slot, f) in flat.chunks_exact_mut(4).zip(layer.iter()) {
+fn commit_layer(layer: &[Ext4]) -> Result<MerkleTree> {
+    let mut flat = vec![0u8; 16 * layer.len()];
+    for (slot, f) in flat.chunks_exact_mut(16).zip(layer.iter()) {
         slot.copy_from_slice(&f.to_le_bytes());
     }
-    MerkleTree::from_flat(&flat, 4)
+    MerkleTree::from_flat(&flat, 16)
 }
 
-fn encode_fields(fields: &[Field]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(fields.len() * 4);
+fn encode_fields(fields: &[Ext4]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(fields.len() * 16);
     for f in fields {
         out.extend_from_slice(&f.to_le_bytes());
     }
@@ -1298,7 +1385,7 @@ mod tests {
         let state = commit(&poly, params, &mut prover_t).unwrap();
         let commitment = public_commitment(&state);
         let (mut proof, _) = open(&state, &mut prover_t).unwrap();
-        proof.queries[0].folds[0].values[0] += Field::ONE;
+        proof.queries[0].folds[0].values[0] += Ext4::ONE;
 
         let mut verifier_t = Transcript::new(b"fri-tamper");
         assert!(verify(&commitment, &proof, params, &mut verifier_t).is_err());
@@ -1656,15 +1743,22 @@ mod tests {
         let x = Field::new(123_456);
         let (r0, r1, r2) = (Field::new(7), Field::new(11), Field::new(13));
         let poly = |t: Field| t + t.square() * t;
-        let e = [poly(x), poly(-x), poly(unit * x), poly(-unit * x)];
+        let e = [poly(x), poly(-x), poly(unit * x), poly(-unit * x)].map(Ext4::from_base);
         let inv = x.inv();
-        assert_eq!(fold_values(e, inv, [r0, r1, r2], unit), r0 + r2);
+        let challenges = [r0, r1, r2].map(Ext4::from_base);
+        assert_eq!(
+            fold_values(e, inv, challenges, unit),
+            Ext4::from_base(r0 + r2)
+        );
         // P(x) = x^2 isolates C; P constant isolates A.
         let sq = |t: Field| t.square();
-        let e2 = [sq(x), sq(-x), sq(unit * x), sq(-unit * x)];
-        assert_eq!(fold_values(e2, inv, [r0, r1, r2], unit), r1);
-        let five = [Field::new(5); 4];
-        assert_eq!(fold_values(five, inv, [r0, r1, r2], unit), Field::new(5));
+        let e2 = [sq(x), sq(-x), sq(unit * x), sq(-unit * x)].map(Ext4::from_base);
+        assert_eq!(fold_values(e2, inv, challenges, unit), Ext4::from_base(r1));
+        let five = [Ext4::from_base(Field::new(5)); 4];
+        assert_eq!(
+            fold_values(five, inv, challenges, unit),
+            Ext4::from_base(Field::new(5))
+        );
     }
 
     #[test]

@@ -48,6 +48,7 @@
 use crate::babybear::Field;
 use crate::codec::{Reader, Writer, MAX_QUERIES, VERSION};
 use crate::error::{Error, Result};
+use crate::ext4::Ext4;
 use crate::fri::{self, LDE_SHIFT};
 use crate::merkle::MerkleTree;
 use crate::ntt;
@@ -512,15 +513,16 @@ pub fn verify_multi(
         }
         if !MerkleTree::verify(
             &commitment.root,
-            &opening.value.to_le_bytes(),
+            &Ext4::from_base(opening.value).to_le_bytes(),
             index,
             &opening.path,
         ) {
             return Err(Error::BadMerklePath);
         }
         let z = fri::point_at(lde_len, 0, index)?;
-        let expected = eval_poly(&interp, z) + eval_poly(&vanishing, z) * *q_value;
-        if opening.value != expected {
+        let expected = Ext4::from_base(eval_poly(&interp, z))
+            + Ext4::from_base(eval_poly(&vanishing, z)) * *q_value;
+        if Ext4::from_base(opening.value) != expected {
             return Err(Error::FriVerificationFailed);
         }
     }
@@ -594,14 +596,14 @@ pub fn verify(
         }
         if !MerkleTree::verify(
             &commitment.root,
-            &opening.value.to_le_bytes(),
+            &Ext4::from_base(opening.value).to_le_bytes(),
             index,
             &opening.path,
         ) {
             return Err(Error::BadMerklePath);
         }
         let z = fri::point_at(lde_len, 0, index)?;
-        if (z - point) * *q_value != opening.value - value {
+        if Ext4::from_base(z - point) * *q_value != Ext4::from_base(opening.value - value) {
             return Err(Error::FriVerificationFailed);
         }
     }
@@ -785,11 +787,11 @@ fn absorb_statement(
 
 /// Merkle tree over 4-byte LDE leaves.
 fn tree_over(lde: &[Field]) -> Result<MerkleTree> {
-    let mut flat = vec![0u8; 4 * lde.len()];
-    for (chunk, value) in flat.chunks_exact_mut(4).zip(lde) {
-        chunk.copy_from_slice(&value.to_le_bytes());
+    let mut flat = vec![0u8; 16 * lde.len()];
+    for (chunk, value) in flat.chunks_exact_mut(16).zip(lde) {
+        chunk.copy_from_slice(&Ext4::from_base(*value).to_le_bytes());
     }
-    MerkleTree::from_flat(&flat, 4)
+    MerkleTree::from_flat(&flat, 16)
 }
 
 /// Synthetic division `(g - value) / (X - point)`, padded to `deg(g) + 1`.
@@ -970,11 +972,11 @@ mod tests {
         let coeffs = poly(8);
         let point = Field::new(19);
         let (commitment, params, value, mut proof) = prove_roundtrip(&coeffs, point);
-        proof.q_fri.queries[0].folds[0].values[0] += Field::ONE;
+        proof.q_fri.queries[0].folds[0].values[0] += Ext4::ONE;
         assert!(verify_with(&commitment, point, value, &proof, params).is_err());
 
         let (commitment, params, value, mut proof) = prove_roundtrip(&coeffs, point);
-        proof.g_fri.queries[0].folds[0].values[0] += Field::ONE;
+        proof.g_fri.queries[0].folds[0].values[0] += Ext4::ONE;
         assert!(verify_with(&commitment, point, value, &proof, params).is_err());
 
         let (commitment, params, value, mut proof) = prove_roundtrip(&coeffs, point);

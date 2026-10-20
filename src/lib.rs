@@ -3,6 +3,7 @@
 //! Layers owned 100% by this crate:
 //! - [`gf2`]: binary fields `GF(2^8)`, `GF(2^64)`, `GF(2^128)` for word ops.
 //! - [`babybear`]: NTT-friendly prime field for the FRI domain.
+//! - [`ext4`]: quartic extension of `BabyBear` for high-entropy challenges.
 //! - [`hash`]: BLAKE3-256 from the official specification (unkeyed).
 //! - [`transcript`]: Fiat-Shamir transcript over BLAKE3-256.
 //! - [`merkle`]: domain-separated binary Merkle tree.
@@ -37,9 +38,11 @@
 //! but weak (`~18` query bits); production callers want blowup `16`, `40`
 //! queries, and `20`-bit grinding (a ~100-bit query/PoW schedule), set via
 //! `Params::with_grinding_bits` on [`fri`], [`air`], [`range`], [`table`],
-//! and [`fold`]. The 31-bit base field limits algebraic challenge entropy;
-//! see the field-size ceiling in [`fri`] before treating any schedule as a
-//! 100-bit guarantee.
+//! and [`fold`]. FRI folds and the main STARK composition batches use
+//! [`ext4::Ext4`] challenges; `upcs`/`gemini` points and
+//! `sumcheck`/`lookup` rounds still use base-field challenges. See the
+//! challenge-field notes in [`fri`] before treating any schedule as a
+//! 100-bit end-to-end guarantee.
 //!
 //! # Example
 //! ```
@@ -74,6 +77,7 @@ pub mod babybear;
 pub mod blind;
 mod codec;
 pub mod error;
+pub mod ext4;
 pub mod fold;
 pub mod fri;
 pub mod gemini;

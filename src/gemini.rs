@@ -35,10 +35,11 @@
 //! misses a nonzero identity with probability at most `2^{n-i+1} / p`.
 //! Over `n` layers the algebraic error is at most `n 2^n / p` (about
 //! `2^-18` for `n = 8` on `BabyBear`, but only `2^-10` for `n = 20`): the
-//! 31-bit field limits these checks. Production soundness for wide
-//! instances therefore needs extension-field challenges or repeated
-//! checks, which are roadmap work; treat the bit level as conjectured and
-//! size instances accordingly.
+//! 31-bit base field limits these checks. FRI's `Fp4` folds do not remove
+//! this ceiling because Gemini's betas and `upcs` evaluation points are
+//! still base-field; wide instances need extension-field PCS points or
+//! repeated checks. Treat the bit level as conjectured and size instances
+//! accordingly.
 //!
 //! For `n >= 1` the proof carries one multi-point `upcs` opening per layer
 //! and `n - 1` layer commitments (`n = 0` carries one opening and no

@@ -45,11 +45,11 @@ fn path_bytes(path: &[([u8; 32], bool)]) -> usize {
 fn fri_proof_body_bytes(proof: &fri::Proof) -> usize {
     // Mirrors `Proof::write_body` exactly: counts, fields, nonce, and
     // 33 bytes per path step.
-    let mut total = 4 + 4 * proof.final_poly.len() + 8 + 4;
+    let mut total = 4 + 16 * proof.final_poly.len() + 8 + 4;
     for query in &proof.queries {
         total += 4;
         for fold in &query.folds {
-            total += 4 * 4 + 4 + path_bytes(&fold.path);
+            total += 16 * 4 + 4 + path_bytes(&fold.path);
         }
     }
     total
@@ -206,7 +206,9 @@ fn bench_ntt() {
 
 fn bench_fri() {
     let params = fri::Params::new(4, 12, 4).expect("params");
-    let coeffs: Vec<Field> = (0..256).map(|i| Field::new(i * 0x9e37_79b9 + 17)).collect();
+    let coeffs: Vec<Field> = (0..256u32)
+        .map(|i| Field::new(i.wrapping_mul(0x9e37_79b9) + 17))
+        .collect();
     let mut prover_t = Transcript::new(b"bench/fri");
     let state = fri::commit(black_box(&coeffs), params, &mut prover_t).expect("commit");
     let commitment = fri::public_commitment(&state);
@@ -430,7 +432,9 @@ fn bench_merkle() {
 /// 20-bit grinding, size-optimal final size and cap.
 fn bench_fri_production() {
     let params = fri::Params::for_security(256, 100).expect("params");
-    let coeffs: Vec<Field> = (0..256).map(|i| Field::new(i * 0x9e37_79b9 + 17)).collect();
+    let coeffs: Vec<Field> = (0..256u32)
+        .map(|i| Field::new(i.wrapping_mul(0x9e37_79b9) + 17))
+        .collect();
     let mut prover_t = Transcript::new(b"bench/fri-prod");
     let state = fri::commit(black_box(&coeffs), params, &mut prover_t).expect("commit");
     let commitment = fri::public_commitment(&state);
@@ -577,8 +581,8 @@ fn bench_air_scaled(n_steps: usize) {
 /// Production-shape FRI over 1024 coefficients via `for_security(100)`.
 fn bench_fri_production_big() {
     let params = fri::Params::for_security(1024, 100).expect("params");
-    let coeffs: Vec<Field> = (0..1024)
-        .map(|i| Field::new(i * 0x9e37_79b9 + 17))
+    let coeffs: Vec<Field> = (0..1024u32)
+        .map(|i| Field::new(i.wrapping_mul(0x9e37_79b9) + 17))
         .collect();
     let mut prover_t = Transcript::new(b"bench/fri-prod-big");
     let state = fri::commit(black_box(&coeffs), params, &mut prover_t).expect("commit");

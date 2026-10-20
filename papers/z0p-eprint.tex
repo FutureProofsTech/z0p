@@ -13,7 +13,7 @@
 
 \title{z0p: A Zero-Dependency Transparent STARK Stack in Safe Rust}
 \author{nul0 \\ \textit{Future Proofs Tech} \\ \texttt{futureproofs@proton.me}}
-\date{September 2026}
+\date{October 2026}
 
 \begin{document}
 \maketitle
@@ -28,12 +28,14 @@ IVC, plus LogUp lookups and zero-knowledge masking throughout) are all owned
 by a single crate under \texttt{\#![forbid(unsafe\_code)]}. The system is
 transparent (no trusted setup) and hash-based, hence plausibly
 post-quantum. Production parameters target a $\approx 100$-bit
-query/proof-of-work schedule (rate $1/16$, 40 queries, 20-bit grinding);
-the 31-bit base field leaves a separate algebraic ceiling (see
+query/proof-of-work schedule (rate $1/16$, 40 queries, 20-bit grinding).
+FRI folds and the main STARK composition batches draw challenges from a
+quartic extension $\mathbb{F}_{p^4}$, raising their algebraic term to
+$\approx 124$ bits; some auxiliary paths remain base-field (see
 Section~\ref{sec:security}). Measured on a
-16-core machine, a 1,048,576-step computation proves in 4.6~s
-($\approx 4.4\,\mu$s/step), verifies in 2.4~ms, with a 186,961-byte proof.
-Validation combines 221 unit tests with three adversarial suites
+16-core machine, a 1,048,576-step computation proves in 4.98~s
+($\approx 4.75\,\mu$s/step), verifies in 2.6~ms, with a 206,353-byte proof.
+Validation combines 223 unit tests with three adversarial suites
 ($\approx 800$ hostile attempts per run, zero acceptances, zero panics),
 wire-exact size assertions on every benchmark, and machine-checked
 regression gates.
@@ -59,7 +61,8 @@ FRI Reed--Solomon commitments over BabyBear. No curves, no ceremonies.
 \item Production parameter sizing in one call
 (\texttt{Params::for\_security(\dots, 100)}): blowup 16, queries,
 grinding, final layer, and cap height jointly optimized for a
-$\approx 100$-bit query/PoW schedule, subject to the field-size ceiling
+$\approx 100$-bit query/PoW schedule. The FRI/composition path uses a
+quartic extension field; remaining base-field components are stated
 below.
 \item Competitive scalar performance with parallelism over
 \texttt{std::thread} only: 1M-step proofs at $\approx 163$k steps/s,
@@ -91,7 +94,12 @@ $\mathbb{F}_p$, $p = 2^{31}-2^{27}+1 = 2013265921$ with generator
 $31$; $p-1 = 2^{27}\cdot 15$, so $2^k$-roots of unity exist for
 $k \le 27$. Elements serialize as 4 canonical little-endian bytes;
 multiplication is Barrett reduction, inversion Fermat
-($0 \mapsto 0$), batch inversion Montgomery's trick.
+($0 \mapsto 0$), batch inversion Montgomery's trick. FRI values and fold
+challenges live in the quartic tower
+$\mathbb{F}_{p^2}=\mathbb{F}_p[u]/(u^2-11)$,
+$\mathbb{F}_{p^4}=\mathbb{F}_{p^2}[v]/(v^2-u)$; $11$ is a quadratic
+non-residue and $u$ a non-square. Elements serialize as four canonical
+coordinates (16 bytes).
 
 \paragraph{Domains.} Trace domain
 $H = \{1,\omega,\dots,\omega^{N-1}\}$; evaluation domain
@@ -135,9 +143,10 @@ those bytes.
 Layers are bit-reversed; each adjacent quad sits at
 $(x,-x,j_0x,-j_0x)$ for the fixed fourth root $j_0$, sharing $x^4$.
 Writing $P(X) = A+BX+CX^2+DX^3$ in $Y = X^4$, each layer folds as
-$A + r_0B + r_1C + r_2D$ with fresh challenges, quartering the degree;
-point inverses are batch-inverted once per layer and folding is
-multi-threaded. Proofs carry the final layer in the clear plus, per
+$A + r_0B + r_1C + r_2D$ with fresh challenges
+$r_i \in \mathbb{F}_{p^4}$ (values embed base-field elements in the first
+coordinate), quartering the degree; point inverses are batch-inverted
+once per layer and folding is multi-threaded. Proofs carry the final layer in the clear plus, per
 query, all four values of every folded quad with middle path segments.
 The verifier replays the transcript, checks dimensions, rate, cap
 shapes, and PoW, verifies the final layer by divided differences
@@ -149,13 +158,14 @@ Under the Johnson-radius heuristic ($\delta \approx 1-\sqrt{\rho}$),
 rate $\rho = 1/8$ with 12 queries gives $\approx 18$ bits (bench
 shape); rate $\rho = 1/16$ with 40 queries plus 20-bit grinding gives
 an $80 + 20 = 100$-bit query/PoW schedule (production shape). Caps affect
-size only. These counts exclude the finite-field algebraic term: folding
-and identity checks use 31-bit BabyBear challenges, so a nonzero degree-$d$
-identity can vanish at a random challenge with probability up to about
-$d/p$ (roughly $2^{-11}$ at $d = 2^{20}$), and the union over folds is
-worse. Until extension-field challenges or repeated independent checks are
-implemented, effective conjectured soundness is at most about 31 bits, and
-lower for wide or deeply folded instances.
+size only. These counts exclude the finite-field algebraic term. FRI
+folds and the AIR/range/table/fold composition batches draw
+$\mathbb{F}_{p^4}$ challenges, so a nonzero degree-$d$ identity vanishes
+with probability about $d/p^4$ there. `upcs`/`gemini` evaluation points
+and fold betas, plus `sumcheck`/`lookup` rounds, still use
+$\mathbb{F}_p$ challenges and retain an approximately 31-bit algebraic
+ceiling. The production schedule is therefore not an end-to-end 100-bit
+soundness guarantee until those components migrate.
 \end{conjecture}
 
 \section{AIR systems}
@@ -229,7 +239,7 @@ check at true folded points; cap/path shape pins before hashing;
 \texttt{fri-dims} dimension binding; canonical-only decoding; PoW
 bound to history with queries sampled after.
 
-\paragraph{Adversarial validation.} Three layers: 221 unit tests
+\paragraph{Adversarial validation.} Three layers: 223 unit tests
 (KATs, Horner cross-checks, parallel-vs-sequential identity); a
 13-vector security suite (tampering of every query/fold/value/path/
 digest, 300 single-bit-flip fuzz trials, PoW forgery, rate gates both
@@ -247,7 +257,7 @@ only (NTT stages $\ge 2^{16}$, folding, Merkle levels; all
 bit-identical). Key optimizations: Barrett field arithmetic,
 table-driven NTT, single-chunk hash fast paths, batched composition
 (geometric vanishing $+$ Montgomery denominators), verifier on-demand
-domain points, Merkle caps. Measured 2026-10-19, release, medians,
+domain points, Merkle caps. Measured 2026-10-20, release, medians,
 16-core/31\,GB, \texttt{rustc} 1.99.0:
 
 \begin{center}
@@ -255,16 +265,16 @@ domain points, Merkle caps. Measured 2026-10-19, release, medians,
 \toprule
 Workload (production query/PoW schedule) & Prove & Verify & Size \\
 \midrule
-AIR 1,024 steps & 25\,ms & 1.1\,ms & 61,581\,B \\
-AIR 8,192 steps & 77\,ms & 1.8\,ms & 92,129\,B \\
-AIR 65,536 steps & 324\,ms & 1.8\,ms & 128,889\,B \\
-AIR \textbf{1,048,576} steps & \textbf{4.65\,s} & \textbf{2.4\,ms} & \textbf{186,961\,B} \\
-FRI poly-1024 & 38\,ms & 0.8\,ms & 33,382\,B \\
+AIR 1,024 steps & 35\,ms & 1.2\,ms & 71,373\,B \\
+AIR 8,192 steps & 107\,ms & 1.6\,ms & 104,033\,B \\
+AIR 65,536 steps & 304\,ms & 2.0\,ms & 144,441\,B \\
+AIR \textbf{1,048,576} steps & \textbf{4.98\,s} & \textbf{2.6\,ms} & \textbf{206,353\,B} \\
+FRI poly-1024 & 62\,ms & 0.9\,ms & 43,174\,B \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Marginal cost $\approx 4.4\,\mu$s/step ($\approx 226$k steps/s);
+Marginal cost $\approx 4.75\,\mu$s/step ($\approx 210$k steps/s);
 proof sizes are deterministic and asserted byte-for-byte every run.
 Verification is size-independent: each FRI domain point is derived on
 demand in $O(\log)$ field operations rather than from a materialized

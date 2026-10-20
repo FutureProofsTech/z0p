@@ -52,6 +52,7 @@
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};
+use crate::ext4::Ext4;
 use crate::fri::{self, Commitment as FriCommitment, Proof as FriProof};
 use crate::merkle::MerkleTree;
 use crate::ntt::{evaluate, evaluate_on_coset, interpolate};
@@ -78,11 +79,11 @@ pub struct Params {
     /// Number of fold rounds in the query (1 to [`MAX_FOLDS`]).
     pub folds: usize,
     /// Per-depth fold challenges (only `folds` entries are read).
-    pub challenges: [[Field; 3]; MAX_FOLDS],
+    pub challenges: [[Ext4; 3]; MAX_FOLDS],
     /// Layer-0 quad values opened at `leaf & !3`.
-    pub initial: [Field; 4],
+    pub initial: [Ext4; 4],
     /// Claimed final folded value (`final_poly[leaf >> 2*folds]`).
-    pub output: Field,
+    pub output: Ext4,
     /// Trace LDE blowup (power of two, `>= 4`; rate `< 1/2`).
     pub blowup: usize,
     /// FRI query count (`>= 1`).
@@ -108,9 +109,9 @@ impl Params {
         lde_len: usize,
         leaf: usize,
         folds: usize,
-        challenges: &[[Field; 3]],
-        initial: [Field; 4],
-        output: Field,
+        challenges: &[[Ext4; 3]],
+        initial: [Ext4; 4],
+        output: Ext4,
         blowup: usize,
         num_queries: usize,
         final_size: usize,
@@ -120,7 +121,7 @@ impl Params {
                 reason: "one fold challenge triple per fold depth",
             });
         }
-        let mut fixed = [[Field::ZERO; 3]; MAX_FOLDS];
+        let mut fixed = [[Ext4::ZERO; 3]; MAX_FOLDS];
         for (slot, challenge) in fixed.iter_mut().zip(challenges) {
             *slot = *challenge;
         }
@@ -165,9 +166,9 @@ impl Params {
         lde_len: usize,
         leaf: usize,
         folds: usize,
-        challenges: &[[Field; 3]],
-        initial: [Field; 4],
-        output: Field,
+        challenges: &[[Ext4; 3]],
+        initial: [Ext4; 4],
+        output: Ext4,
         target_bits: u32,
     ) -> Result<Self> {
         let blowup = 16;
@@ -180,7 +181,7 @@ impl Params {
         }
         let millibits = fri::composition_millibits(lde, 4 * n - 5);
         let (num_queries, grinding_bits) = fri::tune_strength(target_bits, millibits);
-        let (final_size, cap_height) = fri::tune_shape(lde, num_queries, &[(lde, 8 + 4 * COLS)]);
+        let (final_size, cap_height) = fri::tune_shape(lde, num_queries, &[(lde, 8 + 16 * COLS)]);
         Ok(Self::new(
             lde_len,
             leaf,
@@ -285,9 +286,9 @@ pub struct Opening {
     /// Natural-order LDE index.
     pub index: usize,
     /// Quad values and folded output at `index`.
-    pub values: [Field; COLS],
+    pub values: [Ext4; COLS],
     /// Quad values and folded output at the shifted index.
-    pub next: [Field; COLS],
+    pub next: [Ext4; COLS],
     /// Merkle path of the joint row at `index`.
     pub path: Vec<([u8; 32], bool)>,
     /// Merkle path of the joint row at the shifted index.
@@ -322,10 +323,10 @@ impl Proof {
         for opening in &self.openings {
             writer.u64_le(opening.index as u64);
             for value in &opening.values {
-                writer.field(*value);
+                writer.ext4(*value);
             }
             for value in &opening.next {
-                writer.field(*value);
+                writer.ext4(*value);
             }
             writer.path(&opening.path);
             writer.path(&opening.shift_path);
@@ -351,18 +352,18 @@ impl Proof {
             openings.push(Opening {
                 index: reader.dimension()?,
                 values: [
-                    reader.field()?,
-                    reader.field()?,
-                    reader.field()?,
-                    reader.field()?,
-                    reader.field()?,
+                    reader.ext4()?,
+                    reader.ext4()?,
+                    reader.ext4()?,
+                    reader.ext4()?,
+                    reader.ext4()?,
                 ],
                 next: [
-                    reader.field()?,
-                    reader.field()?,
-                    reader.field()?,
-                    reader.field()?,
-                    reader.field()?,
+                    reader.ext4()?,
+                    reader.ext4()?,
+                    reader.ext4()?,
+                    reader.ext4()?,
+                    reader.ext4()?,
                 ],
                 path: reader.path()?,
                 shift_path: reader.path()?,
@@ -389,31 +390,31 @@ impl Proof {
 /// # Errors
 /// Returns [`Error::MalformedInput`] when the witness length does not match
 /// `folds`, otherwise the structural errors of the domain setup.
-pub fn prove(params: Params, quads: &[[Field; 4]], transcript: &mut Transcript) -> Result<Proof> {
+pub fn prove(params: Params, quads: &[[Ext4; 4]], transcript: &mut Transcript) -> Result<Proof> {
     params.validate()?;
     let n = params.n_rows();
     let unit = Field::two_adic_generator(2)?;
     let rows = trace_columns(&params, quads, unit)?;
-    let mut columns: [Vec<Field>; COLS] = std::array::from_fn(|_| Vec::with_capacity(n));
+    let mut columns: [Vec<Ext4>; COLS] = std::array::from_fn(|_| Vec::with_capacity(n));
     for row in &rows {
         for (slot, value) in columns.iter_mut().zip(row) {
             slot.push(*value);
         }
     }
-    let mut lde_columns: [Vec<Field>; COLS] = std::array::from_fn(|_| Vec::new());
+    let mut lde_columns: [Vec<Ext4>; COLS] = std::array::from_fn(|_| Vec::new());
     for (slot, column) in lde_columns.iter_mut().zip(&columns) {
-        let coeffs = interpolate(column)?;
-        *slot = evaluate_on_coset(&coeffs, params.blowup, fri::LDE_SHIFT)?;
+        let coeffs = interpolate_ext(column)?;
+        *slot = evaluate_on_coset_ext(&coeffs, params.blowup, fri::LDE_SHIFT)?;
     }
     let m = n * params.blowup;
     let offset = params.blowup;
 
     absorb_params(&params, transcript);
     // One joint tree over interleaved rows: a single path opens a whole row.
-    let row_len = 4 * COLS;
+    let row_len = 16 * COLS;
     let mut flat = vec![0u8; m * row_len];
     for (i, chunk) in flat.chunks_exact_mut(row_len).enumerate() {
-        for (lde, slot) in lde_columns.iter().zip(chunk.chunks_exact_mut(4)) {
+        for (lde, slot) in lde_columns.iter().zip(chunk.chunks_exact_mut(16)) {
             slot.copy_from_slice(&lde[i].to_le_bytes());
         }
     }
@@ -422,9 +423,9 @@ pub fn prove(params: Params, quads: &[[Field; 4]], transcript: &mut Transcript) 
     let column_cap = tree.cap(drop);
     transcript.absorb(b"rec/trace", &crate::merkle::cap_bytes(&column_cap));
 
-    let mut alphas = [Field::ZERO; ALPHAS];
+    let mut alphas = [Ext4::ZERO; ALPHAS];
     for slot in &mut alphas {
-        *slot = transcript.challenge_bb(b"rec/alpha");
+        *slot = transcript.challenge_ext(b"rec/alpha");
     }
 
     let invs = inv_values(&params)?;
@@ -443,7 +444,7 @@ pub fn prove(params: Params, quads: &[[Field; 4]], transcript: &mut Transcript) 
         unit,
         &alphas,
     );
-    let fri_state = fri::commit_evals(
+    let fri_state = fri::commit_ext_evals(
         &composition,
         params.composition_degree_bound(),
         params.fri_params()?,
@@ -515,9 +516,9 @@ pub fn verify(params: Params, proof: &Proof, transcript: &mut Transcript) -> Res
         return Err(Error::FriVerificationFailed);
     }
     transcript.absorb(b"rec/trace", &crate::merkle::cap_bytes(&proof.column_cap));
-    let mut alphas = [Field::ZERO; ALPHAS];
+    let mut alphas = [Ext4::ZERO; ALPHAS];
     for slot in &mut alphas {
-        *slot = transcript.challenge_bb(b"rec/alpha");
+        *slot = transcript.challenge_ext(b"rec/alpha");
     }
 
     let fri_indices = fri::verify(
@@ -557,8 +558,8 @@ pub fn verify(params: Params, proof: &Proof, transcript: &mut Transcript) -> Res
         {
             return Err(Error::BadMerklePath);
         }
-        let mut row = [0u8; 4 * COLS];
-        for (slot, value) in row.chunks_exact_mut(4).zip(&opening.values) {
+        let mut row = [0u8; 16 * COLS];
+        for (slot, value) in row.chunks_exact_mut(16).zip(&opening.values) {
             slot.copy_from_slice(&value.to_le_bytes());
         }
         let entry = proof
@@ -569,8 +570,8 @@ pub fn verify(params: Params, proof: &Proof, transcript: &mut Transcript) -> Res
             return Err(Error::BadMerklePath);
         }
         let shifted = (index + offset) % m;
-        let mut shift_row = [0u8; 4 * COLS];
-        for (slot, value) in shift_row.chunks_exact_mut(4).zip(&opening.next) {
+        let mut shift_row = [0u8; 16 * COLS];
+        for (slot, value) in shift_row.chunks_exact_mut(16).zip(&opening.next) {
             slot.copy_from_slice(&value.to_le_bytes());
         }
         let shift_entry = proof
@@ -632,7 +633,7 @@ fn absorb_params(params: &Params, transcript: &mut Transcript) {
 /// Public per-row data in coefficient form (all degree `< n`).
 struct Public {
     inv: Vec<Field>,
-    challenges: [Vec<Field>; 3],
+    challenges: [Vec<Ext4>; 3],
     selectors: [Vec<Field>; 4],
     last: Vec<Field>,
 }
@@ -663,7 +664,7 @@ fn inv_values(params: &Params) -> Result<Vec<Field>> {
 /// last real row and padding; the output boundary reads that row directly).
 fn public_polys(params: &Params, inv_values: &[Field]) -> Result<Public> {
     let n = params.n_rows();
-    let mut challenges: [Vec<Field>; 3] = std::array::from_fn(|_| Vec::with_capacity(n));
+    let mut challenges: [Vec<Ext4>; 3] = std::array::from_fn(|_| Vec::with_capacity(n));
     let mut selectors: [Vec<Field>; 4] = std::array::from_fn(|_| Vec::with_capacity(n));
     let mut last = Vec::with_capacity(n);
     for depth in 0..n {
@@ -672,7 +673,7 @@ fn public_polys(params: &Params, inv_values: &[Field]) -> Result<Public> {
             values.push(if active {
                 params.challenges[depth][i]
             } else {
-                Field::ZERO
+                Ext4::ZERO
             });
         }
         let selected = if depth + 1 < params.folds {
@@ -696,9 +697,9 @@ fn public_polys(params: &Params, inv_values: &[Field]) -> Result<Public> {
     Ok(Public {
         inv: interpolate(inv_values)?,
         challenges: [
-            interpolate(&challenges[0])?,
-            interpolate(&challenges[1])?,
-            interpolate(&challenges[2])?,
+            interpolate_ext(&challenges[0])?,
+            interpolate_ext(&challenges[1])?,
+            interpolate_ext(&challenges[2])?,
         ],
         selectors: [
             interpolate(&selectors[0])?,
@@ -712,7 +713,7 @@ fn public_polys(params: &Params, inv_values: &[Field]) -> Result<Public> {
 
 /// Witness rows: the opened quads, their fold outputs, and a consistent
 /// padding that keeps every row-local transition identity satisfied.
-fn trace_columns(params: &Params, quads: &[[Field; 4]], unit: Field) -> Result<Vec<[Field; COLS]>> {
+fn trace_columns(params: &Params, quads: &[[Ext4; 4]], unit: Field) -> Result<Vec<[Ext4; COLS]>> {
     if quads.len() != params.folds {
         return Err(Error::MalformedInput {
             reason: "witness must hold one quad per fold",
@@ -721,7 +722,7 @@ fn trace_columns(params: &Params, quads: &[[Field; 4]], unit: Field) -> Result<V
     let n = params.n_rows();
     let invs = inv_values(params)?;
     let mut rows = Vec::with_capacity(n);
-    let mut last = Field::ZERO;
+    let mut last = Ext4::ZERO;
     for (depth, quad) in quads.iter().enumerate() {
         let out = fri::fold_values(*quad, invs[depth], params.challenges[depth], unit);
         rows.push([quad[0], quad[1], quad[2], quad[3], out]);
@@ -740,23 +741,23 @@ fn trace_columns(params: &Params, quads: &[[Field; 4]], unit: Field) -> Result<V
 /// in index space), never a separate witness column.
 #[allow(clippy::too_many_arguments)]
 fn compose(
-    lde: &[Vec<Field>; COLS],
+    lde: &[Vec<Ext4>; COLS],
     points: &[Field],
     public: &Public,
-    initial: [Field; 4],
-    output: Field,
+    initial: [Ext4; 4],
+    output: Ext4,
     n: usize,
     offset: usize,
     w_last: Field,
     unit: Field,
-    alphas: &[Field; ALPHAS],
-) -> Vec<Field> {
+    alphas: &[Ext4; ALPHAS],
+) -> Vec<Ext4> {
     let m = lde[0].len();
     let mut composition = Vec::with_capacity(m);
     for (i, &point) in points.iter().enumerate() {
         let shifted = (i + offset) % m;
-        let values: [Field; COLS] = std::array::from_fn(|j| lde[j][i]);
-        let next: [Field; COLS] = std::array::from_fn(|j| lde[j][shifted]);
+        let values: [Ext4; COLS] = std::array::from_fn(|j| lde[j][i]);
+        let next: [Ext4; COLS] = std::array::from_fn(|j| lde[j][shifted]);
         composition.push(composition_at(
             values, next, point, public, initial, output, n, w_last, unit, alphas,
         ));
@@ -770,22 +771,22 @@ fn compose(
 /// identity is bit-identical on both sides.
 #[allow(clippy::too_many_arguments)]
 fn composition_at(
-    values: [Field; COLS],
-    next: [Field; COLS],
+    values: [Ext4; COLS],
+    next: [Ext4; COLS],
     point: Field,
     public: &Public,
-    initial: [Field; 4],
-    output: Field,
+    initial: [Ext4; 4],
+    output: Ext4,
     n: usize,
     w_last: Field,
     unit: Field,
-    alphas: &[Field; ALPHAS],
-) -> Field {
+    alphas: &[Ext4; ALPHAS],
+) -> Ext4 {
     let inv = evaluate(&public.inv, point);
     let challenges = [
-        evaluate(&public.challenges[0], point),
-        evaluate(&public.challenges[1], point),
-        evaluate(&public.challenges[2], point),
+        evaluate_ext(&public.challenges[0], point),
+        evaluate_ext(&public.challenges[1], point),
+        evaluate_ext(&public.challenges[2], point),
     ];
     let last = evaluate(&public.last, point);
     let vanishing = point.pow(n as u64) - Field::ONE;
@@ -799,21 +800,66 @@ fn composition_at(
             unit,
         );
     // Chain link: the next quad's selected element is this row's output.
-    let mut selected = Field::ZERO;
+    let mut selected = Ext4::ZERO;
     for (j, selector) in public.selectors.iter().enumerate() {
-        selected += evaluate(selector, point) * next[j];
+        selected += Ext4::from_base(evaluate(selector, point)) * next[j];
     }
     let chain = values[4] - selected;
     // Transition divisor `(x^n - 1)/(x - w_last)` (last base row exempt).
     let z_chain = vanishing * (point - w_last).inv();
     let inv_x1 = (point - Field::ONE).inv();
-    let mut acc = alphas[0] * fold * inv_vanishing
-        + alphas[1] * chain * z_chain.inv()
-        + alphas[6] * last * (values[4] - output) * inv_vanishing;
+    let mut acc = alphas[0] * fold * Ext4::from_base(inv_vanishing)
+        + alphas[1] * chain * Ext4::from_base(z_chain.inv())
+        + alphas[6] * Ext4::from_base(last) * (values[4] - output) * Ext4::from_base(inv_vanishing);
     for (j, slot) in alphas[2..6].iter().enumerate() {
-        acc += *slot * (values[j] - initial[j]) * inv_x1;
+        acc += *slot * (values[j] - initial[j]) * Ext4::from_base(inv_x1);
     }
     acc
+}
+
+/// Interpolate extension-field evaluations coordinate-wise.
+fn interpolate_ext(values: &[Ext4]) -> Result<Vec<Ext4>> {
+    let mut polys: [Vec<Field>; 4] = std::array::from_fn(|_| Vec::new());
+    for (coordinate, poly) in polys.iter_mut().enumerate() {
+        let values: Vec<Field> = values
+            .iter()
+            .map(|value| value.coordinates()[coordinate])
+            .collect();
+        *poly = interpolate(&values)?;
+    }
+    let len = polys[0].len();
+    Ok((0..len)
+        .map(|i| Ext4::new(polys[0][i], polys[1][i], polys[2][i], polys[3][i]))
+        .collect())
+}
+
+/// Evaluate extension-field coefficients at a base-field point.
+fn evaluate_ext(coeffs: &[Ext4], point: Field) -> Ext4 {
+    let point = Ext4::from_base(point);
+    let mut acc = Ext4::ZERO;
+    for &coeff in coeffs.iter().rev() {
+        acc = acc * point + coeff;
+    }
+    acc
+}
+
+/// Evaluate extension-field coefficients on the base-field coset.
+fn evaluate_on_coset_ext(coeffs: &[Ext4], blowup: usize, shift: Field) -> Result<Vec<Ext4>> {
+    let mut coordinates = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    for (coordinate, slot) in coordinates.iter_mut().enumerate() {
+        let values: Vec<Field> = coeffs.iter().map(|c| c.coordinates()[coordinate]).collect();
+        *slot = evaluate_on_coset(&values, blowup, shift)?;
+    }
+    Ok((0..coordinates[0].len())
+        .map(|i| {
+            Ext4::new(
+                coordinates[0][i],
+                coordinates[1][i],
+                coordinates[2][i],
+                coordinates[3][i],
+            )
+        })
+        .collect())
 }
 
 /// Natural-order coset points `SHIFT * omega_m^i` (mirrors `air`).
@@ -848,7 +894,7 @@ mod tests {
     use super::*;
 
     /// Run a real FRI commit/open and return one query's fold data.
-    fn outer_query(coeffs: &[Field]) -> (usize, usize, Vec<[Field; 4]>, Vec<[Field; 3]>, Field) {
+    fn outer_query(coeffs: &[Field]) -> (usize, usize, Vec<[Ext4; 4]>, Vec<[Ext4; 3]>, Ext4) {
         let fri_params = fri::Params::new(4, 3, 4).unwrap();
         let mut prover_t = Transcript::new(b"rec-outer");
         let state = fri::commit(coeffs, fri_params, &mut prover_t).unwrap();
@@ -858,7 +904,7 @@ mod tests {
         fri::verify(&commitment, &proof, fri_params, &mut verifier_t).unwrap();
         let leaf = indices[0];
         let folds = proof.queries[0].folds.len();
-        let quads: Vec<[Field; 4]> = proof.queries[0].folds.iter().map(|f| f.values).collect();
+        let quads: Vec<[Ext4; 4]> = proof.queries[0].folds.iter().map(|f| f.values).collect();
         let output = proof.final_poly[leaf >> (2 * folds)];
         (
             state.lde_len,
@@ -872,9 +918,9 @@ mod tests {
     fn test_params(
         lde_len: usize,
         leaf: usize,
-        quads: &[[Field; 4]],
-        challenges: &[[Field; 3]],
-        output: Field,
+        quads: &[[Ext4; 4]],
+        challenges: &[[Ext4; 3]],
+        output: Ext4,
     ) -> Params {
         // Trace length is `8 * n_rows`; the final size must keep the layer
         // ratio a power of four (`n_rows = 2^k`, so parity decides).
@@ -894,7 +940,7 @@ mod tests {
         .unwrap()
     }
 
-    fn roundtrip(params: &Params, quads: &[[Field; 4]]) -> Proof {
+    fn roundtrip(params: &Params, quads: &[[Ext4; 4]]) -> Proof {
         let mut prover_t = Transcript::new(b"rec-inner");
         let proof = prove(*params, quads, &mut prover_t).unwrap();
         let mut verifier_t = Transcript::new(b"rec-inner");
@@ -904,24 +950,24 @@ mod tests {
 
     #[test]
     fn rejects_bad_params() {
-        let challenges = [[Field::ONE; 3]; 2];
-        assert!(Params::new(64, 0, 0, &[], [Field::ONE; 4], Field::ONE, 8, 8, 4).is_err());
+        let challenges = [[Ext4::ONE; 3]; 2];
+        assert!(Params::new(64, 0, 0, &[], [Ext4::ONE; 4], Ext4::ONE, 8, 8, 4).is_err());
         assert!(Params::new(
             64,
             0,
             2,
             &challenges[..1],
-            [Field::ONE; 4],
-            Field::ONE,
+            [Ext4::ONE; 4],
+            Ext4::ONE,
             8,
             8,
             4
         )
         .is_err());
-        assert!(Params::new(64, 64, 2, &challenges, [Field::ONE; 4], Field::ONE, 8, 8, 4).is_err());
-        assert!(Params::new(8, 0, 2, &challenges, [Field::ONE; 4], Field::ONE, 8, 8, 4).is_err());
-        assert!(Params::new(64, 0, 2, &challenges, [Field::ONE; 4], Field::ONE, 2, 8, 4).is_err());
-        assert!(Params::new(64, 0, 2, &challenges, [Field::ONE; 4], Field::ONE, 8, 0, 4).is_err());
+        assert!(Params::new(64, 64, 2, &challenges, [Ext4::ONE; 4], Ext4::ONE, 8, 8, 4).is_err());
+        assert!(Params::new(8, 0, 2, &challenges, [Ext4::ONE; 4], Ext4::ONE, 8, 8, 4).is_err());
+        assert!(Params::new(64, 0, 2, &challenges, [Ext4::ONE; 4], Ext4::ONE, 2, 8, 4).is_err());
+        assert!(Params::new(64, 0, 2, &challenges, [Ext4::ONE; 4], Ext4::ONE, 8, 0, 4).is_err());
     }
 
     #[test]
@@ -950,7 +996,7 @@ mod tests {
     fn wrong_output_rejected() {
         let coeffs: Vec<Field> = (0..16u32).map(|i| Field::new(i * 7 + 3)).collect();
         let (lde_len, leaf, quads, challenges, output) = outer_query(&coeffs);
-        let params = test_params(lde_len, leaf, &quads, &challenges, output + Field::ONE);
+        let params = test_params(lde_len, leaf, &quads, &challenges, output + Ext4::ONE);
         let mut prover_t = Transcript::new(b"rec-inner");
         let proof = prove(params, &quads, &mut prover_t).unwrap();
         let mut verifier_t = Transcript::new(b"rec-inner");
@@ -963,7 +1009,7 @@ mod tests {
         let (lde_len, leaf, quads, challenges, output) = outer_query(&coeffs);
         let mut quads = quads;
         let selected = (leaf >> 2) & 3;
-        quads[1][selected] += Field::ONE;
+        quads[1][selected] += Ext4::ONE;
         let params = test_params(lde_len, leaf, &quads, &challenges, output);
         let mut prover_t = Transcript::new(b"rec-inner");
         let proof = prove(params, &quads, &mut prover_t).unwrap();
@@ -977,7 +1023,7 @@ mod tests {
         let (lde_len, leaf, quads, challenges, output) = outer_query(&coeffs);
         let params = test_params(lde_len, leaf, &quads, &challenges, output);
         let mut proof = roundtrip(&params, &quads);
-        proof.openings[0].values[0] += Field::ONE;
+        proof.openings[0].values[0] += Ext4::ONE;
         let mut verifier_t = Transcript::new(b"rec-inner");
         assert!(verify(params, &proof, &mut verifier_t).is_err());
     }
@@ -991,8 +1037,8 @@ mod tests {
             let mut proof = roundtrip(&params, &quads);
             let opening = &mut proof.openings[0];
             match tamper {
-                0 => opening.next[4] += Field::ONE,
-                1 => opening.next[0] += Field::ONE,
+                0 => opening.next[4] += Ext4::ONE,
+                1 => opening.next[0] += Ext4::ONE,
                 2 => {
                     let last = opening.shift_path.len() - 1;
                     opening.shift_path[last].1 = !opening.shift_path[last].1;
@@ -1049,7 +1095,7 @@ mod tests {
         let params = test_params(lde_len, leaf, &quads, &challenges, output);
         let proof = roundtrip(&params, &quads);
         let mut wrong_output = params;
-        wrong_output.output += Field::ONE;
+        wrong_output.output += Ext4::ONE;
         let mut verifier_t = Transcript::new(b"rec-inner");
         assert!(verify(wrong_output, &proof, &mut verifier_t).is_err());
         let mut wrong_leaf = params;
@@ -1066,28 +1112,28 @@ mod tests {
         let n = params.n_rows();
         let unit = Field::two_adic_generator(2).unwrap();
         let rows = trace_columns(&params, &quads, unit).unwrap();
-        let mut columns: [Vec<Field>; COLS] = std::array::from_fn(|_| Vec::with_capacity(n));
+        let mut columns: [Vec<Ext4>; COLS] = std::array::from_fn(|_| Vec::with_capacity(n));
         for row in &rows {
             for (slot, value) in columns.iter_mut().zip(row) {
                 slot.push(*value);
             }
         }
-        let mut lde: [Vec<Field>; COLS] = std::array::from_fn(|_| Vec::new());
+        let mut lde: [Vec<Ext4>; COLS] = std::array::from_fn(|_| Vec::new());
         for (slot, column) in lde.iter_mut().zip(&columns) {
-            let coeffs = interpolate(column).unwrap();
-            *slot = evaluate_on_coset(&coeffs, params.blowup, fri::LDE_SHIFT).unwrap();
+            let coeffs = interpolate_ext(column).unwrap();
+            *slot = evaluate_on_coset_ext(&coeffs, params.blowup, fri::LDE_SHIFT).unwrap();
         }
         let public = public_polys(&params, &inv_values(&params).unwrap()).unwrap();
         let points = lde_points(n * params.blowup).unwrap();
         let w_last = Field::primitive_root(n).unwrap().pow((n - 1) as u64);
         let alphas = [
-            Field::new(11),
-            Field::new(13),
-            Field::new(17),
-            Field::new(19),
-            Field::new(23),
-            Field::new(29),
-            Field::new(31),
+            Ext4::from_base(Field::new(11)),
+            Ext4::from_base(Field::new(13)),
+            Ext4::from_base(Field::new(17)),
+            Ext4::from_base(Field::new(19)),
+            Ext4::from_base(Field::new(23)),
+            Ext4::from_base(Field::new(29)),
+            Ext4::from_base(Field::new(31)),
         ];
         let composition = compose(
             &lde,
@@ -1101,9 +1147,9 @@ mod tests {
             unit,
             &alphas,
         );
-        let coeffs = interpolate(&composition).unwrap();
+        let coeffs = interpolate_ext(&composition).unwrap();
         assert!(coeffs[params.composition_degree_bound() + 1..]
             .iter()
-            .all(|c| *c == Field::ZERO));
+            .all(|c| *c == Ext4::ZERO));
     }
 }

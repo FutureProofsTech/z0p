@@ -20,6 +20,7 @@
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};
+use crate::ext4::Ext4;
 use crate::fri::{self, Commitment as FriCommitment, Proof as FriProof};
 use crate::merkle::MerkleTree;
 use crate::ntt::{evaluate_on_coset, interpolate};
@@ -443,11 +444,11 @@ fn prove_from_coeffs(
     transcript.absorb(b"fib/trace", &crate::merkle::cap_bytes(&column_cap));
 
     let alphas = [
-        transcript.challenge_bb(b"fib/alpha"),
-        transcript.challenge_bb(b"fib/alpha"),
-        transcript.challenge_bb(b"fib/alpha"),
-        transcript.challenge_bb(b"fib/alpha"),
-        transcript.challenge_bb(b"fib/alpha"),
+        transcript.challenge_ext(b"fib/alpha"),
+        transcript.challenge_ext(b"fib/alpha"),
+        transcript.challenge_ext(b"fib/alpha"),
+        transcript.challenge_ext(b"fib/alpha"),
+        transcript.challenge_ext(b"fib/alpha"),
     ];
 
     let points = lde_points(m)?;
@@ -467,7 +468,7 @@ fn prove_from_coeffs(
     // Declared degree bound comes from the caller: `< N` plain, higher
     // with masking (rate stays `< 1` either way).
     let fri_params = params.fri_params()?;
-    let fri_state = fri::commit_evals(&composition, degree_bound, fri_params, transcript)?;
+    let fri_state = fri::commit_ext_evals(&composition, degree_bound, fri_params, transcript)?;
     let fri_commitment = fri::public_commitment(&fri_state);
     let (fri_proof, fri_indices) = fri::open(&fri_state, transcript)?;
 
@@ -539,11 +540,11 @@ pub fn verify(params: Params, proof: &Proof, transcript: &mut Transcript) -> Res
     }
     transcript.absorb(b"fib/trace", &crate::merkle::cap_bytes(&proof.column_cap));
     let alphas = [
-        transcript.challenge_bb(b"fib/alpha"),
-        transcript.challenge_bb(b"fib/alpha"),
-        transcript.challenge_bb(b"fib/alpha"),
-        transcript.challenge_bb(b"fib/alpha"),
-        transcript.challenge_bb(b"fib/alpha"),
+        transcript.challenge_ext(b"fib/alpha"),
+        transcript.challenge_ext(b"fib/alpha"),
+        transcript.challenge_ext(b"fib/alpha"),
+        transcript.challenge_ext(b"fib/alpha"),
+        transcript.challenge_ext(b"fib/alpha"),
     ];
 
     let fri_params = params.fri_params()?;
@@ -688,8 +689,8 @@ fn compose(
     b_last: Field,
     n: usize,
     offset: usize,
-    alphas: &[Field; 5],
-) -> Vec<Field> {
+    alphas: &[Ext4; 5],
+) -> Vec<Ext4> {
     let m = cols[0].len();
     let shifted = |j: usize, i: usize| cols[j][(i + offset) % m];
     if points.len() < 2 {
@@ -716,7 +717,7 @@ fn compose(
     // `points[i]^n = P0 * RATIO^i` exactly (no 64-step pow per element).
     let p0 = points[0].pow(n as u64);
     let ratio = (points[1] * points[0].inv()).pow(n as u64);
-    let mut out = vec![Field::ZERO; points.len()];
+    let mut out = vec![Ext4::ZERO; points.len()];
     crate::par::for_each_indexed(&mut out, 2048, |base, piece| {
         // Chunk denominators, inverted in two Montgomery batches (one
         // inversion per batch; zeros map to zero exactly like the
@@ -748,11 +749,11 @@ fn compose(
             let bound_a = (cols[0][i] - a0) * inv_b[j];
             let bound_b = (cols[1][i] - b0) * inv_b[j];
             let bound_out = (cols[1][i] - b_last) * inv_a[j];
-            *slot = alphas[0] * trans1
-                + alphas[1] * trans2
-                + alphas[2] * bound_a
-                + alphas[3] * bound_b
-                + alphas[4] * bound_out;
+            *slot = alphas[0].mul_base(trans1)
+                + alphas[1].mul_base(trans2)
+                + alphas[2].mul_base(bound_a)
+                + alphas[3].mul_base(bound_b)
+                + alphas[4].mul_base(bound_out);
         }
     });
     out
@@ -774,8 +775,8 @@ fn composition_at(
     b0: Field,
     b_last: Field,
     n: usize,
-    alphas: &[Field; 5],
-) -> Field {
+    alphas: &[Ext4; 5],
+) -> Ext4 {
     // Transition vanishing: zero on every base row except the last.
     let vanishing = point.pow(n as u64) - Field::ONE;
     let z_trans = vanishing * (point - w_last).inv();
@@ -784,11 +785,11 @@ fn composition_at(
     let bound_a = (cols[0] - a0) * (point - Field::ONE).inv();
     let bound_b = (cols[1] - b0) * (point - Field::ONE).inv();
     let bound_out = (cols[1] - b_last) * (point - w_last).inv();
-    alphas[0] * trans1
-        + alphas[1] * trans2
-        + alphas[2] * bound_a
-        + alphas[3] * bound_b
-        + alphas[4] * bound_out
+    alphas[0].mul_base(trans1)
+        + alphas[1].mul_base(trans2)
+        + alphas[2].mul_base(bound_a)
+        + alphas[3].mul_base(bound_b)
+        + alphas[4].mul_base(bound_out)
 }
 
 fn bit_reverse_index(mut x: usize, bits: u32) -> usize {
@@ -990,11 +991,11 @@ mod tests {
         cols[0][0] = Field::ZERO;
         let offset = 5; // not a divisor of `m`: wrap-around is exercised
         let alphas = [
-            Field::ONE,
-            Field::TWO,
-            Field::new(3),
-            Field::new(4),
-            Field::new(5),
+            Ext4::ONE,
+            Ext4::from_base(Field::TWO),
+            Ext4::from_base(Field::new(3)),
+            Ext4::from_base(Field::new(4)),
+            Ext4::from_base(Field::new(5)),
         ];
         let batched = compose(
             &cols,
@@ -1007,7 +1008,7 @@ mod tests {
             offset,
             &alphas,
         );
-        let scalar: Vec<Field> = (0..m)
+        let scalar: Vec<Ext4> = (0..m)
             .map(|i| {
                 composition_at(
                     [cols[0][i], cols[1][i]],

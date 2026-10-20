@@ -14,10 +14,11 @@
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};
+use crate::ext4::Ext4;
 
 /// Encoding version. Bump on any format change; old proofs then fail
 /// loudly instead of misparsing.
-pub(crate) const VERSION: u8 = 1;
+pub(crate) const VERSION: u8 = 2;
 
 /// Maximum query/opening count (matches the tuner ceiling).
 pub(crate) const MAX_QUERIES: u32 = 1 << 20;
@@ -75,6 +76,11 @@ impl Writer {
 
     /// Append a field element (4 canonical bytes).
     pub(crate) fn field(&mut self, value: Field) {
+        self.bytes(&value.to_le_bytes());
+    }
+
+    /// Append an extension-field element (16 canonical bytes).
+    pub(crate) fn ext4(&mut self, value: Ext4) {
         self.bytes(&value.to_le_bytes());
     }
 
@@ -192,6 +198,16 @@ impl<'a> Reader<'a> {
             });
         }
         Ok(Field::new_unchecked(value))
+    }
+
+    /// Read a canonical extension-field element (four checked coordinates).
+    pub(crate) fn ext4(&mut self) -> Result<Ext4> {
+        Ok(Ext4::new(
+            self.field()?,
+            self.field()?,
+            self.field()?,
+            self.field()?,
+        ))
     }
 
     /// Read a Merkle direction bit (rejects anything but `0`/`1`).

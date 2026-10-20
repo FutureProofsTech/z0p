@@ -17,6 +17,7 @@
 
 use crate::babybear::Field;
 use crate::error::{Error, Result};
+use crate::ext4::Ext4;
 use crate::fri::{self, Commitment as FriCommitment, Proof as FriProof};
 use crate::merkle::MerkleTree;
 use crate::ntt::{evaluate_on_coset, interpolate};
@@ -371,8 +372,8 @@ fn prove_from_coeffs(
     let column_cap = tree.cap(drop);
     transcript.absorb(b"table/column", &crate::merkle::cap_bytes(&column_cap));
 
-    let alpha_member = transcript.challenge_bb(b"table/alpha");
-    let alpha_bound = transcript.challenge_bb(b"table/alpha");
+    let alpha_member = transcript.challenge_ext(b"table/alpha");
+    let alpha_bound = transcript.challenge_ext(b"table/alpha");
 
     let points = lde_points(m)?;
     let composition = compose(
@@ -386,7 +387,7 @@ fn prove_from_coeffs(
     );
 
     let fri_params = params.fri_params()?;
-    let fri_state = fri::commit_evals(&composition, degree_bound, fri_params, transcript)?;
+    let fri_state = fri::commit_ext_evals(&composition, degree_bound, fri_params, transcript)?;
     let fri_commitment = fri::public_commitment(&fri_state);
     let (fri_proof, fri_indices) = fri::open(&fri_state, transcript)?;
 
@@ -464,8 +465,8 @@ pub fn verify(
         b"table/column",
         &crate::merkle::cap_bytes(&proof.column_cap),
     );
-    let alpha_member = transcript.challenge_bb(b"table/alpha");
-    let alpha_bound = transcript.challenge_bb(b"table/alpha");
+    let alpha_member = transcript.challenge_ext(b"table/alpha");
+    let alpha_bound = transcript.challenge_ext(b"table/alpha");
 
     let fri_params = params.fri_params()?;
     let fri_indices = fri::verify(
@@ -583,9 +584,9 @@ fn compose(
     table: &[Field],
     value: Field,
     n: usize,
-    alpha_member: Field,
-    alpha_bound: Field,
-) -> Vec<Field> {
+    alpha_member: Ext4,
+    alpha_bound: Ext4,
+) -> Vec<Ext4> {
     if points.len() < 2 {
         // Degenerate (unreachable at real domain sizes): scalar fallback.
         return points
@@ -598,7 +599,7 @@ fn compose(
     }
     let p0 = points[0].pow(n as u64);
     let ratio = (points[1] * points[0].inv()).pow(n as u64);
-    let mut out = vec![Field::ZERO; points.len()];
+    let mut out = vec![Ext4::ZERO; points.len()];
     crate::par::for_each_indexed(&mut out, 2048, |base, piece| {
         let mut den_z = Vec::with_capacity(piece.len());
         let mut den_b = Vec::with_capacity(piece.len());
@@ -617,7 +618,8 @@ fn compose(
             for &entry in table {
                 product *= lde[i] - entry;
             }
-            *slot = alpha_member * product * inv_z[j] + alpha_bound * (lde[i] - value) * inv_b[j];
+            *slot = alpha_member.mul_base(product * inv_z[j])
+                + alpha_bound.mul_base((lde[i] - value) * inv_b[j]);
         }
     });
     out
@@ -631,16 +633,17 @@ fn composition_at(
     table: &[Field],
     value: Field,
     n: usize,
-    alpha_member: Field,
-    alpha_bound: Field,
-) -> Field {
+    alpha_member: Ext4,
+    alpha_bound: Ext4,
+) -> Ext4 {
     let vanishing = point.pow(n as u64) - Field::ONE;
     let z_inv = vanishing.inv();
     let mut product = Field::ONE;
     for &entry in table {
         product *= v - entry;
     }
-    alpha_member * product * z_inv + alpha_bound * (v - value) * (point - Field::ONE).inv()
+    alpha_member.mul_base(product * z_inv)
+        + alpha_bound.mul_base((v - value) * (point - Field::ONE).inv())
 }
 
 fn bit_reverse_index(mut x: usize, bits: u32) -> usize {

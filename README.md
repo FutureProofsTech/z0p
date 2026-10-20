@@ -17,15 +17,19 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
   public APIs (`Result`, never `unwrap` on public paths), documented items.
 - **Transparent setup, PQ-oriented** — BLAKE3-256 digests, FRI Reed–Solomon
   commitments over BabyBear; nothing to ceremony, nothing pairing-based.
+- **Extension-field challenges** — FRI folds and the AIR/range/table/fold
+  composition batching use `Fp4 = Fp[v,u]/(v²-u, u²-11)` over BabyBear,
+  raising the main STARK algebraic challenge entropy from ~31 bits to
+  ~124 bits. Wire format v2 stores extension values canonically (16 bytes).
 - **Production parameter sizing** — `Params::for_security(steps, …, 100)`
   sizes blowup 16, queries, grinding, final size, and cap height for a
-  ~100-bit query/proof-of-work schedule. The 31-bit base field is a
-  separate algebraic ceiling; see [Soundness](#soundness).
-- **Fast at scale** — 1,048,576-step production proof in ~4.65 s
-  (~4.4 µs/step, ~226k steps/s), verified in **~2.4 ms**, 186,961 bytes.
+  ~100-bit query/proof-of-work schedule. See [Soundness](#soundness) for
+  the remaining base-field components.
+- **Fast at scale** — 1,048,576-step production proof in ~4.98 s
+  (~4.75 µs/step, ~210k steps/s), verified in **~2.6 ms**, 206,353 bytes.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 221 unit tests plus three attack suites
+- **Adversarially tested** — 223 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -81,15 +85,15 @@ Full table with methodology: [docs/benchmarks.md](docs/benchmarks.md).
 
 | Proof (production query/PoW schedule) | Prove | Verify | Size |
 |---|---|---|---|
-| AIR Fibonacci, 1,024 steps | 25 ms | 1.1 ms | 61,581 B |
-| AIR Fibonacci, 8,192 steps | 77 ms | 1.8 ms | 92,129 B |
-| AIR Fibonacci, 65,536 steps | 324 ms | 1.8 ms | 128,889 B |
-| AIR Fibonacci, **1,048,576 steps** | **4.65 s** | **2.4 ms** | **186,961 B** |
-| FRI poly-1024 | 38 ms | 0.8 ms | 33,382 B |
+| AIR Fibonacci, 1,024 steps | 35 ms | 1.2 ms | 71,373 B |
+| AIR Fibonacci, 8,192 steps | 107 ms | 1.6 ms | 104,033 B |
+| AIR Fibonacci, 65,536 steps | 304 ms | 2.0 ms | 144,441 B |
+| AIR Fibonacci, **1,048,576 steps** | **4.98 s** | **2.6 ms** | **206,353 B** |
+| FRI poly-1024 | 62 ms | 0.9 ms | 43,174 B |
 
 | Primitive | Result |
 |---|---|
-| BLAKE3 1 MiB | 1.45 ms (~690 MB/s) |
+| BLAKE3 1 MiB | 1.37 ms (~732 MB/s) |
 | BabyBear mul | ~151 Mops/s |
 | NTT forward 2¹⁴ | 0.33 ms |
 | Merkle 65,536 leaves | 4.0 ms |
@@ -113,21 +117,22 @@ hashes and denies a forger a `2^-d` shortcut. Size the queries from the
 rate first, then top up with grinding — `for_security` does exactly this,
 plus the size-optimal final layer and Merkle cap height.
 
-**Field-size ceiling.** The totals above count query sampling and grinding,
-not finite-field algebraic error. Folding and identity checks draw
-challenges from 31-bit BabyBear; for a degree-`2^20` composition one
-challenge collides with probability roughly `2^-11`, and the union over
-folds is worse. Do not treat these parameters as a 100-bit soundness
-guarantee: until extension-field challenges (for example a BabyBear
-quartic) or repeated independent algebraic checks land, effective
-conjectured security is at most about 31 bits, and lower for high-degree or
-widely folded instances.
+**Challenge fields.** The totals above count query sampling and grinding,
+not finite-field algebraic error. FRI folding and the main STARK
+composition batches now draw challenges from the quartic extension
+`Fp4`, so the previous ~31-bit folding ceiling is removed from the
+AIR/range/table/fold path. Some components still use base-field
+challenges: `upcs`/`gemini` evaluation points and fold betas, and
+`sumcheck`/`lookup` rounds. Those paths retain a ~31-bit algebraic
+ceiling until they migrate. Do not claim end-to-end 100-bit soundness
+for them, and do not deploy any high-value system before an external
+audit.
 
 ## Security testing
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 221 tests across 21 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 223 tests across 22 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 8 vectors: hostile `Params`, decoder bit-flip fuzz, RNG uniformity | this README |
@@ -147,6 +152,7 @@ deploy for high-value statements before an external audit. See
 src/
   gf2.rs        binary fields GF(2⁸)/GF(2⁶⁴)/GF(2¹²⁸)
   babybear.rs   NTT-friendly prime field (Barrett mul, batch inversion)
+  ext4.rs       quartic extension field Fp4 over BabyBear
   hash.rs       BLAKE3-256 from spec (KAT-validated)
   transcript.rs Fiat–Shamir transcript + proof-of-work grinding
   merkle.rs     domain-separated trees, caps, capped openings
@@ -199,6 +205,10 @@ CHANGELOG.md     release history (Keep a Changelog)
   `batch_digests_match_reference`), up to ~2.6× on the Merkle primitive
   and ~11% end-to-end at 1M steps. The default build stays scalar, stable,
   and MSRV 1.74; the feature is additive with a scalar fallback.
+- **Extension-field FRI — done for the main path.** FRI folds and
+  AIR/range/table/fold composition use `Fp4` challenges; the wire format is
+  v2. Remaining extension work: PCS evaluation points, Gemini fold betas,
+  and sumcheck/lookup challenges.
 - **Recursion — fragment done.** `recursion.rs` proves one FRI query's
   fold chain as a STARK: public `(lde_len, leaf, challenges, initial quad,
   output)`, committed quads, shifted-index transition openings, FRI over

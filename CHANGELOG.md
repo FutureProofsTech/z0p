@@ -6,6 +6,25 @@ All notable changes to `z0p` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Quartic extension field `Fp4`.** `src/ext4.rs` implements the tower
+  `Fp2 = Fp[u]/(u^2 - 11)`, `Fp4 = Fp2[v]/(v^2 - u)` with canonical
+  16-byte encoding, inversion by Fermat, and transcript `absorb_ext` /
+  `challenge_ext`. FRI folds and the AIR/range/table/fold composition
+  batching now use `Fp4` challenges, raising algebraic challenge entropy
+  from ~31 bits to ~124 bits on those paths. Recursion was migrated to
+  extension-field trace/composition values as well.
+
+### Changed
+- **Wire format v2.** FRI fold values and final-layer values are now
+  `Fp4` (16 bytes); `upcs`/FRI Merkle leaves are 16-byte extension values.
+  `codec::VERSION` is `2`; v1 proofs are rejected. Small proof sizes grow
+  (for example FRI poly-256 9,170 -> 11,522 B) while the 1M-step AIR proof
+  grows 186,961 -> 206,353 B; `tools/baseline.json` was re-recorded after
+  review. The 1M-step release prove remains ~4.98 s on this box.
+- **Test count 221 -> 223.** Added `ext4` tower/roundtrip tests and the
+  extension transcript test; docs/module tables updated to 22 modules.
+
 ### Security
 - **FRI zero-grind nonce is canonical.** With grinding disabled, `open`
   emitted `pow_nonce = 0` but `verify` never checked it, so mutating only

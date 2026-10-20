@@ -1,7 +1,7 @@
 # Unit tests — breakdown
 
 `cargo test --lib` (also run with `--release` by `tools/check.py`).
-Measured: 2026-10-20 — **221 passed, 0 failed.**
+Measured: 2026-10-20 — **223 passed, 0 failed.**
 
 ## Per-module counts
 
@@ -9,6 +9,7 @@ Measured: 2026-10-20 — **221 passed, 0 failed.**
 |---|---|---|
 | `air` | 22 | honest/tampered openings, ZK masking, caps, grinding, encoding, batched compose identity, forged next-column claim, shifted-opening tamper, downgraded FRI bound |
 | `babybear` | 7 | wrap arithmetic, Barrett vs `%` (100k random + corners), inverse, two-adicity, batch inversion |
+| `ext4` | 1 | quartic tower axioms (`u²=11`, `v²=u`), inversion, base embedding/scaling, canonical encoding |
 | `blind` | 5 | masking degree/length, on-domain agreement, off-domain randomness |
 | `codec` | 2 | direction bits, capped counts, truncation, non-canonical fields, version/trailer |
 | `fold` | 15 | IVC chaining, broken chains, bad segments, caps, encoding, shifted-opening tamper, forged out_a boundary |
@@ -27,11 +28,11 @@ Measured: 2026-10-20 — **221 passed, 0 failed.**
 | `rng` | 7 | ChaCha20 vectors, determinism, key sensitivity, key-material redaction |
 | `sumcheck` | 6 | product sums, tampered rounds/finals, transcript binding, shapes |
 | `table` | 18 | membership/non-membership, claims, ZK masking, caps, bound formula, encodings, downgraded FRI bound |
-| `transcript` | 9 | determinism, domain separation, PoW roundtrips/tampering, invalid query domains, parallel-scan identity |
+| `transcript` | 10 | determinism, domain separation, extension challenges, PoW roundtrips/tampering, invalid query domains, parallel-scan identity |
 
 ## Run
 
 ```sh
 cargo test --lib              # debug
-cargo test --lib --release    # optimized (same 221, also gated)
+cargo test --lib --release    # optimized (same 223, also gated)
 ```

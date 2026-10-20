@@ -23,12 +23,6 @@ use crate::babybear::Field;
 /// Quadratic non-residue defining `F_p2 = F_p[u]/(u^2 - 11)`.
 const NONRESIDUE: Field = Field::new(11);
 
-/// Multiplicative group order `p^4 - 1`.
-const GROUP_ORDER: u128 = {
-    let p = Field::MODULUS as u128;
-    p * p * p * p - 1
-};
-
 /// Element of `F_{p^4}` as `a + b u + c v + d u v`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct Ext4([Field; 4]);
@@ -154,15 +148,23 @@ impl Ext4 {
         acc
     }
 
-    /// Multiplicative inverse via Fermat (`a^(p^4 - 2)`).
+    /// Multiplicative inverse via the tower norm.
     ///
+    /// For `x = c + d v`, `x^-1 = (c - d v) / (c^2 - u d^2)`, so inversion
+    /// costs one base inverse plus a handful of `F_p2` multiplications.
     /// Maps zero to zero, consistent with [`Field::inv`].
     #[must_use]
     pub fn inv(self) -> Self {
         if self.is_zero() {
             return Self::ZERO;
         }
-        self.pow(GROUP_ORDER - 1)
+        let c = [self.0[0], self.0[1]];
+        let d = [self.0[2], self.0[3]];
+        let norm = fp2_sub(fp2_mul(c, c), fp2_mul_u(fp2_mul(d, d)));
+        let norm_inv = fp2_inv(norm);
+        let real = fp2_mul(c, norm_inv);
+        let imag = fp2_mul(d, norm_inv);
+        Self([real[0], real[1], -imag[0], -imag[1]])
     }
 
     /// Canonical 16-byte little-endian encoding (coordinates in order).
@@ -201,6 +203,20 @@ fn fp2_mul(x: [Field; 2], y: [Field; 2]) -> [Field; 2] {
 #[inline]
 fn fp2_mul_u(x: [Field; 2]) -> [Field; 2] {
     [x[1] * NONRESIDUE, x[0]]
+}
+
+/// Subtract two `F_p2` elements.
+#[inline]
+fn fp2_sub(x: [Field; 2], y: [Field; 2]) -> [Field; 2] {
+    [x[0] - y[0], x[1] - y[1]]
+}
+
+/// Invert a nonzero `F_p2` element via its norm.
+#[inline]
+fn fp2_inv(x: [Field; 2]) -> [Field; 2] {
+    let norm = x[0] * x[0] - NONRESIDUE * x[1] * x[1];
+    let norm_inv = norm.inv();
+    [x[0] * norm_inv, -x[1] * norm_inv]
 }
 
 impl From<Field> for Ext4 {
@@ -312,6 +328,19 @@ mod tests {
         assert_eq!(a.sub(a), Ext4::ZERO);
         assert_eq!(a.mul(a.inv()), Ext4::ONE);
         assert_eq!(Ext4::ZERO.inv(), Ext4::ZERO);
+        let modulus = u128::from(Field::MODULUS);
+        let fermat_exponent = modulus * modulus * modulus * modulus - 2;
+        let mut seed = 0x5eed_1234_abcd_9876u64;
+        for _ in 0..256 {
+            let sample = Ext4::new(
+                Field::from_u64(crate::gf2::splitmix64(&mut seed)),
+                Field::from_u64(crate::gf2::splitmix64(&mut seed)),
+                Field::from_u64(crate::gf2::splitmix64(&mut seed)),
+                Field::from_u64(crate::gf2::splitmix64(&mut seed)),
+            );
+            assert_eq!(sample.mul(sample.inv()), Ext4::ONE);
+            assert_eq!(sample.inv(), sample.pow(fermat_exponent));
+        }
         assert_eq!(
             Ext4::from_base(Field::new(7)).try_to_base(),
             Some(Field::new(7))

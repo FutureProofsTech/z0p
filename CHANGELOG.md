@@ -9,7 +9,7 @@ All notable changes to `z0p` are documented here. The format follows
 ### Added
 - **Quartic extension field `Fp4`.** `src/ext4.rs` implements the tower
   `Fp2 = Fp[u]/(u^2 - 11)`, `Fp4 = Fp2[v]/(v^2 - u)` with canonical
-  16-byte encoding, inversion by Fermat, and transcript `absorb_ext` /
+  16-byte encoding, tower-norm inversion, and transcript `absorb_ext` /
   `challenge_ext`. FRI folds, the AIR/range/table/fold composition
   batching, `upcs`/Gemini points and betas, sumcheck rounds, and lookup
   challenges now use `Fp4`, raising algebraic challenge entropy from
@@ -30,6 +30,12 @@ All notable changes to `z0p` are documented here. The format follows
   with capped nested sumcheck bodies, canonical `Fp4` values, and
   fail-closed truncation/trailing/version checks. Benchmark sizes for
   lookup are now measured from the real codec rather than estimated.
+- **Tower-norm `Ext4` inversion.** `Ext4::inv` now inverts through the
+  `Fp2` norm (one base inversion plus a few `Fp2` products) instead of
+  Fermat exponentiation over `Fp4`. Roundtrips still cross-check the tower
+  result against the Fermat reference. The `lookup 64-in-16` bench drops
+  from ~0.76/0.53 ms (prove/verify) to ~0.29/0.19 ms; proof size is
+  unchanged at 2,897 B. `tools/baseline.json` was re-recorded.
 - **Test count 221 -> 226.** Added `ext4` tower/roundtrip tests, the
   extension transcript test, an extension NTT interpolation/coset
   cross-check, and canonical codec roundtrip tests for sumcheck and

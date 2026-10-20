@@ -30,9 +30,10 @@ input-independent for fixed parameters.
 $\mathbb{F}_{p^4} = \mathbb{F}_{p^2}[v]/(v^2-u)$ with
 $\mathbb{F}_{p^2} = \mathbb{F}_p[u]/(u^2-11)$, represented as
 $a + bu + cv + duv$ (four canonical field coordinates, 16 bytes).
-Inversion is Fermat with exponent $p^4-2$; multiplication is the tower
-formula. `11` is a quadratic non-residue and `u` is a non-square in
-$\mathbb{F}_{p^2}$.
+Inversion uses the tower norm: for $x = c + dv$,
+$x^{-1} = (c - dv)/(c^2 - ud^2)$, so one $\mathbb{F}_{p^2}$ inversion
+suffices; multiplication is the tower formula. `11` is a quadratic
+non-residue and `u` is a non-square in $\mathbb{F}_{p^2}$.
 
 ### 1.2 Binary fields
 

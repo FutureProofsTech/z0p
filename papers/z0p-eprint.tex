@@ -97,7 +97,8 @@ multiplication is Barrett reduction, inversion Fermat
 challenges live in the quartic tower
 $\mathbb{F}_{p^2}=\mathbb{F}_p[u]/(u^2-11)$,
 $\mathbb{F}_{p^4}=\mathbb{F}_{p^2}[v]/(v^2-u)$; $11$ is a quadratic
-non-residue and $u$ a non-square. Elements serialize as four canonical
+non-residue and $u$ a non-square; extension inversion uses the tower norm
+$ (c+dv)^{-1}=(c-dv)/(c^2-ud^2) $. Elements serialize as four canonical
 coordinates (16 bytes).
 
 \paragraph{Domains.} Trace domain

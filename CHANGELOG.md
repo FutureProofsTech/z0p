@@ -16,7 +16,9 @@ All notable changes to `z0p` are documented here. The format follows
 - README, CONTRIBUTING, and AUDIT now document the rustdoc gate added in
   v0.2.1.
 - CI uses checkout v5, cancels superseded runs, supports manual dispatch,
-  bounds job runtime, and validates release-tag metadata.
+  bounds job runtime, validates release-tag metadata, and checks relative
+  Markdown links.
+- `tools/check.py` now gates relative Markdown links.
 
 ## [0.2.1] - 2026-10-20
 

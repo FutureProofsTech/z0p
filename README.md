@@ -56,10 +56,10 @@ as a path/git dependency. The default build is stable Rust 1.74+.
 
 ```sh
 cargo build --release
-cargo test                 # debug: lib + security + red-team suites
+cargo test                 # debug: lib + security/red-team/hardening suites
 cargo test --release       # same, optimized
 cargo bench                # speed/size report (release, median of runs)
-python3 tools/check.py     # platinum gates: fmt, rustdoc, clippy, tests, bench regression
+python3 tools/check.py     # platinum gates: fmt, links, rustdoc, clippy, tests, bench regression
 ```
 
 `BENCH_ROW=substr` runs only matching benchmark rows, e.g.
@@ -232,9 +232,10 @@ benches/
   speed_size.rs speed + wire-exact size harness
 tools/
   check.py      platinum gates · baseline.json  pinned regression table
+  check_links.py    relative Markdown link checker
   release_check.py  version/changelog/tag consistency check
 .github/
-  workflows/ci.yml  fmt, clippy, test, MSRV 1.74, rustdoc gates
+  workflows/ci.yml  fmt, links, tests, MSRV, rustdoc, release-tag gates
 docs/
   whitepaper.md      vision, design, performance, roadmap
   yellowpaper.md     formal specification (math, protocols, encodings)

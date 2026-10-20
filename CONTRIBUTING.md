@@ -20,13 +20,14 @@ below keep it auditable.
 Run the full gate and make sure it is green:
 
 ```sh
-python3 tools/check.py          # fmt, rustdoc, clippy, tests, bench regression
+python3 tools/check.py          # fmt, links, rustdoc, clippy, tests, bench regression
 ```
 
 or manually:
 
 ```sh
 cargo fmt --check
+python3 tools/check_links.py
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo clippy --all-targets -- -D warnings
 cargo test

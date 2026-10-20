@@ -42,7 +42,7 @@ The adversary capabilities and out-of-scope threats are in
 ## Reproduce the gates
 
 ```sh
-python3 tools/check.py          # fmt, rustdoc, clippy, debug+release tests, bench regression
+python3 tools/check.py          # fmt, links, rustdoc, clippy, debug+release tests, bench regression
 RUSTC_BOOTSTRAP=1 cargo test --features simd
 BENCH_ROW=N1048576 cargo bench  # 1M-step AIR row
 ```

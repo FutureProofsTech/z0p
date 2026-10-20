@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Platinum gates for z0p: fmt, rustdoc, clippy, tests, and bench regression.
+"""Platinum gates for z0p: fmt, links, rustdoc, clippy, tests, and bench regression.
 
 Usage:
     tools/check.py            run every gate; fail on any regression
     tools/check.py --update   re-record tools/baseline.json from this machine
 
 Rules (see README in this file's header for rationale):
-  * fmt/rustdoc/clippy/tests must pass exactly.
+  * fmt/links/rustdoc/clippy/tests must pass exactly.
   * Proof sizes must match the baseline byte-for-byte. Sizes are
     deterministic (pure integer math plus hashes; thread-count
     independent), so any mismatch means the wire format or the tuned
@@ -50,6 +50,16 @@ def gate_fmt():
         print(result.stdout[-2000:])
         return False
     print("ok: fmt")
+    return True
+
+
+def gate_links():
+    result = run([sys.executable, "tools/check_links.py"])
+    if result.returncode != 0:
+        print("FAIL: Markdown links")
+        print((result.stdout + result.stderr)[-3000:])
+        return False
+    print("ok: Markdown links")
     return True
 
 
@@ -161,6 +171,7 @@ def main():
     update = "--update" in sys.argv
     gates = [
         gate_fmt(),
+        gate_links(),
         gate_doc(),
         gate_clippy(),
         gate_tests("debug"),

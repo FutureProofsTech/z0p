@@ -20,7 +20,7 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
 - **Extension-field challenges** — FRI folds, STARK composition batches,
   `upcs`/Gemini points and betas, sumcheck rounds, and lookup identities
   use `Fp4 = Fp[v,u]/(v²-u, u²-11)` over BabyBear, raising algebraic
-  challenge entropy from ~31 bits to ~124 bits. Wire format v3 stores
+  challenge entropy from ~31 bits to ~124 bits. Wire format v4 stores
   extension values canonically (16 bytes).
 - **Production parameter sizing** — `Params::for_security(steps, …, 100)`
   sizes blowup 16, queries, grinding, final size, and cap height for a
@@ -30,7 +30,7 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
   (~4.95 µs/step, ~202k steps/s), verified in **~2.3 ms**, 206,353 bytes.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 244 unit tests plus three attack suites
+- **Adversarially tested** — 252 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -94,13 +94,20 @@ Full table with methodology: [docs/benchmarks.md](docs/benchmarks.md).
 | Multilinear PCS, 1,024 coefficients, `B16 Q40 G20` | Prove | Verify | Commitment + proof |
 |---|---|---|---|
 | BaseFold-style prototype (`basefold`) | 44 ms | 1.1 ms | 127,658 B |
-| BaseFold, cap height 4 | 36 ms | 0.9 ms | 80,018 B |
+| BaseFold, cap height 4 | 45 ms | 0.9 ms | 80,018 B |
 | Gemini v1 (`gemini`, one opening per layer) | 693 ms | 54 ms | 888,672 B |
+
+| Committed lookup, 1,024-in-1,024, BaseFold C4 | Prove | Verify | Commitments + proof |
+|---|---|---|---|
+| `lookup_pcs` (five commitments, eight openings) | 367 ms | 21 ms | 642,443 B |
 
 The BaseFold rows are a prototype (not wired into the AIR stack); optional
 Merkle caps replace the top path steps of every layer with one frontier,
 shrinking the proof by ~37% on this shape. Gemini remains the conservative
-v1 choice for small multilinear instances.
+v1 choice for small multilinear instances. The committed lookup commits the
+witness, table, multiplicities, and both quotient columns, then carries
+eight BaseFold openings; it hides columns from the wire but is not
+zero-knowledge.
 
 | Primitive | Result |
 |---|---|
@@ -141,7 +148,7 @@ system before an external audit.
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 244 tests across 23 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 252 tests across 24 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
 | `tests/hardening.rs` | 8 vectors: hostile `Params`, decoder bit-flip fuzz, RNG uniformity | this README |
@@ -174,6 +181,7 @@ src/
   gemini.rs     multilinear commitments (Gemini fold chains)
   basefold.rs   compact multilinear PCS prototype (sumcheck + FRI folds)
   lookup.rs     LogUp-style table membership via sumcheck
+  lookup_pcs.rs committed LogUp over compact BaseFold openings
   air.rs        Fibonacci AIR/STARK (+ ZK)
   range.rs      range-check AIR (+ ZK)
   recursion.rs  one-query FRI fold-chain AIR (recursion fragment)
@@ -217,7 +225,7 @@ CHANGELOG.md     release history (Keep a Changelog)
   and MSRV 1.74; the feature is additive with a scalar fallback.
 - **Extension-field challenges — done across the stack.** FRI, STARK
   compositions, `upcs`/Gemini points and betas, sumcheck, and lookup use
-  `Fp4` challenges; the wire format is v3.
+  `Fp4` challenges; the wire format is v4.
 - **Recursion — fragment done.** `recursion.rs` proves one FRI query's
   fold chain as a STARK: public `(lde_len, leaf, challenges, initial quad,
   output)`, committed quads, shifted-index transition openings, FRI over
@@ -246,8 +254,12 @@ CHANGELOG.md     release history (Keep a Changelog)
   not wired into AIR/STARK yet and needs an audit; decoder fuzzing and
   optional Merkle caps are in place, and WHIR-style cap batching plus
   self-proving recursion are the next PCS steps.
-- **Programs / zkVM.** Wire the compact PCS into large-table lookups,
-  then program execution.
+- **Programs / zkVM — committed lookup prototype done.** `lookup_pcs`
+  commits the witness, table, multiplicities, and quotient columns, then
+  binds every sumcheck final value with a BaseFold opening. At 1,024
+  rows it proves in ~367 ms, verifies in ~21 ms, and carries 642,443 B
+  with cap height 4. Hiding PCS/sumcheck support and program execution
+  are next.
 - **External audit.** The suite, gates, versioned wire format, and pinned
   baselines are the pre-audit package.
 

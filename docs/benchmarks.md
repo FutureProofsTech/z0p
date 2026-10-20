@@ -9,7 +9,7 @@ the timed region. Rows with a separate byte counter also assert it equals
 - Measured: 2026-10-20
 - Filter partial rows with `BENCH_ROW=substr`, e.g.
   `BENCH_ROW=N65536 cargo bench`
-- `tools/check.py` pins all 21 rows: sizes must match byte-for-byte, times
+- `tools/check.py` pins all 23 rows: sizes must match byte-for-byte, times
   must stay within 3× of `tools/baseline.json`
 
 ## Production shapes (`for_security(100)` — 100-bit query/PoW; Fp4 challenges)
@@ -41,20 +41,22 @@ building that table.
 
 ## Compact multilinear PCS (1,024 coefficients)
 
-Both rows open a 10-variable polynomial with blowup 16, 40 queries, and
-20-bit grinding. Gemini is the `O(n)`-opening v1 path with one multi-point
-`upcs` proof per layer. The BaseFold-style prototype commits one root,
+The BaseFold rows open a 10-variable polynomial with blowup 16, 40
+queries, and 20-bit grinding; Gemini uses the `O(n)`-opening v1 path with
+one multi-point `upcs` proof per layer. The BaseFold-style prototype
+commits one root,
 reduces `f(r)` to `c(rho)` with sumcheck, and reuses the sumcheck
 challenges for Möbius FRI folds. Optional Merkle caps replace the top path
 steps of every committed layer with one cap frontier; the cap root is
 hashed back to the commitment (top layer) or the proof's layer roots (lower
-layers). It is not wired into the AIR stack; full paths still make each
-query open one Merkle path per layer.
+layers). It is not wired into the AIR stack, but it now backs the
+committed lookup below; full paths still make each query open one Merkle
+path per layer.
 
 | Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
 |---|---|---|---|---|
-| `basefold P1024 B16Q40G20` | 44.09 | 1.14 | 127,658 | 124.7 |
-| `basefold-capped P1024 B16Q40G20C4` | 35.88 | 0.90 | 80,018 | 78.1 |
+| `basefold P1024 B16Q40G20` | 43.63 | 1.14 | 127,658 | 124.7 |
+| `basefold-capped P1024 B16Q40G20C4` | 44.78 | 0.91 | 80,018 | 78.1 |
 | `gemini P1024 B16Q40G20` | 693.04 | 54.42 | 888,672 | 867.8 |
 
 Cap height 4 shrinks the BaseFold proof by ~37% on this shape. Against
@@ -63,6 +65,27 @@ verify, and ~7× smaller; capped is ~19× faster to prove, ~60× faster to
 verify, and ~11× smaller. The comparison is a prototype result, not an
 audit: the sumcheck/FRI composition needs a written soundness argument,
 and WHIR-style batching is required before large tables.
+
+
+## Committed large-table lookup (`lookup_pcs`)
+
+The committed LogUp prototype commits the padded witness, table,
+multiplicities, and both quotient columns with BaseFold. The verifier sees
+five commitment roots and eight BaseFold openings: two for each quotient
+column, one for the witness, one for the table, and two for the
+multiplicities. The witness and table columns never travel on the wire.
+
+| Row | Prove (ms) | Verify (ms) | Commitments + proof (B) | (KiB) |
+|---|---|---|---|---|
+| `lookup-pcs 1024-in-1024 B16Q40G20C4` | 367.04 | 20.67 | 642,443 | 627.4 |
+
+Four sumchecks cover the rational identity and read-checks; the total
+multiplicity weight is folded into the sum-t claim with a fresh `gamma`.
+This is a committed-input argument, not zero-knowledge: BaseFold has no
+hiding layer, candidate inputs can be tested against the commitment roots,
+and the column values are extension-field elements (base-field membership
+would need an extra constraint). The eight separate openings are the main
+size cost; batching them behind one compact proof is the next step.
 
 ## Bench shapes (fast, ~18 conjectured bits)
 
@@ -116,7 +139,7 @@ are the other large prove costs. Builds without the feature are unaffected
 ## Reproduce
 
 ```sh
-cargo bench                          # all 21 rows
+cargo bench                          # all 23 rows
 BENCH_ROW=N1048576 cargo bench       # single scaled row
 BENCH_ROW="air prod" cargo bench     # all production AIR rows
 python3 tools/check.py               # full gates incl. bench regression

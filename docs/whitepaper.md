@@ -73,7 +73,7 @@ Reed–Solomon proximity testing.
    extension-field (`Fp4`) challenges, raising per-challenge algebraic
    bounds to ~124 bits. This is still a conjectured query/PoW schedule,
    not an end-to-end soundness proof.
-5. **Evidence over claims.** 244 unit tests, three adversarial suites
+5. **Evidence over claims.** 252 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught
@@ -146,12 +146,18 @@ portable scalar-safe-Rust throughput with parallelism over
   abuse, and a 500-input garbage storm that must fail closed without
   panicking. Current standing: zero acceptances, zero panics.
 - **Known limits (stated, not hidden).** Bench defaults are fast but
-  weak — production callers must use `for_security`. Table lookups are
-  small-table. A first Gemini-style multilinear PCS (`gemini.rs`) and a
-  compact BaseFold-style prototype (`basefold.rs`) exist; the latter is
-  ~11× smaller and ~60× faster to verify with cap height 4 at 1,024
-  coefficients, but it is not wired into the AIR stack and is unaudited.
-  Production large-table openings still need WHIR-style batching.
+  weak — production callers must use `for_security`. The `table.rs`
+  AIR remains small-table by design. A first Gemini-style multilinear PCS
+  (`gemini.rs`) and a compact BaseFold-style prototype (`basefold.rs`)
+  exist; the latter is ~11× smaller and ~60× faster to verify with cap
+  height 4 at 1,024 coefficients, but it is not wired into the AIR stack
+  and is unaudited. A committed LogUp prototype (`lookup_pcs.rs`) now
+  commits the witness, table, multiplicities, and quotients and verifies
+  with eight BaseFold openings: 1,024-in-1,024 takes ~367 ms prove,
+  ~21 ms verify, and 642,443 B with cap height 4. It hides columns from
+  the wire but is not zero-knowledge, does not enforce base-field column
+  values, and still pays for eight separate openings. Production
+  large-table openings need batched openings, a hiding PCS, and an audit.
   The system has not yet had an external audit; the test suites, gates,
   versioned wire format, and pinned baselines are the pre-audit package.
 
@@ -177,13 +183,16 @@ portable scalar-safe-Rust throughput with parallelism over
    (not `3n - 2`) and remains `O(n)`. `basefold.rs` adds the compact
    recipe: one root, sumcheck reduces `f(r)` to `c(rho)`, and Möbius FRI
    folds reuse the sumcheck challenges. At 1,024 coefficients it is
-   ~127.7 KB / ~44 ms / ~1.1 ms, or ~80.0 KB / ~36 ms / ~0.9 ms with cap
+   ~127.7 KB / ~44 ms / ~1.1 ms, or ~80.0 KB / ~45 ms / ~0.9 ms with cap
    height 4, versus Gemini's ~888.7 KB / ~693 ms / ~54 ms. Optional Merkle
    caps and decoder fuzzing are in place; AIR/STARK wiring and an audit
    remain before production use, and WHIR-style batching is the next PCS
    step.
-5. **Programs / zkVM** — wire the compact PCS into large-table lookups,
-   then general program execution proofs.
+5. **Programs / zkVM — committed lookup prototype done.** `lookup_pcs`
+   commits the witness, table, multiplicities, and both quotient columns,
+   binds sumcheck final values with eight BaseFold openings, and hides the
+   input columns from the wire. Next: batched openings, hiding PCS and
+   sumcheck for private tables, then general program execution proofs.
 6. **External audit** — procurement item; the evidence package is ready.
 
 ## 8. License

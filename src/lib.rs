@@ -14,6 +14,7 @@
 //! - [`sumcheck`]: interactive sumcheck over [`mle`] products.
 //! - [`basefold`]: prototype compact multilinear FRI+sumcheck commitments.
 //! - [`lookup`]: `LogUp`-style table-membership argument via [`sumcheck`].
+//! - [`lookup_pcs`]: committed `LogUp` lookup over compact [`basefold`] openings.
 //! - [`air`]: minimal Fibonacci AIR/STARK end-to-end over [`fri`].
 //! - [`range`]: range-check AIR (bit decomposition over committed columns).
 //! - [`recursion`]: STARK re-checking one FRI query's fold chain (recursion fragment).
@@ -85,6 +86,7 @@ pub mod gemini;
 pub mod gf2;
 pub mod hash;
 pub mod lookup;
+pub mod lookup_pcs;
 pub mod merkle;
 pub mod mle;
 pub mod ntt;

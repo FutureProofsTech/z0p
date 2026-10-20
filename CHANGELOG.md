@@ -26,7 +26,10 @@ All notable changes to `z0p` are documented here. The format follows
   At 1,024 coefficients on the production-shaped `B16 Q40 G20` schedule:
   127,658 B, ~44 ms prove, ~1.1 ms verify, versus Gemini v1's 888,672 B,
   ~693 ms, and ~54 ms. This is an experimental prototype: no AIR/STARK
-  wiring, no end-to-end soundness proof, and not audited.
+  wiring, no end-to-end soundness proof, and not audited. It now backs the
+  committed LogUp prototype below. `commit_ext`/`commit_evals_ext` extend
+  the commit API to extension-field coefficients and hypercube
+  evaluations.
 - **Optional BaseFold Merkle caps.** `Params::with_cap_height(h)` stores
   the top `h` levels of every committed layer in the proof as a digest
   frontier. Query paths drop `h` steps; the verifier hashes each frontier
@@ -36,13 +39,31 @@ All notable changes to `z0p` are documented here. The format follows
   than full paths). Cap height is capped at 8; malformed, forged, and
   mismatched cap proofs fail closed, and decoder fuzzing now covers both
   plain and capped BaseFold proofs.
+- **Committed LogUp lookup (`lookup_pcs`).** `src/lookup_pcs.rs` commits
+  the padded witness, table, multiplicities, and both quotient columns
+  with BaseFold, then hides all five columns from the verifier. Four
+  sumchecks prove the rational identity and read-checks; the total
+  multiplicity weight is folded into the `sum-t` check with a fresh
+  `gamma`; eight BaseFold openings (two per quotient column, one witness,
+  one table, two multiplicities) bind every final oracle value. The
+  verifier never receives the witness or table. At 1,024-in-1,024 with
+  `B16 Q40 G20 C4`: 642,443 B, ~367 ms prove, ~21 ms verify. The
+  construction is committed-input but not zero-knowledge; candidate
+  inputs can be tested against the non-hiding commitments, and base-field
+  membership of the columns is not enforced (values live in `Fp4`).
 - **Test count 226 -> 244.** Eighteen `basefold` tests cover honest
   openings at 1/2/5/8 variables, wrong value/point/commitment, tampered
   sumcheck/layer/query data, capped and uncapped paths, forged/mis-shaped
   caps, cap-height limits and clamping, grinding and canonical nonce handling,
   parameter/domain caps, and codec version/trailer rejection. The
-  benchmark baseline now pins 22 rows (adding plain/capped `basefold` and
-  a Gemini comparison), and docs report the new numbers.
+  benchmark baseline pinned 22 rows (adding plain/capped `basefold` and
+  a Gemini comparison), and docs reported the new numbers.
+- **Test count 244 -> 252.** Two `basefold` tests cover extension-field
+  coefficients and hypercube-evaluation commits; six `lookup_pcs` tests
+  cover honest committed membership, singleton padding, non-member
+  rejection, tampered sumchecks/openings, wrong commitments, and codec
+  roundtrips. The benchmark baseline now pins 23 rows (adding the
+  committed lookup), and docs report the new numbers.
 
 ### Changed
 - **Wire format v4.** The unreleased v3 work moved FRI fold values,
@@ -50,7 +71,8 @@ All notable changes to `z0p` are documented here. The format follows
   `Fp4` (16 bytes per element), with 16-byte extension leaves. This
   increment adds the optional BaseFold cap vector after the layer roots
   and bumps `codec::VERSION` to `4`; v3 and older proofs are rejected.
-  `tools/baseline.json` was re-recorded after review (22 rows).
+  `lookup_pcs` proof and commitment types use the same version-4 framing.
+  `tools/baseline.json` was re-recorded after review (23 rows total).
 - **Canonical sumcheck/lookup codecs.** `sumcheck::Proof` and
   `lookup::Proof` now expose `to_bytes`/`from_bytes` under the shared wire version,
   with capped nested sumcheck bodies, canonical `Fp4` values, and

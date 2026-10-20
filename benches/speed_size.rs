@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use z0p::{
     air, babybear::Field, basefold, ext4::Ext4, fold, fri, gemini, gf2::F64, hash::blake3_256,
-    lookup, merkle, ntt, range, table, transcript::Transcript,
+    lookup, lookup_pcs, merkle, ntt, range, table, transcript::Transcript,
 };
 
 /// Median of per-iteration milliseconds over `reps` runs (plus one warmup).
@@ -337,6 +337,40 @@ fn bench_lookup() {
     let bytes = proof.to_bytes().len();
     println!(
         "lookup 64-in-16    : prove {prove_ms:8.2} ms  verify {verify_ms:8.2} ms  proof {bytes} B ({:.1} KiB)",
+        kb(bytes)
+    );
+}
+
+fn bench_lookup_pcs() {
+    let table: Vec<Field> = (0..1024u32).map(Field::new).collect();
+    let witness: Vec<Field> = (0..1024usize).map(|i| table[i]).collect();
+    let params = basefold::Params::new(16, 40, 20)
+        .expect("params")
+        .with_cap_height(4);
+    let mut transcript = Transcript::new(b"bench/lookup-pcs");
+    let (commitments, proof) = lookup_pcs::prove(
+        black_box(&witness),
+        black_box(&table),
+        params,
+        &mut transcript,
+    )
+    .expect("prove");
+    let mut transcript = Transcript::new(b"bench/lookup-pcs");
+    lookup_pcs::verify(&commitments, &proof, params, &mut transcript).expect("verify");
+
+    let prove_ms = median_ms(1, || {
+        let mut transcript = Transcript::new(b"bench/lookup-pcs");
+        black_box(lookup_pcs::prove(&witness, &table, params, &mut transcript).expect("prove"));
+    });
+    let verify_ms = median_ms(3, || {
+        let mut transcript = Transcript::new(b"bench/lookup-pcs");
+        let ok = lookup_pcs::verify(&commitments, &proof, params, &mut transcript).is_ok();
+        assert!(ok);
+        black_box(ok);
+    });
+    let bytes = commitments.to_bytes().len() + proof.to_bytes().len();
+    println!(
+        "lookup-pcs 1024-in-1024 B16Q40G20C4: prove {prove_ms:8.2} ms  verify {verify_ms:8.2} ms  proof {bytes} B ({:.1} KiB)",
         kb(bytes)
     );
 }
@@ -727,6 +761,7 @@ fn main() {
     run_filtered(&filter, "range", bench_range);
     run_filtered(&filter, "table", bench_table);
     run_filtered(&filter, "lookup", bench_lookup);
+    run_filtered(&filter, "lookup-pcs", bench_lookup_pcs);
     run_filtered(&filter, "fold", bench_fold);
     run_filtered(&filter, "basefold", bench_basefold);
     run_filtered(&filter, "gemini", bench_gemini);

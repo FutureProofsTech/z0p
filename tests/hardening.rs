@@ -7,7 +7,7 @@
 //! one is fed truncations, extensions, and single-bit flips.
 
 use z0p::{
-    air, babybear::Field, basefold, ext4::Ext4, fold, range, rng::ChaCha20, table,
+    air, babybear::Field, basefold, ext4::Ext4, fold, lookup_pcs, range, rng::ChaCha20, table,
     transcript::Transcript,
 };
 
@@ -239,9 +239,35 @@ fn all_decoders_fuzz_never_panic() {
     .unwrap();
     let basefold_bytes = basefold_proof.to_bytes();
     let capped_bytes = capped_proof.to_bytes();
+    let lookup_params = basefold::Params::new(4, 2, 0).unwrap().with_cap_height(1);
+    let lookup_witness: Vec<Field> = [10u32, 20, 10, 30].iter().map(|v| Field::new(*v)).collect();
+    let (lookup_commitments, lookup_proof) = lookup_pcs::prove(
+        &lookup_witness,
+        &table_vals,
+        lookup_params,
+        &mut Transcript::new(LABEL),
+    )
+    .unwrap();
+    let mut lookup_verifier = Transcript::new(LABEL);
+    lookup_pcs::verify(
+        &lookup_commitments,
+        &lookup_proof,
+        lookup_params,
+        &mut lookup_verifier,
+    )
+    .unwrap();
+    let lookup_bytes = lookup_proof.to_bytes();
+    let lookup_commitment_bytes = lookup_commitments.to_bytes();
 
     let mut seed = 0xdead_beef_1234_5678u64;
-    for stream in [&range_proof, &table_proof, &basefold_bytes, &capped_bytes] {
+    for stream in [
+        &range_proof,
+        &table_proof,
+        &basefold_bytes,
+        &capped_bytes,
+        &lookup_bytes,
+        &lookup_commitment_bytes,
+    ] {
         for _ in 0..2000 {
             seed = seed
                 .wrapping_mul(6_364_136_223_846_793_005)
@@ -255,6 +281,8 @@ fn all_decoders_fuzz_never_panic() {
             let _ = range::Proof::from_bytes(&mutated);
             let _ = table::Proof::from_bytes(&mutated);
             let _ = basefold::Proof::from_bytes(&mutated);
+            let _ = lookup_pcs::Proof::from_bytes(&mutated);
+            let _ = lookup_pcs::Commitments::from_bytes(&mutated);
         }
     }
 }

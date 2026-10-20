@@ -94,6 +94,7 @@ low bits for power-of-two domains (unbiased).
 | AIR / range / table | `<proto>/params` (all parameters first), `<proto>/column` (column cap), `<proto>/alpha` (one squeeze per constraint class, fixed count) |
 | fold (IVC) | `fold/params`, then per step `fold/step`, `fold/trace`, six `fold/alpha`, finally one `fold/gamma` per step |
 | lookup | `lookup/ctx` separators (`sum-w`/`read-w`/`sum-t`/`read-t`), `witness`, `table`, `sums`, `qw`, `qt`, `m`, `beta`, `beta-challenge`, `r1`, `r2` |
+| lookup_pcs | `lookup-pcs/commitments`, `beta`, `quotients`, `sum-w`, four `ctx` separators, `r1`, `gamma`, `r2`, and one `open` label per BaseFold opening |
 | sumcheck | `sumcheck/claim`, then per round `sumcheck/round`, `sumcheck/challenge` |
 
 **Proof of work.** `grind(label, d)` returns the smallest $u64$ nonce
@@ -239,6 +240,18 @@ $q^w_i = 1/(\beta + w_i)$, $q^t_j = m_j/(\beta + t_j)$, rational-sum
 equality plus four sumchecks (two sums, two read-checks at random
 evaluation points).
 
+**Committed variant (`lookup_pcs`).** The witness, table, multiplicities,
+and both quotient columns are committed with BaseFold. The verifier
+receives five commitment roots and eight point-opening proofs; all
+sumcheck final values are bound to openings, and the witness/table never
+travel on the wire. A fresh $\gamma$ folds the total multiplicity weight
+into the sum-t claim:
+$\sum(q^t+\gamma m)=\sum q^w+\gamma W$. At 1,024-in-1,024 with blowup
+16, 40 queries, 20-bit grinding, and cap height 4, the prototype proves
+in ~367 ms, verifies in ~21 ms, and carries 642,443 bytes. It is
+committed-input but not zero-knowledge, does not constrain columns to the
+base field, and still uses eight separate openings.
+
 ### 4.6 Zero knowledge
 
 `prove_zk` blinds columns with vanishing-multiple masks from a ChaCha20
@@ -337,7 +350,7 @@ cap/path shape pins before hashing; `fri-dims` dimension binding
 (closes proof malleability of echoed dimensions); canonical-only
 decoding; PoW bound to history with queries sampled after.
 
-**Validation.** 244 unit tests (KATs, cross-checks against Horner/`%`,
+**Validation.** 252 unit tests (KATs, cross-checks against Horner/`%`,
 parallel-vs-sequential identity), 13-test security suite and 10-test
 red-team suite (~800 hostile attempts/run, zero acceptances, zero
 panics), wire-exact size assertions on every benchmark, and a
@@ -345,13 +358,16 @@ panics), wire-exact size assertions on every benchmark, and a
 regression vs `tools/baseline.json`).
 
 **Out of scope / stated limits.** Bench shapes (~18 bits) are not
-production soundness; large-table lookups still await a production
-compact multilinear PCS. Vectorized hashing, the one-query recursion
-fragment, FRI-backed univariate point and multi-point openings, a
-Gemini-style multilinear PCS (`O(n)` openings, one batched opening per
-layer), and a compact BaseFold-style prototype (one root, sumcheck plus
-Möbius FRI folds) are done. The BaseFold module is experimental and not
-wired into AIR/STARK; WHIR-style batching, self-proving recursion, and a
+production soundness. The `table` AIR is small-table by design; the
+committed `lookup_pcs` prototype removes clear witness/table inputs but
+still uses eight separate BaseFold openings, lacks hiding, and does not
+enforce base-field column values. Vectorized hashing, the one-query
+recursion fragment, FRI-backed univariate point and multi-point openings,
+a Gemini-style multilinear PCS (`O(n)` openings, one batched opening per
+layer), a compact BaseFold-style prototype (one root, sumcheck plus
+Möbius FRI folds), and committed LogUp are done. The BaseFold and
+`lookup_pcs` modules are experimental and not wired into AIR/STARK;
+batched openings, a hiding PCS/sumcheck, self-proving recursion, and a
 zkVM are roadmap items. No external audit has yet been performed.
 
 ## 8. License

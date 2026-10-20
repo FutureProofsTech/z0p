@@ -14,11 +14,14 @@
 //! # Oracle model (`v1`)
 //! [`verify`] evaluates the [`Mle`]s directly as the polynomial oracle.
 //! [`crate::upcs`] supplies FRI-backed point openings for committed
-//! univariate polynomials, and [`crate::gemini`] builds a first multilinear
-//! PCS from them (`O(n)` openings); compact multilinear FRI and committed
-//! oracles remain roadmap work. Sumcheck soundness below assumes a binding
-//! oracle. Round challenges are drawn from [`Ext4`], so the per-round
-//! algebraic error is bounded by roughly `degree / p^4`.
+//! univariate polynomials, [`crate::gemini`] builds a first multilinear PCS
+//! from them (`O(n)` openings), and [`crate::basefold`] supplies compact
+//! multilinear point openings. Committed-oracle sumcheck remains roadmap
+//! work; protocols such as [`crate::lookup_pcs`] replay the round chain with
+//! the crate-private [`verify_final`] helper and bind each final value with a
+//! `BaseFold` opening. Sumcheck soundness below assumes a binding oracle.
+//! Round challenges are drawn from [`Ext4`], so the per-round algebraic error
+//! is bounded by roughly `degree / p^4`.
 
 use crate::babybear::Field;
 use crate::codec::{Reader, Writer, MAX_ELEMS, VERSION};
@@ -181,14 +184,37 @@ pub fn verify(
     transcript: &mut Transcript,
 ) -> Result<()> {
     let n = check_shapes(mles, terms)?;
+    let challenges = verify_final(n, mles.len(), terms, proof, transcript)?;
+    for (mle, claimed) in mles.iter().zip(&proof.final_values) {
+        if mle.evaluate(&challenges)? != *claimed {
+            return Err(Error::FriVerificationFailed);
+        }
+    }
+    Ok(())
+}
+
+/// Replay the round chain and check the final summand without oracle
+/// evaluations, returning the challenge point.
+///
+/// Callers using a committed oracle must bind each [`Proof::final_values`]
+/// entry with an opening at the returned point. This helper is crate-private
+/// so the direct-oracle [`verify`] remains the public entry point.
+pub(crate) fn verify_final(
+    n_vars: usize,
+    num_mles: usize,
+    terms: &[Term],
+    proof: &Proof,
+    transcript: &mut Transcript,
+) -> Result<Vec<Ext4>> {
+    check_term_indices(num_mles, terms)?;
     let degree = round_degree(terms);
-    if proof.round_evals.len() != n || proof.final_values.len() != mles.len() {
+    if proof.round_evals.len() != n_vars || proof.final_values.len() != num_mles {
         return Err(Error::FriVerificationFailed);
     }
 
     transcript.absorb(b"sumcheck/claim", &encode_fields(&[proof.sum]));
     let mut expected = proof.sum;
-    let mut challenges: Vec<Ext4> = Vec::with_capacity(n);
+    let mut challenges: Vec<Ext4> = Vec::with_capacity(n_vars);
 
     for round in &proof.round_evals {
         if round.len() != degree + 1 {
@@ -203,16 +229,10 @@ pub fn verify(
         expected = interpolate_at(round, r);
     }
 
-    // Oracle checks: each MLE at the challenge point, then the summand.
-    for (mle, claimed) in mles.iter().zip(&proof.final_values) {
-        if mle.evaluate(&challenges)? != *claimed {
-            return Err(Error::FriVerificationFailed);
-        }
-    }
     if eval_summand(&proof.final_values, terms) != expected {
         return Err(Error::FriVerificationFailed);
     }
-    Ok(())
+    Ok(challenges)
 }
 
 /// Lagrange-interpolate evaluations at `0..n` to `at`.
@@ -238,9 +258,6 @@ pub fn interpolate_at(evals: &[Ext4], at: Ext4) -> Ext4 {
 }
 
 fn check_shapes(mles: &[Mle], terms: &[Term]) -> Result<usize> {
-    if terms.is_empty() {
-        return Err(Error::EmptyInput);
-    }
     if mles.is_empty() {
         return Err(Error::EmptyInput);
     }
@@ -250,17 +267,28 @@ fn check_shapes(mles: &[Mle], terms: &[Term]) -> Result<usize> {
             reason: "all MLEs must share n_vars",
         });
     }
+    check_term_indices(mles.len(), terms)?;
+    Ok(n)
+}
+
+fn check_term_indices(num_mles: usize, terms: &[Term]) -> Result<()> {
+    if terms.is_empty() {
+        return Err(Error::EmptyInput);
+    }
+    if num_mles == 0 {
+        return Err(Error::EmptyInput);
+    }
     for term in terms {
         for &f in &term.factors {
-            if f >= mles.len() {
+            if f >= num_mles {
                 return Err(Error::IndexOutOfBounds {
                     index: f,
-                    len: mles.len(),
+                    len: num_mles,
                 });
             }
         }
     }
-    Ok(n)
+    Ok(())
 }
 
 fn round_degree(terms: &[Term]) -> usize {

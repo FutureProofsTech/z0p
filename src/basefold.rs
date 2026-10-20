@@ -18,15 +18,18 @@
 //! # Status
 //!
 //! This is a prototype, not an audited construction: it is not wired into
-//! the AIR/STARK stack, has no hiding layer, and no end-to-end soundness
-//! proof. The query/proof-of-work schedule follows the FRI heuristic in
+//! the AIR/STARK stack (it does back the committed [`crate::lookup_pcs`]
+//! prototype), has no hiding layer, and no end-to-end soundness proof. The
+//! query/proof-of-work schedule follows the FRI heuristic in
 //! [`crate::fri`]. Treat the query bits as conjectured, size instances with
 //! [`Params::for_security`], and do not deploy this as a production
 //! commitment without review.
 //!
-//! Polynomials have at least one variable. Coefficients are base-field
-//! values in multilinear (Möbius) order, matching [`crate::mle::Mle`] and
-//! [`crate::gemini`]; the point and claimed value live in [`Ext4`].
+//! Polynomials have at least one variable. Coefficients are in multilinear
+//! (Möbius) order, matching [`crate::mle::Mle`] and [`crate::gemini`];
+//! [`commit`] takes base-field coefficients and [`commit_ext`] takes
+//! extension-field coefficients. Hypercube-evaluation helpers apply the
+//! Möbius transform first. The point and claimed value live in [`Ext4`].
 //!
 //! # Transcript
 //!
@@ -133,7 +136,13 @@ impl Params {
         Self::new(blowup, num_queries, grinding_bits)
     }
 
-    fn validate(&self) -> Result<()> {
+    /// Validate the parameter schedule.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidBlowup`] for a blowup below two or not a
+    /// power of two, [`Error::NoQueries`] for zero queries, or
+    /// [`Error::MalformedInput`] for counts above protocol caps.
+    pub fn validate(&self) -> Result<()> {
         validate_blowup(self.blowup)?;
         if self.num_queries == 0 {
             return Err(Error::NoQueries);
@@ -182,6 +191,37 @@ fn validate_blowup(blowup: usize) -> Result<()> {
         return Err(Error::InvalidBlowup { factor: blowup });
     }
     Ok(())
+}
+
+/// Möbius transform from hypercube evaluations to monomial coefficients.
+fn coeffs_from_evals_ext(evals: &[Ext4]) -> Result<Vec<Ext4>> {
+    if evals.len() < 2 {
+        return Err(Error::EmptyInput);
+    }
+    if !evals.len().is_power_of_two() {
+        return Err(Error::InvalidDomainSize { size: evals.len() });
+    }
+    let n_vars = usize::try_from(evals.len().trailing_zeros())
+        .map_err(|_| Error::InvalidDomainSize { size: evals.len() })?;
+    if n_vars > MAX_VARS {
+        return Err(Error::MalformedInput {
+            reason: "n_vars above protocol cap",
+        });
+    }
+    let mut coeffs = evals.to_vec();
+    let mut stride = 1;
+    while stride < evals.len() {
+        let mut base = 0;
+        while base < evals.len() {
+            for i in base..base + stride {
+                let low = coeffs[i];
+                coeffs[i + stride] -= low;
+            }
+            base += 2 * stride;
+        }
+        stride *= 2;
+    }
+    Ok(coeffs)
 }
 
 /// Public commitment to the coefficient encoding of a multilinear polynomial.
@@ -284,6 +324,22 @@ impl ProverState {
 /// [`Error::InvalidBlowup`], or [`Error::MalformedInput`] for invalid
 /// coefficient counts or a variable count above [`MAX_VARS`].
 pub fn commit(coeffs: &[Field], blowup: usize) -> Result<ProverState> {
+    let ext: Vec<Ext4> = coeffs.iter().copied().map(Ext4::from_base).collect();
+    commit_ext(&ext, blowup)
+}
+
+/// Commit to extension-field multilinear coefficients (Möbius order).
+///
+/// This is the [`commit`] analogue for columns whose values already live in
+/// [`Ext4`], such as the quotient and multiplicity columns of
+/// [`crate::lookup_pcs`]. The commitment shape is identical; only the
+/// coefficient field differs.
+///
+/// # Errors
+/// Returns [`Error::EmptyInput`], [`Error::InvalidDomainSize`],
+/// [`Error::InvalidBlowup`], or [`Error::MalformedInput`] for invalid
+/// coefficient counts or a variable count above [`MAX_VARS`].
+pub fn commit_ext(coeffs: &[Ext4], blowup: usize) -> Result<ProverState> {
     if coeffs.len() < 2 {
         return Err(Error::EmptyInput);
     }
@@ -306,8 +362,7 @@ pub fn commit(coeffs: &[Field], blowup: usize) -> Result<ProverState> {
         return Err(Error::InvalidDomainSize { size: lde_len });
     }
 
-    let ext: Vec<Ext4> = coeffs.iter().copied().map(Ext4::from_base).collect();
-    let mut lde = evaluate_on_coset_ext(&ext, blowup, Field::ONE)?;
+    let mut lde = evaluate_on_coset_ext(coeffs, blowup, Field::ONE)?;
     bit_reverse_permute_ext(&mut lde);
     let tree = commit_layer(&lde)?;
     let root = tree.root();
@@ -318,11 +373,36 @@ pub fn commit(coeffs: &[Field], blowup: usize) -> Result<ProverState> {
     };
     commitment.check_domain()?;
     Ok(ProverState {
-        coeffs: ext,
+        coeffs: coeffs.to_vec(),
         lde,
         tree,
         commitment,
     })
+}
+
+/// Commit a multilinear polynomial given its hypercube evaluations.
+///
+/// Applies the Möbius transform to obtain monomial coefficients, then calls
+/// [`commit`]. Evaluation order matches [`crate::mle::Mle`].
+///
+/// # Errors
+/// Returns the same errors as [`commit`].
+pub fn commit_evals(evals: &[Field], blowup: usize) -> Result<ProverState> {
+    let ext: Vec<Ext4> = evals.iter().copied().map(Ext4::from_base).collect();
+    commit_evals_ext(&ext, blowup)
+}
+
+/// Commit a multilinear polynomial from extension-field hypercube
+/// evaluations.
+///
+/// Applies the Möbius transform to obtain monomial coefficients, then calls
+/// [`commit_ext`]. Evaluation order matches [`crate::mle::Mle`].
+///
+/// # Errors
+/// Returns the same errors as [`commit_ext`].
+pub fn commit_evals_ext(evals: &[Ext4], blowup: usize) -> Result<ProverState> {
+    let coeffs = coeffs_from_evals_ext(evals)?;
+    commit_ext(&coeffs, blowup)
 }
 
 /// Sumcheck part of a `BaseFold` proof.
@@ -1029,6 +1109,21 @@ mod tests {
         total
     }
 
+    fn direct_eval_ext(coeffs: &[Ext4], point: &[Ext4]) -> Ext4 {
+        let n_vars = point.len();
+        let mut total = Ext4::ZERO;
+        for (index, coefficient) in coeffs.iter().enumerate() {
+            let mut weight = Ext4::ONE;
+            for (variable, coordinate) in point.iter().enumerate() {
+                if (index >> (n_vars - 1 - variable)) & 1 == 1 {
+                    weight *= *coordinate;
+                }
+            }
+            total += *coefficient * weight;
+        }
+        total
+    }
+
     fn prove_with(n_vars: usize, params: Params) -> (Commitment, Vec<Ext4>, Ext4, Proof) {
         let coeffs = coefficients(n_vars);
         let point = point(n_vars);
@@ -1264,6 +1359,78 @@ mod tests {
             &mut transcript
         )
         .is_err());
+    }
+
+    #[test]
+    fn ext_coefficients_and_evaluations_roundtrip() {
+        let n_vars = 4;
+        let coeffs: Vec<Ext4> = (0..(1usize << n_vars))
+            .map(|i| {
+                let i = u32::try_from(i).unwrap();
+                Ext4::new(
+                    Field::new(i * 3 + 1),
+                    Field::new(i * 5 + 2),
+                    Field::new(i * 7 + 3),
+                    Field::new(i + 4),
+                )
+            })
+            .collect();
+        let point = point(n_vars);
+        let value = direct_eval_ext(&coeffs, &point);
+        let state = commit_ext(&coeffs, params().blowup).unwrap();
+        let commitment = state.commitment().clone();
+        let mut transcript = Transcript::new(b"basefold-ext");
+        let proof = open(&state, &point, value, params(), &mut transcript).unwrap();
+        let mut transcript = Transcript::new(b"basefold-ext");
+        verify(
+            &commitment,
+            &point,
+            value,
+            &proof,
+            params(),
+            &mut transcript,
+        )
+        .unwrap();
+
+        let evals: Vec<Ext4> = (0..(1usize << n_vars))
+            .map(|i| {
+                let i = u32::try_from(i).unwrap();
+                Ext4::new(
+                    Field::new(i * 11 + 5),
+                    Field::new(i * 13 + 6),
+                    Field::new(i * 17 + 7),
+                    Field::new(i + 8),
+                )
+            })
+            .collect();
+        let expected = Mle::new(evals.clone()).unwrap().evaluate(&point).unwrap();
+        let state = commit_evals_ext(&evals, params().blowup).unwrap();
+        let commitment = state.commitment().clone();
+        let mut transcript = Transcript::new(b"basefold-ext-evals");
+        let proof = open(&state, &point, expected, params(), &mut transcript).unwrap();
+        let mut transcript = Transcript::new(b"basefold-ext-evals");
+        verify(
+            &commitment,
+            &point,
+            expected,
+            &proof,
+            params(),
+            &mut transcript,
+        )
+        .unwrap();
+
+        assert!(commit_ext(&[], params().blowup).is_err());
+        assert!(commit_evals_ext(&[], params().blowup).is_err());
+        assert!(commit_evals_ext(&[Ext4::ONE], params().blowup).is_err());
+    }
+
+    #[test]
+    fn base_commit_matches_ext_commit() {
+        let coeffs = coefficients(4);
+        let ext: Vec<Ext4> = coeffs.iter().copied().map(Ext4::from_base).collect();
+        let base = commit(&coeffs, params().blowup).unwrap();
+        let extension = commit_ext(&ext, params().blowup).unwrap();
+        assert_eq!(base.commitment(), extension.commitment());
     }
 
     #[test]

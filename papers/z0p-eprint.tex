@@ -36,7 +36,7 @@ quartic extension $\mathbb{F}_{p^4}$, raising per-challenge algebraic
 bounds to $\approx 124$ bits (see Section~\ref{sec:security}). Measured on a
 16-core machine, a 1,048,576-step computation proves in 5.19~s
 ($\approx 4.95\,\mu$s/step), verifies in 2.3~ms, with a 206,353-byte proof.
-Validation combines 244 unit tests with three adversarial suites
+Validation combines 252 unit tests with three adversarial suites
 ($\approx 800$ hostile attempts per run, zero acceptances, zero panics),
 wire-exact size assertions on every benchmark, and machine-checked
 regression gates.
@@ -209,7 +209,15 @@ one proof covers the chain.
 
 \paragraph{Lookups.} LogUp-style: multiplicities, $\beta$ challenge,
 quotients $1/(\beta+w)$, $m/(\beta+t)$, rational-sum equality and four
-sumchecks; proving fails closed on out-of-table witnesses.
+sumchecks; proving fails closed on out-of-table witnesses. A committed
+variant (\texttt{lookup\_pcs}) commits the witness, table,
+multiplicities, and both quotient columns with BaseFold, binds every
+sumcheck final value with a point opening, and folds the total
+multiplicity weight into the sum-t claim with a fresh $\gamma$. At
+1,024-in-1,024 with cap height 4 it proves in 367\,ms, verifies in
+21\,ms, and carries 642,443 bytes. It is committed-input but not
+zero-knowledge, does not constrain columns to the base field, and pays
+for eight separate openings.
 
 \paragraph{Zero knowledge.} Masked proving blinds columns with
 vanishing multiples from a ChaCha20 stream
@@ -242,7 +250,7 @@ check at true folded points; cap/path shape pins before hashing;
 \texttt{fri-dims} dimension binding; canonical-only decoding; PoW
 bound to history with queries sampled after.
 
-\paragraph{Adversarial validation.} Three layers: 244 unit tests
+\paragraph{Adversarial validation.} Three layers: 252 unit tests
 (KATs, Horner cross-checks, parallel-vs-sequential identity); a
 13-vector security suite (tampering of every query/fold/value/path/
 digest, 300 single-bit-flip fuzz trials, PoW forgery, rate gates both
@@ -289,27 +297,31 @@ from $1{,}024$ to $1{,}048{,}576$ steps. Primitives: BLAKE3 1\,MiB in
 \paragraph{Compact multilinear PCS prototype.} On 1,024 coefficients with
 blowup 16, 40 queries, and 20-bit grinding, the BaseFold-style prototype
 proves in 44\,ms, verifies in 1.1\,ms, and produces a 127,658-byte proof;
-cap height 4 gives 36\,ms / 0.9\,ms and 80,018 bytes. The Gemini v1
+cap height 4 gives 45\,ms / 0.9\,ms and 80,018 bytes. The Gemini v1
 construction on the same shape takes 693\,ms / 54\,ms and 888,672 bytes.
 The prototype commits one root, reduces $f(r)$ to $c(\rho)$ with
 sumcheck, and uses Möbius FRI folds. Optional Merkle caps store a digest
 frontier per layer and hash it back to the layer root; decoder fuzzing
-covers both plain and capped proofs. It is not wired into the AIR stack
-and has no end-to-end soundness proof; treat these numbers as an
-engineering result, not an audit.
+covers both plain and capped proofs. It backs the committed lookup
+prototype but is not wired into the AIR stack and has no end-to-end
+soundness proof; treat these numbers as an engineering result, not an
+audit.
 
 \section{Limitations and future work}
 
 Bench defaults are fast but weak and must not be mistaken for
-production soundness; large-table lookups still await a production
-compact multilinear PCS. Vectorized hashing and the one-query recursion
+production soundness. The table AIR is small-table by design; the
+committed LogUp prototype removes clear witness/table inputs but still
+uses eight separate BaseFold openings, lacks hiding, and does not enforce
+base-field column values. Vectorized hashing and the one-query recursion
 fragment are complete, FRI-backed univariate point and multi-point
 openings are in place, and Gemini plus a compact BaseFold-style prototype
 exist (one root, sumcheck plus Möbius FRI folds, optional Merkle caps).
-The prototype is experimental and not wired into AIR/STARK; WHIR-style
-batching, self-proving recursion, and a zkVM remain roadmap items. No external
-audit has yet been performed, for which the suites, gates, versioned wire
-format, and pinned baselines are the evidence package.
+The prototype and committed lookup are experimental and not wired into
+AIR/STARK; batched openings, a hiding PCS/sumcheck, self-proving
+recursion, and a zkVM remain roadmap items. No external audit has yet
+been performed, for which the suites, gates, versioned wire format, and
+pinned baselines are the evidence package.
 
 \bibliographystyle{plain}
 \begin{thebibliography}{9}

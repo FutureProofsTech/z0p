@@ -1,7 +1,7 @@
 # Unit tests — breakdown
 
 `cargo test --lib` (also run with `--release` by `tools/check.py`).
-Measured: 2026-10-20 — **252 passed, 0 failed.**
+Measured: 2026-10-20 — **261 passed, 0 failed.**
 
 ## Per-module counts
 
@@ -31,10 +31,11 @@ Measured: 2026-10-20 — **252 passed, 0 failed.**
 | `sumcheck` | 7 | product sums, tampered rounds/finals, transcript binding, shapes |
 | `table` | 18 | membership/non-membership, claims, ZK masking, caps, bound formula, encodings, downgraded FRI bound |
 | `transcript` | 10 | determinism, domain separation, extension challenges, PoW roundtrips/tampering, invalid query domains, parallel-scan identity |
+| `vm` | 9 | honest two-register execution, immediates/swaps, wrong output, tampered trace, program binding, program-length limits, production params, trace construction, codec roundtrip/tamper |
 
 ## Run
 
 ```sh
 cargo test --lib              # debug
-cargo test --lib --release    # optimized (same 252, also gated)
+cargo test --lib --release    # optimized (same 261, also gated)
 ```

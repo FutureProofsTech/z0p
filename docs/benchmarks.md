@@ -9,7 +9,7 @@ the timed region. Rows with a separate byte counter also assert it equals
 - Measured: 2026-10-20
 - Filter partial rows with `BENCH_ROW=substr`, e.g.
   `BENCH_ROW=N65536 cargo bench`
-- `tools/check.py` pins all 23 rows: sizes must match byte-for-byte, times
+- `tools/check.py` pins all 24 rows: sizes must match byte-for-byte, times
   must stay within 3× of `tools/baseline.json`
 
 ## Production shapes (`for_security(100)` — 100-bit query/PoW; Fp4 challenges)
@@ -87,6 +87,23 @@ and the column values are extension-field elements (base-field membership
 would need an extra constraint). The eight separate openings are the main
 size cost; batching them behind one compact proof is the next step.
 
+## Program execution (`vm`)
+
+The `vm` prototype runs a public two-register straight-line program from a
+private initial state and proves the public final output. Public one-hot
+selectors and immediate polynomials drive committed `A`/`B` columns; the
+composition uses selector-weighted transition quotients plus final-row
+boundaries at degree below `2n - 1`.
+
+| Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
+|---|---|---|---|---|
+| `vm 64-step B16Q12C2` | 1.53 | 0.24 | 14,933 | 14.6 |
+
+This is a fast, weak query schedule and a plain (non-hiding) execution
+prototype: programs are public and straight-line, the initial state is the
+witness, and FRI query openings reveal trace values. Control flow, memory,
+instruction privacy, and a hiding PCS/sumcheck remain roadmap items.
+
 ## Bench shapes (fast, ~18 conjectured bits)
 
 | Row | Prove (ms) | Verify (ms) | Proof (B) | Proof (KiB) |
@@ -139,7 +156,7 @@ are the other large prove costs. Builds without the feature are unaffected
 ## Reproduce
 
 ```sh
-cargo bench                          # all 23 rows
+cargo bench                          # all 24 rows
 BENCH_ROW=N1048576 cargo bench       # single scaled row
 BENCH_ROW="air prod" cargo bench     # all production AIR rows
 python3 tools/check.py               # full gates incl. bench regression

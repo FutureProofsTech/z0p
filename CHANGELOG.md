@@ -64,6 +64,23 @@ All notable changes to `z0p` are documented here. The format follows
   rejection, tampered sumchecks/openings, wrong commitments, and codec
   roundtrips. The benchmark baseline now pins 23 rows (adding the
   committed lookup), and docs report the new numbers.
+- **Minimal register-machine AIR (`vm`).** `src/vm.rs` proves execution
+  of a public two-register straight-line program from a private initial
+  state to a public output. Opcodes are `Add`, `Mul`, `Swap`, `SetA`,
+  `SetB`, and `Halt`; public one-hot selectors and immediate polynomials
+  drive a trace of committed `A`/`B` columns. The composition combines
+  selector-weighted transition quotients and final-row boundaries at
+  degree below `2n - 1` (blowup `>= 8`). A 64-step `B16 Q12 C2` proof
+  takes ~1.5 ms prove, ~0.24 ms verify, and 14,933 B. This is an
+  execution prototype, not a zkVM: programs are public and straight-line,
+  the initial state is the witness, there is no control flow or memory,
+  and proving is not hiding. Decoder fuzzing and hostile-parameter tests
+  cover the new proof type.
+- **Test count 252 -> 261.** Nine `vm` tests cover honest execution,
+  immediates and swaps, wrong outputs, tampered traces, program binding,
+  program length limits, production parameters, trace construction, and
+  codec roundtrips. The benchmark baseline now pins 24 rows (adding the
+  VM row), and docs report the new numbers.
 
 ### Changed
 - **Wire format v4.** The unreleased v3 work moved FRI fold values,
@@ -71,8 +88,9 @@ All notable changes to `z0p` are documented here. The format follows
   `Fp4` (16 bytes per element), with 16-byte extension leaves. This
   increment adds the optional BaseFold cap vector after the layer roots
   and bumps `codec::VERSION` to `4`; v3 and older proofs are rejected.
-  `lookup_pcs` proof and commitment types use the same version-4 framing.
-  `tools/baseline.json` was re-recorded after review (23 rows total).
+  `lookup_pcs` proof and commitment types use the same version-4 framing;
+  the `vm` proof uses the same framing as the two-column AIRs.
+  `tools/baseline.json` was re-recorded after review (24 rows total).
 - **Canonical sumcheck/lookup codecs.** `sumcheck::Proof` and
   `lookup::Proof` now expose `to_bytes`/`from_bytes` under the shared wire version,
   with capped nested sumcheck bodies, canonical `Fp4` values, and

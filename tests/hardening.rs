@@ -8,7 +8,7 @@
 
 use z0p::{
     air, babybear::Field, basefold, ext4::Ext4, fold, lookup_pcs, range, rng::ChaCha20, table,
-    transcript::Transcript,
+    transcript::Transcript, vm,
 };
 
 const LABEL: &[u8] = b"hardening";
@@ -162,6 +162,64 @@ fn fold_invalid_params_error_without_panic() {
 /// `Ok` or `Err`, never panic. Successful decodes are then shape-checked by
 /// `verify`.
 #[test]
+fn vm_invalid_params_error_without_panic() {
+    let base = vm::Params::new(
+        8,
+        8,
+        2,
+        4,
+        vec![vm::Op::SetA(Field::new(2)), vm::Op::Halt],
+        Field::new(2),
+        Field::ZERO,
+    )
+    .expect("valid vm params");
+    let mut transcript = Transcript::new(LABEL);
+    let proof = vm::prove(&base, Field::new(9), Field::new(4), &mut transcript).expect("baseline");
+    let invalid = [
+        vm::Params {
+            n_steps: 0,
+            ..base.clone()
+        },
+        vm::Params {
+            n_steps: 3,
+            ..base.clone()
+        },
+        vm::Params {
+            blowup: 4,
+            ..base.clone()
+        },
+        vm::Params {
+            num_queries: 0,
+            ..base.clone()
+        },
+        vm::Params {
+            final_size: 3,
+            ..base.clone()
+        },
+        vm::Params {
+            program: vec![vm::Op::Halt; 8],
+            ..base.clone()
+        },
+    ];
+    for params in invalid {
+        assert!(
+            vm::prove(
+                &params,
+                Field::new(9),
+                Field::new(4),
+                &mut Transcript::new(LABEL)
+            )
+            .is_err(),
+            "prove accepted {params:?}"
+        );
+        assert!(
+            vm::verify(&params, &proof, &mut Transcript::new(LABEL)).is_err(),
+            "verify accepted {params:?}"
+        );
+    }
+}
+
+#[test]
 fn air_decoder_fuzz_never_panics() {
     let params = valid_air();
     let proof = air::prove(params, &mut Transcript::new(LABEL)).expect("prove");
@@ -192,6 +250,7 @@ fn air_decoder_fuzz_never_panics() {
 
 /// The raw byte streams of every proof type survive the same storm.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn all_decoders_fuzz_never_panic() {
     let table_vals: Vec<Field> = [10u32, 20, 30, 40].iter().map(|v| Field::new(*v)).collect();
     let range_proof = range::prove(
@@ -258,6 +317,22 @@ fn all_decoders_fuzz_never_panic() {
     .unwrap();
     let lookup_bytes = lookup_proof.to_bytes();
     let lookup_commitment_bytes = lookup_commitments.to_bytes();
+    let vm_params = vm::Params::new(
+        8,
+        8,
+        2,
+        4,
+        vec![vm::Op::SetA(Field::new(2)), vm::Op::Halt],
+        Field::new(2),
+        Field::ZERO,
+    )
+    .unwrap();
+    let vm_bytes = {
+        let mut prover = Transcript::new(b"hardening/vm");
+        vm::prove(&vm_params, Field::new(9), Field::new(4), &mut prover)
+            .unwrap()
+            .to_bytes()
+    };
 
     let mut seed = 0xdead_beef_1234_5678u64;
     for stream in [
@@ -267,6 +342,7 @@ fn all_decoders_fuzz_never_panic() {
         &capped_bytes,
         &lookup_bytes,
         &lookup_commitment_bytes,
+        &vm_bytes,
     ] {
         for _ in 0..2000 {
             seed = seed
@@ -283,6 +359,7 @@ fn all_decoders_fuzz_never_panic() {
             let _ = basefold::Proof::from_bytes(&mutated);
             let _ = lookup_pcs::Proof::from_bytes(&mutated);
             let _ = lookup_pcs::Commitments::from_bytes(&mutated);
+            let _ = vm::Proof::from_bytes(&mutated);
         }
     }
 }

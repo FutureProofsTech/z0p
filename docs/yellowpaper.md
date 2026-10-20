@@ -95,6 +95,7 @@ low bits for power-of-two domains (unbiased).
 | fold (IVC) | `fold/params`, then per step `fold/step`, `fold/trace`, six `fold/alpha`, finally one `fold/gamma` per step |
 | lookup | `lookup/ctx` separators (`sum-w`/`read-w`/`sum-t`/`read-t`), `witness`, `table`, `sums`, `qw`, `qt`, `m`, `beta`, `beta-challenge`, `r1`, `r2` |
 | lookup_pcs | `lookup-pcs/commitments`, `beta`, `quotients`, `sum-w`, four `ctx` separators, `r1`, `gamma`, `r2`, and one `open` label per BaseFold opening |
+| vm | `vm/params`, `vm/trace`, and four `vm/alpha` challenges |
 | sumcheck | `sumcheck/claim`, then per round `sumcheck/round`, `sumcheck/challenge` |
 
 **Proof of work.** `grind(label, d)` returns the smallest $u64$ nonce
@@ -305,6 +306,26 @@ The prototype is not wired into the AIR/STARK stack, has no hiding, and
 has no end-to-end soundness proof; it must not be treated as
 production-ready.
 
+### 4.8 Program execution (`vm`)
+
+A public two-register straight-line program executes on a private initial
+state. Trace columns $A,B$ apply one of `Add`, `Mul`, `Swap`, `SetA`,
+`SetB`, or `Halt` per row; the last row is the public output claim and has
+no outgoing transition. Public one-hot selector polynomials
+$\sigma_o(x)$ and immediate polynomials $I_A(x),I_B(x)$ carry the opcode
+and constants. With $Z=(x^n-1)/(x-w_{\mathrm{last}})$, the composition is
+$$
+C(x)=\alpha_0\frac{T(x)}{Z(x)}+\alpha_1\frac{U(x)}{Z(x)}
++\alpha_2\frac{A(x)-a_{\mathrm{last}}}{x-w_{\mathrm{last}}}
++\alpha_3\frac{B(x)-b_{\mathrm{last}}}{x-w_{\mathrm{last}}},
+$$
+where $T,U$ are the selector-weighted transition numerators. Composition
+degree is below $2n-1$, so blowup is at least $8$ (production $16$). A
+64-step $B16Q12C2$ proof takes about 1.5 ms prove, 0.24 ms verify, and
+14,933 bytes. The program is public, execution is straight-line, and the
+proof is not hiding; control flow, memory, instruction privacy, and a
+general zkVM remain future work.
+
 ## 5. Encodings (normative wire format, `VERSION = 4`)
 
 ```
@@ -350,7 +371,7 @@ cap/path shape pins before hashing; `fri-dims` dimension binding
 (closes proof malleability of echoed dimensions); canonical-only
 decoding; PoW bound to history with queries sampled after.
 
-**Validation.** 252 unit tests (KATs, cross-checks against Horner/`%`,
+**Validation.** 261 unit tests (KATs, cross-checks against Horner/`%`,
 parallel-vs-sequential identity), 13-test security suite and 10-test
 red-team suite (~800 hostile attempts/run, zero acceptances, zero
 panics), wire-exact size assertions on every benchmark, and a
@@ -365,10 +386,12 @@ enforce base-field column values. Vectorized hashing, the one-query
 recursion fragment, FRI-backed univariate point and multi-point openings,
 a Gemini-style multilinear PCS (`O(n)` openings, one batched opening per
 layer), a compact BaseFold-style prototype (one root, sumcheck plus
-Möbius FRI folds), and committed LogUp are done. The BaseFold and
-`lookup_pcs` modules are experimental and not wired into AIR/STARK;
-batched openings, a hiding PCS/sumcheck, self-proving recursion, and a
-zkVM are roadmap items. No external audit has yet been performed.
+Möbius FRI folds), committed LogUp, and a two-register program-execution
+prototype are done. The BaseFold, `lookup_pcs`, and `vm` modules are
+experimental and not wired into AIR/STARK production paths; batched
+openings, a hiding PCS/sumcheck, self-proving recursion, control flow,
+memory, and a zkVM are roadmap items. No external audit has yet been
+performed.
 
 ## 8. License
 

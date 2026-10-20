@@ -24,6 +24,7 @@
 //! - [`rng`]: `ChaCha20` (RFC 8439) CSPRNG plus OS seeding.
 //! - [`blind`]: hiding layer — vanishing-multiple masking for ZK proofs.
 //! - [`table`]: table-membership AIR (vanishing product over committed data).
+//! - [`vm`]: minimal public-program register-machine AIR with private input.
 //!
 //! # Platinum rules enforced in this crate
 //! - `#![forbid(unsafe_code)]`: no `unsafe` anywhere.
@@ -98,5 +99,6 @@ pub mod sumcheck;
 pub mod table;
 pub mod transcript;
 pub mod upcs;
+pub mod vm;
 
 pub use error::{Error, Result};

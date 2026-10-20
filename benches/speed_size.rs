@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use z0p::{
     air, babybear::Field, basefold, ext4::Ext4, fold, fri, gemini, gf2::F64, hash::blake3_256,
-    lookup, lookup_pcs, merkle, ntt, range, table, transcript::Transcript,
+    lookup, lookup_pcs, merkle, ntt, range, table, transcript::Transcript, vm,
 };
 
 /// Median of per-iteration milliseconds over `reps` runs (plus one warmup).
@@ -82,6 +82,19 @@ fn air_proof_bytes(proof: &air::Proof) -> usize {
         + fri_proof_body_bytes(&proof.fri_proof);
     for opening in &proof.openings {
         // Index, four fields, base path, shifted path (both counted).
+        total += 8 + 16 + 4 + path_bytes(&opening.path) + 4 + path_bytes(&opening.shift_path);
+    }
+    total
+}
+
+fn vm_proof_bytes(proof: &vm::Proof) -> usize {
+    let mut total = 1
+        + 4
+        + 32 * proof.column_cap.len()
+        + 4
+        + fri_commitment_body_bytes(&proof.fri_commitment)
+        + fri_proof_body_bytes(&proof.fri_proof);
+    for opening in &proof.openings {
         total += 8 + 16 + 4 + path_bytes(&opening.path) + 4 + path_bytes(&opening.shift_path);
     }
     total
@@ -371,6 +384,47 @@ fn bench_lookup_pcs() {
     let bytes = commitments.to_bytes().len() + proof.to_bytes().len();
     println!(
         "lookup-pcs 1024-in-1024 B16Q40G20C4: prove {prove_ms:8.2} ms  verify {verify_ms:8.2} ms  proof {bytes} B ({:.1} KiB)",
+        kb(bytes)
+    );
+}
+
+fn bench_vm() {
+    let mut program = vec![vm::Op::SetA(Field::ONE), vm::Op::SetB(Field::ONE)];
+    for i in 2..31 {
+        program.push(if i % 2 == 0 {
+            vm::Op::Add
+        } else {
+            vm::Op::Swap
+        });
+    }
+    program.push(vm::Op::Halt);
+    let (trace_a, trace_b) = vm::build_trace(&program, Field::ONE, Field::ONE, 64).expect("trace");
+    let params = vm::Params::new(64, 16, 12, 16, program, trace_a[63], trace_b[63])
+        .expect("params")
+        .with_cap_height(2);
+    let mut transcript = Transcript::new(b"bench/vm");
+    let proof = vm::prove(&params, Field::ONE, Field::ONE, &mut transcript).expect("prove");
+    let mut transcript = Transcript::new(b"bench/vm");
+    vm::verify(&params, &proof, &mut transcript).expect("verify");
+
+    let prove_ms = median_ms(7, || {
+        let mut transcript = Transcript::new(b"bench/vm");
+        black_box(vm::prove(&params, Field::ONE, Field::ONE, &mut transcript).expect("prove"));
+    });
+    let verify_ms = median_ms(11, || {
+        let mut transcript = Transcript::new(b"bench/vm");
+        let ok = vm::verify(&params, &proof, &mut transcript).is_ok();
+        assert!(ok);
+        black_box(ok);
+    });
+    let bytes = vm_proof_bytes(&proof);
+    assert_eq!(
+        bytes,
+        proof.to_bytes().len(),
+        "byte counter must match the wire format"
+    );
+    println!(
+        "vm 64-step B16Q12C2: prove {prove_ms:8.2} ms  verify {verify_ms:8.2} ms  proof {bytes} B ({:.1} KiB)",
         kb(bytes)
     );
 }
@@ -762,6 +816,7 @@ fn main() {
     run_filtered(&filter, "table", bench_table);
     run_filtered(&filter, "lookup", bench_lookup);
     run_filtered(&filter, "lookup-pcs", bench_lookup_pcs);
+    run_filtered(&filter, "vm", bench_vm);
     run_filtered(&filter, "fold", bench_fold);
     run_filtered(&filter, "basefold", bench_basefold);
     run_filtered(&filter, "gemini", bench_gemini);

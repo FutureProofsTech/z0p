@@ -3,7 +3,8 @@
 A from-scratch, zero-dependency zero-knowledge proving stack in safe Rust:
 binary fields, an NTT-friendly prime field, BLAKE3, Merkle trees, FRI
 polynomial commitments, and STARKs (Fibonacci AIR, range checks, table
-lookups, hash-folded IVC) — plus zero-knowledge masking throughout.
+lookups, register-machine execution, hash-folded IVC) — plus zero-knowledge
+masking throughout.
 
 No elliptic curves. No trusted setup. No `unsafe`. No dependencies.
 Hash-based and transparent, in the plausibly post-quantum STARK family.
@@ -30,7 +31,7 @@ Hash-based and transparent, in the plausibly post-quantum STARK family.
   (~4.95 µs/step, ~202k steps/s), verified in **~2.3 ms**, 206,353 bytes.
   Verification cost is essentially independent of trace size (the verifier
   derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 252 unit tests plus three attack suites
+- **Adversarially tested** — 261 unit tests plus three attack suites
   ([security](docs/security-tests.md), [red-team](docs/red-team.md),
   hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
   acceptances, zero panics.
@@ -101,13 +102,19 @@ Full table with methodology: [docs/benchmarks.md](docs/benchmarks.md).
 |---|---|---|---|
 | `lookup_pcs` (five commitments, eight openings) | 367 ms | 21 ms | 642,443 B |
 
+| Program execution, 64 steps, `B16 Q12 C2` | Prove | Verify | Proof |
+|---|---|---|---|
+| `vm` (public program, private input, two registers) | 1.5 ms | 0.24 ms | 14,933 B |
+
 The BaseFold rows are a prototype (not wired into the AIR stack); optional
 Merkle caps replace the top path steps of every layer with one frontier,
 shrinking the proof by ~37% on this shape. Gemini remains the conservative
 v1 choice for small multilinear instances. The committed lookup commits the
 witness, table, multiplicities, and both quotient columns, then carries
 eight BaseFold openings; it hides columns from the wire but is not
-zero-knowledge.
+zero-knowledge. The `vm` row is a plain execution prototype: the program is
+public, the initial registers are a witness, and FRI query openings are not
+masked.
 
 | Primitive | Result |
 |---|---|
@@ -148,10 +155,10 @@ system before an external audit.
 
 | Suite | What | Result |
 |---|---|---|
-| Unit (`cargo test --lib`) | 252 tests across 24 modules | [docs/unit-tests.md](docs/unit-tests.md) |
+| Unit (`cargo test --lib`) | 261 tests across 25 modules | [docs/unit-tests.md](docs/unit-tests.md) |
 | `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
 | `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
-| `tests/hardening.rs` | 8 vectors: hostile `Params`, decoder bit-flip fuzz, RNG uniformity | this README |
+| `tests/hardening.rs` | 9 vectors: hostile `Params` (incl. VM), decoder bit-flip fuzz, RNG uniformity | this README |
 
 Every forgery attempt is rejected; hostile input fails closed with `Err`
 (never panics); honest proofs always verify. Past findings and their fixes
@@ -182,6 +189,7 @@ src/
   basefold.rs   compact multilinear PCS prototype (sumcheck + FRI folds)
   lookup.rs     LogUp-style table membership via sumcheck
   lookup_pcs.rs committed LogUp over compact BaseFold openings
+  vm.rs         minimal register-machine program-execution AIR
   air.rs        Fibonacci AIR/STARK (+ ZK)
   range.rs      range-check AIR (+ ZK)
   recursion.rs  one-query FRI fold-chain AIR (recursion fragment)
@@ -254,12 +262,17 @@ CHANGELOG.md     release history (Keep a Changelog)
   not wired into AIR/STARK yet and needs an audit; decoder fuzzing and
   optional Merkle caps are in place, and WHIR-style cap batching plus
   self-proving recursion are the next PCS steps.
-- **Programs / zkVM — committed lookup prototype done.** `lookup_pcs`
-  commits the witness, table, multiplicities, and quotient columns, then
-  binds every sumcheck final value with a BaseFold opening. At 1,024
-  rows it proves in ~367 ms, verifies in ~21 ms, and carries 642,443 B
-  with cap height 4. Hiding PCS/sumcheck support and program execution
-  are next.
+- **Programs / zkVM — lookup and register-machine prototypes done.**
+  `lookup_pcs` commits the witness, table, multiplicities, and quotient
+  columns, then binds every sumcheck final value with a BaseFold opening;
+  at 1,024 rows it proves in ~367 ms, verifies in ~21 ms, and carries
+  642,443 B with cap height 4. `vm` proves execution of a public
+  two-register straight-line program from a private initial state to a
+  public output: public one-hot opcode selectors and immediate
+  polynomials drive a trace of committed `A`/`B` columns, with a
+  64-step proof at ~1.5 ms prove, ~0.24 ms verify, and 14,933 B. It is a
+  non-hiding execution prototype, not a general zkVM; control flow,
+  memory, instruction privacy, hiding PCS/sumcheck, and an audit remain.
 - **External audit.** The suite, gates, versioned wire format, and pinned
   baselines are the pre-audit package.
 

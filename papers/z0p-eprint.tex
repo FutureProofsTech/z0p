@@ -24,8 +24,9 @@ from first principles in safe Rust with no dependencies beyond the compiler
 and the operating system. Binary fields, the BabyBear prime field, BLAKE3,
 Merkle trees, a parallel NTT, an arity-4 FRI polynomial commitment, four
 STARK systems (Fibonacci AIR, range checks, table membership, and hash-folded
-IVC), LogUp lookups, zero-knowledge masking, and a compact multilinear PCS
-prototype are all owned by a single crate under
+IVC), LogUp lookups, a minimal register-machine execution AIR,
+zero-knowledge masking, and a compact multilinear PCS prototype are all
+owned by a single crate under
 \texttt{\#![forbid(unsafe\_code)]}. The system is
 transparent (no trusted setup) and hash-based, hence plausibly
 post-quantum. Production parameters target a $\approx 100$-bit
@@ -36,7 +37,7 @@ quartic extension $\mathbb{F}_{p^4}$, raising per-challenge algebraic
 bounds to $\approx 124$ bits (see Section~\ref{sec:security}). Measured on a
 16-core machine, a 1,048,576-step computation proves in 5.19~s
 ($\approx 4.95\,\mu$s/step), verifies in 2.3~ms, with a 206,353-byte proof.
-Validation combines 252 unit tests with three adversarial suites
+Validation combines 261 unit tests with three adversarial suites
 ($\approx 800$ hostile attempts per run, zero acceptances, zero panics),
 wire-exact size assertions on every benchmark, and machine-checked
 regression gates.
@@ -219,6 +220,29 @@ multiplicity weight into the sum-t claim with a fresh $\gamma$. At
 zero-knowledge, does not constrain columns to the base field, and pays
 for eight separate openings.
 
+\paragraph{Program execution.} The \texttt{vm} prototype proves
+execution of a public two-register straight-line program from a private
+initial state to a public output. Public one-hot selectors
+$\sigma_o(x)$ identify one of \texttt{Add}, \texttt{Mul},
+\texttt{Swap}, \texttt{SetA}, \texttt{SetB}, or \texttt{Halt} per
+row; public immediate polynomials carry constants. With committed
+columns $A,B$, transition numerators $T,U$, and
+$Z_{\mathrm{trans}}(x)=(x^n-1)/(x-w_{\mathrm{last}})$:
+\begin{equation}
+\begin{aligned}
+C(x) ={}& \alpha_0\frac{T(x)}{Z_{\mathrm{trans}}(x)}
++ \alpha_1\frac{U(x)}{Z_{\mathrm{trans}}(x)} \\
+&+ \alpha_2\frac{A(x)-a_{\mathrm{last}}}{x-w_{\mathrm{last}}}
++ \alpha_3\frac{B(x)-b_{\mathrm{last}}}{x-w_{\mathrm{last}}}.
+\end{aligned}
+\end{equation}
+The final row has no outgoing transition. Composition degree is below
+$2n-1$, so blowup is at least $8$; production tuning uses $16$. A
+64-step $B16Q12C2$ proof proves in 1.5\,ms, verifies in 0.24\,ms, and
+carries 14,933 bytes. The program is public and execution is
+straight-line; the initial state is the witness, there is no control
+flow or memory, and FRI query openings are not masked.
+
 \paragraph{Zero knowledge.} Masked proving blinds columns with
 vanishing multiples from a ChaCha20 stream
 ($n_{\mathrm{rand}}\ge$ queries enforced; key material zeroized on
@@ -250,7 +274,7 @@ check at true folded points; cap/path shape pins before hashing;
 \texttt{fri-dims} dimension binding; canonical-only decoding; PoW
 bound to history with queries sampled after.
 
-\paragraph{Adversarial validation.} Three layers: 252 unit tests
+\paragraph{Adversarial validation.} Three layers: 261 unit tests
 (KATs, Horner cross-checks, parallel-vs-sequential identity); a
 13-vector security suite (tampering of every query/fold/value/path/
 digest, 300 single-bit-flip fuzz trials, PoW forgery, rate gates both
@@ -317,11 +341,15 @@ base-field column values. Vectorized hashing and the one-query recursion
 fragment are complete, FRI-backed univariate point and multi-point
 openings are in place, and Gemini plus a compact BaseFold-style prototype
 exist (one root, sumcheck plus Möbius FRI folds, optional Merkle caps).
-The prototype and committed lookup are experimental and not wired into
-AIR/STARK; batched openings, a hiding PCS/sumcheck, self-proving
-recursion, and a zkVM remain roadmap items. No external audit has yet
-been performed, for which the suites, gates, versioned wire format, and
-pinned baselines are the evidence package.
+The prototype, committed lookup, and program-execution AIR are
+experimental and not wired into production AIR/STARK paths; batched
+openings, a hiding PCS/sumcheck, self-proving recursion, control flow,
+memory, instruction privacy, and a general zkVM remain roadmap items.
+The \texttt{vm} prototype is a public-program, private-initial-state,
+two-register straight-line machine; it is not hiding and has no
+memory or control flow. No external audit has yet been performed, for
+which the suites, gates, versioned wire format, and pinned baselines are
+the evidence package.
 
 \bibliographystyle{plain}
 \begin{thebibliography}{9}

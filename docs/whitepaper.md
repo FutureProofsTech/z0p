@@ -28,11 +28,11 @@ enough to use, and tested hard enough to believe.
 
 **z0p** is a complete zero-knowledge proving stack built from zero —
 literally. Binary fields, a prime field, a hash function, Merkle trees,
-an NTT, a polynomial commitment, and four STARK systems are all
-implemented in one crate, in safe Rust, with no dependencies beyond the
-compiler and the operating system. There is no trusted setup because
-there is nothing to set up: security reduces to a hash function and
-Reed–Solomon proximity testing.
+an NTT, a polynomial commitment, four STARK systems, and a minimal
+program-execution AIR are all implemented in one crate, in safe Rust, with
+no dependencies beyond the compiler and the operating system. There is no
+trusted setup because there is nothing to set up: security reduces to a
+hash function and Reed–Solomon proximity testing.
 
 ### What it proves
 
@@ -45,6 +45,10 @@ Reed–Solomon proximity testing.
   a vanishing-product constraint.
 - **Chained computation (IVC).** Multi-segment traces folded into a
   single proof: prove a long computation piece by piece, verify once.
+- **Program execution (`vm`).** A public two-register straight-line
+  program runs from a private initial state to a public output. This is
+  an execution prototype; control flow, memory, and instruction privacy
+  are not yet supported.
 - **Set membership at scale (LogUp lookups).** Witness values belong to
   a table, argued through quotient sums and sumcheck.
 - **Zero knowledge throughout.** Masked proving modes (`prove_zk`) make
@@ -73,7 +77,7 @@ Reed–Solomon proximity testing.
    extension-field (`Fp4`) challenges, raising per-challenge algebraic
    bounds to ~124 bits. This is still a conjectured query/PoW schedule,
    not an end-to-end soundness proof.
-5. **Evidence over claims.** 252 unit tests, three adversarial suites
+5. **Evidence over claims.** 261 unit tests, three adversarial suites
    (~800 hostile attempts per run, zero acceptances), and benchmarks
    that assert wire-exact proof sizes on every run. Findings are
    documented, including one real malleability hole the fuzzers caught
@@ -158,8 +162,14 @@ portable scalar-safe-Rust throughput with parallelism over
   the wire but is not zero-knowledge, does not enforce base-field column
   values, and still pays for eight separate openings. Production
   large-table openings need batched openings, a hiding PCS, and an audit.
-  The system has not yet had an external audit; the test suites, gates,
-  versioned wire format, and pinned baselines are the pre-audit package.
+  A first program-execution prototype (`vm.rs`) proves a public
+  two-register straight-line program from a private initial state to a
+  public output; a 64-step proof takes ~1.5 ms prove, ~0.24 ms verify,
+  and 14,933 B. It is not a zkVM: programs are public, there is no
+  control flow or memory, the initial state is the witness, and proving
+  is not hiding. The system has not yet had an external audit; the test
+  suites, gates, versioned wire format, and pinned baselines are the
+  pre-audit package.
 
 ## 7. Roadmap
 
@@ -188,11 +198,15 @@ portable scalar-safe-Rust throughput with parallelism over
    caps and decoder fuzzing are in place; AIR/STARK wiring and an audit
    remain before production use, and WHIR-style batching is the next PCS
    step.
-5. **Programs / zkVM — committed lookup prototype done.** `lookup_pcs`
-   commits the witness, table, multiplicities, and both quotient columns,
-   binds sumcheck final values with eight BaseFold openings, and hides the
-   input columns from the wire. Next: batched openings, hiding PCS and
-   sumcheck for private tables, then general program execution proofs.
+5. **Programs / zkVM — lookup and register-machine prototypes done.**
+   `lookup_pcs` commits the witness, table, multiplicities, and both
+   quotient columns, binds sumcheck final values with eight BaseFold
+   openings, and hides the input columns from the wire. `vm` adds a
+   public-program, private-input two-register execution AIR with opcode
+   selectors, immediate polynomials, and a 64-step proof at ~1.5 ms
+   prove / ~0.24 ms verify / 14,933 B. Next: batched openings, hiding PCS
+   and sumcheck for private tables, then control flow, memory, and a
+   general zkVM.
 6. **External audit** — procurement item; the evidence package is ready.
 
 ## 8. License

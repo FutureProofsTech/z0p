@@ -77,7 +77,7 @@ impl Params {
         if num_queries == 0 {
             return Err(Error::NoQueries);
         }
-        if final_size == 0 || !final_size.is_power_of_two() {
+        if final_size < 2 || !final_size.is_power_of_two() {
             return Err(Error::InvalidDomainSize { size: final_size });
         }
         // Both factors are powers of two, but their product can still
@@ -164,7 +164,7 @@ impl Params {
     /// Length of the LDE domain.
     #[must_use]
     pub const fn lde_len(&self) -> usize {
-        self.n_steps * self.blowup
+        self.n_steps.saturating_mul(self.blowup)
     }
 
     fn fri_params(&self) -> Result<fri::Params> {
@@ -190,9 +190,14 @@ impl Params {
         if self.num_queries == 0 {
             return Err(Error::NoQueries);
         }
-        if self.final_size == 0 || !self.final_size.is_power_of_two() {
+        if self.final_size < 2 || !self.final_size.is_power_of_two() {
             return Err(Error::InvalidDomainSize {
                 size: self.final_size,
+            });
+        }
+        if self.cap_height > 8 {
+            return Err(Error::MalformedInput {
+                reason: "cap_height above 8",
             });
         }
         let lde = self
@@ -314,8 +319,8 @@ impl Proof {
         reader.end()?;
         Ok(Self {
             column_cap,
-            fri_commitment: fri_commitment.clone(),
-            fri_proof: fri_proof.clone(),
+            fri_commitment,
+            fri_proof,
             openings,
         })
     }
@@ -358,8 +363,10 @@ pub fn build_trace(a0: Field, b0: Field, n_steps: usize) -> (Vec<Field>, Vec<Fie
 /// # Errors
 /// Returns [`Error`] for domain or Merkle failures (all structural).
 pub fn prove(params: Params, transcript: &mut Transcript) -> Result<Proof> {
-    let (col_a, col_b) = build_trace(params.a0, params.b0, params.n_steps);
+    // Validate before allocating a trace: `Params` fields are public and a
+    // hand-built huge `n_steps` must fail closed, not attempt an allocation.
     params.validate()?;
+    let (col_a, col_b) = build_trace(params.a0, params.b0, params.n_steps);
     let coeff_a = interpolate(&col_a)?;
     prove_linked(params, &coeff_a, col_b[params.n_steps - 1], transcript)
 }
@@ -421,12 +428,14 @@ fn prove_linked(
 /// same [`verify`]: masking preserves every base-row value, hence every
 /// quotient identity.
 ///
-/// Requires `n_rand >= num_queries`; the composition bound grows to
-/// `n_steps + n_rand - 1` (still rate `< 1`).
+/// Each query reveals an eight-row joint leaf plus the eight-row shifted
+/// leaf, i.e. up to `16` masked evaluations per column per query. Perfect
+/// hiding therefore requires `n_rand >= 16 * num_queries`; the composition
+/// bound grows to `n_steps + n_rand - 1` (still rate `< 1`).
 ///
 /// # Errors
-/// Returns [`Error::MalformedInput`] when `n_rand < num_queries`, otherwise
-/// the structural errors of [`prove`].
+/// Returns [`Error::MalformedInput`] when `n_rand` is below that budget,
+/// otherwise the structural errors of [`prove`].
 pub fn prove_zk(
     params: Params,
     n_rand: usize,
@@ -434,9 +443,15 @@ pub fn prove_zk(
     transcript: &mut Transcript,
 ) -> Result<Proof> {
     params.validate()?;
-    if n_rand < params.num_queries {
+    let required = params
+        .num_queries
+        .checked_mul(16)
+        .ok_or(Error::MalformedInput {
+            reason: "query budget overflows the hiding requirement",
+        })?;
+    if n_rand < required {
         return Err(Error::MalformedInput {
-            reason: "n_rand must cover num_queries for hiding",
+            reason: "n_rand must cover every revealed leaf row for hiding",
         });
     }
     let n = params.n_steps;
@@ -505,7 +520,10 @@ fn prove_inner(
     // One joint tree over interleaved rows: a single path opens both
     // columns at a position. Rows pack flat (one allocation).
     let row_len = 4 * lde_cols.len();
-    let mut flat = vec![0u8; m * row_len];
+    let flat_len = m
+        .checked_mul(row_len)
+        .ok_or(Error::InvalidDomainSize { size: m })?;
+    let mut flat = vec![0u8; flat_len];
     for (i, chunk) in flat.chunks_exact_mut(row_len).enumerate() {
         for (lde, slot) in lde_cols.iter().zip(chunk.chunks_exact_mut(4)) {
             slot.copy_from_slice(&lde[i].to_le_bytes());
@@ -976,7 +994,9 @@ mod tests {
     /// give a power-of-four ratio (256 / 4).
     fn test_params_zk() -> Params {
         let n = 16;
-        Params::new(n, 8, 8, 4, Field::ONE, Field::ONE, fib_field(n)).unwrap()
+        // 8 queries reveal up to 16 masked rows each; `n_rand = 128`
+        // pads the masked domain to 256 and keeps the final layer valid.
+        Params::new(n, 8, 8, 8, Field::ONE, Field::ONE, fib_field(n)).unwrap()
     }
 
     #[test]
@@ -1350,7 +1370,7 @@ mod tests {
     fn zk_proof_verifies_with_same_verify() {
         let params = test_params_zk();
         let mut prover_t = Transcript::new(b"fib-zk");
-        let proof = prove_zk(params, 8, &mut zk_rng(), &mut prover_t).unwrap();
+        let proof = prove_zk(params, 128, &mut zk_rng(), &mut prover_t).unwrap();
         let mut verifier_t = Transcript::new(b"fib-zk");
         verify(params, &proof, &mut verifier_t).unwrap();
     }
@@ -1364,11 +1384,11 @@ mod tests {
         let mut t1 = Transcript::new(b"fib-diverge");
         let plain = prove(params, &mut t1).unwrap();
         let mut t2 = Transcript::new(b"fib-diverge");
-        let blinded = prove_zk(params_zk, 8, &mut zk_rng(), &mut t2).unwrap();
+        let blinded = prove_zk(params_zk, 128, &mut zk_rng(), &mut t2).unwrap();
         assert_ne!(plain.openings[0].a, blinded.openings[0].a);
         // Deterministic under a fixed stream.
         let mut t3 = Transcript::new(b"fib-diverge");
-        let rerun = prove_zk(params_zk, 8, &mut zk_rng(), &mut t3).unwrap();
+        let rerun = prove_zk(params_zk, 128, &mut zk_rng(), &mut t3).unwrap();
         assert_eq!(blinded, rerun);
     }
 
@@ -1376,14 +1396,14 @@ mod tests {
     fn zk_rejects_few_maskers() {
         let params = test_params_zk();
         let mut t = Transcript::new(b"fib-fewmask");
-        assert!(prove_zk(params, params.num_queries - 1, &mut zk_rng(), &mut t).is_err());
+        assert!(prove_zk(params, params.num_queries * 16 - 1, &mut zk_rng(), &mut t).is_err());
     }
 
     #[test]
     fn zk_tampered_opening_fails() {
         let params = test_params_zk();
         let mut prover_t = Transcript::new(b"fib-zktamper");
-        let mut proof = prove_zk(params, 8, &mut zk_rng(), &mut prover_t).unwrap();
+        let mut proof = prove_zk(params, 128, &mut zk_rng(), &mut prover_t).unwrap();
         proof.openings[0].b_next += Field::ONE;
         let mut verifier_t = Transcript::new(b"fib-zktamper");
         assert!(verify(params, &proof, &mut verifier_t).is_err());

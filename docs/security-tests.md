@@ -11,8 +11,8 @@ Run with the live table:
 cargo test --test security -- --nocapture
 ```
 
-Measured: 2026-09-26 — **13 passed, 0 failed; 477 hostile attempts,
-477 rejected, 0 accepted.**
+Measured: 2026-11-05 — **13 passed, 0 failed; 480 attempts, 479 rejected,
+1 honest sanity accepted.**
 
 ## Results
 
@@ -30,7 +30,7 @@ Measured: 2026-09-26 — **13 passed, 0 failed; 477 hostile attempts,
 | Proof byte-fuzz (single-bit flips) | 200 | 200 | 0 |
 | Commitment byte-fuzz (single-bit flips) | 100 | 100 | 0 |
 | Truncated / empty / over-long inputs | 11 | 11 | 0 |
-| Merkle adversarial (wrong leaf/index/short/long path × 8 leaves) | 32 | 32 | 0 |
+| Merkle adversarial (wrong leaf/index/short/long path × 8 leaves) | 40 | 40 | 0 |
 
 ## Finding closed by this suite
 
@@ -150,3 +150,125 @@ Regression: `blind::tests::rejects_bad_shapes`.
   query/PoW schedule, not total soundness. FRI folds, STARK
   compositions, `upcs`/Gemini points and betas, `sumcheck`, and `lookup`
   all use `Fp4` challenges. See README, `fri` docs, and the ePrint.
+
+## Finding closed by internal audit: Merkle paths did not bind the index
+
+`MerkleTree::verify`/`verify_digest`/`verify_capped`/`verify_capped64`
+hashed the supplied direction bits but never checked them against the
+claimed leaf index. A valid opening for leaf `j` therefore verified at any
+other in-range `index` with the same path length. FRI samples its query
+positions from the transcript and every STARK opening is tied to those
+positions, so a prover could answer a query at `i` with a row committed at
+`j` (for example, hiding the one trace row that violates a constraint).
+The same gap existed in the hand-rolled FRI and BaseFold path walks.
+
+Fix: all Merkle verifiers and both hand-rolled walkers now require every
+direction bit to equal the corresponding index bit; caps still select the
+frontier entry from the same bound index. Regressions:
+`merkle::tests::prove_verify_pow2`,
+`merkle::tests::capped_roundtrip`, and the in-range wrong-index vector in
+`tests/security.rs::merkle_adversarial_vectors`.
+
+## Finding closed by internal audit: fold-free FRI was not binding
+
+FRI accepted `final_size == lde_len`, which produces zero folds. With no
+fold there are no query openings, so the verifier's final low-degree check
+inspected a proof-supplied `final_poly` that was never tied to the
+commitment. Bare `fri::verify` could therefore accept a commitment to one
+polynomial and a low-degree polynomial from somewhere else.
+
+Fix: `commit`/`commit_evals` reject fold-free shapes, and `verify` rejects
+a commitment with fewer than two caps. Regression:
+`fri::tests::fold_free_instances_rejected`. The final layer is also capped
+at `MAX_FINAL_SIZE = 1024` so a hostile commitment cannot force the
+quadratic final degree check; the check itself now stops at order
+`bound + 1`.
+
+## Hardening closed by internal audit: prover allocation ordering
+
+`air::prove` allocated the trace before validating public `Params`, and
+`range::prove` allocated `n_bits + 1` columns before validating them. A
+hand-built `n_steps`/`n_bits` could therefore attempt an enormous
+allocation instead of returning `Err`. Both now validate first; regression
+`tests/hardening.rs::oversized_final_layers_and_fold_counts_fail_closed`.
+`recursion::Params::n_rows` and `for_security` clamp/reject absurd fold
+counts before `next_power_of_two`, `table::membership_bound` saturates,
+and `Transcript::grind` fails closed above the protocol's 32-bit
+difficulty cap instead of looping forever.
+
+## Performance hardening: transcript history
+
+`Transcript` used to re-hash its entire byte log for every challenge,
+making query sampling quadratic in the number of challenges. It now keeps
+a streaming BLAKE3 state and clones that state for each squeeze; the
+result is byte-identical to the old concatenation (regression
+`transcript::tests::streaming_history_matches_concatenation`) and
+challenge cost no longer grows with history length.
+
+## Finding closed by internal audit: ZK mask budget undercounted openings
+
+`air::prove_zk` and `vm::prove_zk` required only `n_rand >= num_queries`,
+but each AIR query reveals a full eight-row joint leaf plus its shifted
+leaf (up to 16 masked values per column), and each VM query reveals both
+the current and shifted rows (2 values per column). The Vandermonde
+hiding argument needs one masker per revealed value, so the old budget
+left linear relations between mask evaluations that could leak witness
+information (VM's initial state is private). AIR now requires
+`16 * num_queries`, VM requires `2 * num_queries`; one-point openings
+(`range`, `table`) keep `num_queries`. Regressions:
+`air::tests::zk_rejects_few_maskers`,
+`vm::tests::zk_rejects_few_maskers`, and the updated ZK roundtrips in
+`tests/redteam.rs`.
+
+## Critical finding closed by internal audit: one-point FRI final layer
+
+FRI's final degree check is vacuous when the final layer has one point:
+any value interpolates a degree-0 polynomial at one point. `final_size = 1`
+therefore let a prover fold a dense false composition honestly and pass,
+and `table::Params::for_security(2, 2, ...)` could select exactly that
+shape for tiny tables. Confirmed accepted: false AIR `b_last`, out-of-range
+range claim, non-member table claim, false VM output, invalid fold chain,
+and false recursion output.
+
+Fix: every `Params` now requires `final_size >= 2`; FRI additionally
+rejects a residual bound with `residual + 1 >= final_size` (so the final
+check is non-vacuous), `tune_shape` no longer considers `1`, and the
+table tuner floors its blowup at 4 so the smallest LDE is 8. Regression:
+`tests/hardening.rs::one_point_final_layers_are_rejected`.
+
+## High finding closed by internal audit: committed lookup read-checks
+
+`lookup_pcs` derived `beta + witness` and `beta + table` as uncommitted
+MLEs for its read-check sumchecks. A malicious prover could choose those
+polynomials after the challenge and satisfy the sumcheck while only
+matching the committed witness/table at the final opening point, breaking
+the membership binding. Fix: the read-checks now use the committed
+witness/table/multiplicity columns directly, with expanded terms
+`eq*q*v + beta*eq*q - eq*target`; every final value is opened against its
+commitment. Regression: the final-value tampering vectors in
+`lookup_pcs::tests::tampered_sumcheck_and_opening_rejected`.
+
+## High finding closed by internal audit: VM ZK composition degree
+
+`vm::prove_zk` declared `n + n_rand - 1` for a composition containing a
+`Mul` transition, whose quotient is quadratic in the masked columns
+(degree about `2 * (n + n_rand - 1)`). Honest proofs with a sufficiently
+large final layer failed, and under-declaring weakened the FRI rate.
+Fix: the prover declares `2 * (n + n_rand - 1)` and the verifier accepts
+up to `2 * padded - 2` for masked traces. Regression:
+`vm::tests::zk_honest_final_layer_sixteen_verifies`.
+
+## Hardening closed by internal audit: final caps, cap height, buffers
+
+- FRI now recomputes the final layer's cap from `final_poly` and requires
+  it to match `commitment.caps.last()`, removing an unconstrained
+  commitment digest.
+- `cap_height` is capped at 8 in every `Params`, matching the decoder's
+  `MAX_CAP_DIGESTS`; previously a larger hand-built cap produced a proof
+  that could not round-trip through `to_bytes`/`from_bytes`.
+- Trace/composition flat buffers use `checked_mul` so 32-bit targets fail
+  closed instead of overflowing `m * row_len`.
+- Recursion rejects an outer `lde_len` above `2^27` during validation.
+- `gf2::F128::embed_f64` was removed: it claimed a subfield embedding but
+  the F64 modulus does not divide the F128 modulus, so multiplication did
+  not commute with it.

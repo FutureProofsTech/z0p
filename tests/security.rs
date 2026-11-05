@@ -369,6 +369,10 @@ fn merkle_adversarial_vectors() {
         attempts += 1;
         rejected += usize::from(!MerkleTree::verify(&root, leaf, i + 8, &path));
         attempts += 1;
+        // In-range wrong index: the path is valid for `i`, so this only
+        // fails because verification binds direction bits to the index.
+        rejected += usize::from(!MerkleTree::verify(&root, leaf, i ^ 1, &path));
+        attempts += 1;
         rejected += usize::from(!MerkleTree::verify(&root, leaf, i, &path[..path.len() - 1]));
         attempts += 1;
         let mut long = path.clone();

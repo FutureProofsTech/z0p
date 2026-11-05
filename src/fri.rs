@@ -93,6 +93,13 @@ use crate::transcript::Transcript;
 /// Coset shift for every LDE domain in this crate (NTT and FRI agree).
 pub const LDE_SHIFT: Field = Field::GENERATOR;
 
+/// Largest final layer accepted by [`Params`].
+///
+/// The final low-degree check costs `O(final_size * residual_bound)`
+/// field operations, so an untrusted commitment must not be able to
+/// choose a huge final layer. Production tuning stays at `<= 32`.
+pub const MAX_FINAL_SIZE: usize = 1 << 10;
+
 /// FRI parameters, validated at construction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Params {
@@ -103,7 +110,11 @@ pub struct Params {
     pub blowup: usize,
     /// Number of query openings (`>= 1`).
     pub num_queries: usize,
-    /// Size of the final layer sent in the clear (power of two, `>= 1`).
+    /// Size of the final layer sent in the clear (power of two, `>= 2`,
+    /// `<= `[`MAX_FINAL_SIZE`], and strictly below the LDE size: at least
+    /// one fold is required so `final_poly` is bound to the commitment by
+    /// query openings, and at least two points are needed for a
+    /// non-vacuous final degree check).
     pub final_size: usize,
     /// Proof-of-work difficulty in leading-zero bits (`0` disables grinding).
     ///
@@ -134,7 +145,7 @@ impl Params {
         if num_queries == 0 {
             return Err(Error::NoQueries);
         }
-        if final_size == 0 || !final_size.is_power_of_two() {
+        if final_size < 2 || !final_size.is_power_of_two() || final_size > MAX_FINAL_SIZE {
             return Err(Error::InvalidDomainSize { size: final_size });
         }
         Ok(Self {
@@ -163,7 +174,10 @@ impl Params {
                 reason: "num_queries above protocol cap",
             });
         }
-        if self.final_size == 0 || !self.final_size.is_power_of_two() {
+        if self.final_size < 2
+            || !self.final_size.is_power_of_two()
+            || self.final_size > MAX_FINAL_SIZE
+        {
             return Err(Error::InvalidDomainSize {
                 size: self.final_size,
             });
@@ -171,6 +185,11 @@ impl Params {
         if self.grinding_bits > 32 {
             return Err(Error::MalformedInput {
                 reason: "grinding_bits above 32",
+            });
+        }
+        if self.cap_height > 8 {
+            return Err(Error::MalformedInput {
+                reason: "cap_height above 8",
             });
         }
         Ok(())
@@ -391,6 +410,9 @@ pub fn commit(
     params: Params,
     transcript: &mut Transcript,
 ) -> Result<ProverState> {
+    // Validate before the O(n log n) encoding: public `Params` fields are
+    // untrusted and an invalid final layer must not force a huge NTT.
+    params.validate()?;
     if poly_coeffs.is_empty() {
         return Err(Error::EmptyInput);
     }
@@ -424,6 +446,7 @@ pub fn commit_ext(
     params: Params,
     transcript: &mut Transcript,
 ) -> Result<ProverState> {
+    params.validate()?;
     if poly_coeffs.is_empty() {
         return Err(Error::EmptyInput);
     }
@@ -453,6 +476,7 @@ pub fn commit_evals(
     params: Params,
     transcript: &mut Transcript,
 ) -> Result<ProverState> {
+    params.validate()?;
     if lde_evals.is_empty() {
         return Err(Error::EmptyInput);
     }
@@ -506,6 +530,7 @@ pub fn commit_ext_evals_owned(
     params: Params,
     transcript: &mut Transcript,
 ) -> Result<ProverState> {
+    params.validate()?;
     if lde_evals.is_empty() {
         return Err(Error::EmptyInput);
     }
@@ -537,6 +562,13 @@ fn commit_inner(
     if lde_len < 2 || degree_bound + 1 > lde_len / 2 {
         return Err(Error::MalformedInput {
             reason: "degree bound implies rate >= 1/2",
+        });
+    }
+    let folds = (lde_len / params.final_size).trailing_zeros() / 2;
+    let residual = degree_bound >> (2 * folds);
+    if residual.saturating_add(1) >= params.final_size {
+        return Err(Error::MalformedInput {
+            reason: "final layer too small for a non-vacuous degree check",
         });
     }
     // Bind the prover-echoed dimensions before any challenge: without this,
@@ -641,6 +673,11 @@ pub fn open(state: &ProverState, transcript: &mut Transcript) -> Result<(Proof, 
 /// query indices (bit-reversed layer order) for outer protocols that open
 /// companion commitments at the same positions.
 ///
+/// The verifier enforces an absolute rate below `1/2`. [`commit_evals`]
+/// callers must additionally pin `degree_bound`/`lde_len` to the rate their
+/// query/grinding schedule was sized for; the STARK verifiers in this crate
+/// do so.
+///
 /// # Errors
 /// Returns [`Error::FriVerificationFailed`] or [`Error::BadMerklePath`]
 /// when any check fails, or dimension errors when the proof does not match
@@ -673,6 +710,21 @@ pub fn verify(
     if commitment.degree_bound >= commitment.lde_len {
         return Err(Error::FriVerificationFailed);
     }
+    if commitment.poly_len == 0 || !commitment.poly_len.is_power_of_two() {
+        return Err(Error::FriVerificationFailed);
+    }
+    // `commit` carries the coefficient count and must use the declared
+    // blowup; `commit_evals` echoes `lde_len` (the message length is not
+    // known) and pins its degree bound directly.
+    if commitment.poly_len != commitment.lde_len {
+        let expected = commitment
+            .poly_len
+            .checked_mul(params.blowup)
+            .ok_or(Error::FriVerificationFailed)?;
+        if commitment.lde_len != expected {
+            return Err(Error::FriVerificationFailed);
+        }
+    }
     // Rate gate (load-bearing for soundness): absolute rate below one half.
     // The commitment is untrusted input — without this gate, a forger could
     // declare `bound ~= lde_len`, making the final degree check vacuous
@@ -683,7 +735,12 @@ pub fn verify(
         return Err(Error::FriVerificationFailed);
     }
     let folds = commitment.caps.len().saturating_sub(1);
-    if !fold_shift_fits(folds) || (commitment.lde_len >> (2 * folds)) != params.final_size {
+    // At least one fold is load-bearing: with none, `final_poly` is not
+    // bound to the commitment at all (no query opening exists).
+    if folds == 0
+        || !fold_shift_fits(folds)
+        || (commitment.lde_len >> (2 * folds)) != params.final_size
+    {
         return Err(Error::FriVerificationFailed);
     }
     // Pin cap shapes before hashing them: each layer's cap holds exactly
@@ -752,11 +809,26 @@ pub fn verify(
     // force a huge verifier allocation.
     let unit = Field::two_adic_generator(2).map_err(|_| Error::FriVerificationFailed)?;
     let residual = commitment.degree_bound >> (2 * folds);
+    // A one-point (or otherwise too-small) final layer makes the degree
+    // check vacuous; reject rather than accept an unconstrained final
+    // polynomial.
+    if residual.saturating_add(1) >= params.final_size {
+        return Err(Error::FriVerificationFailed);
+    }
     let mut final_points = Vec::with_capacity(params.final_size);
     for j in 0..params.final_size {
         final_points.push(point_at(commitment.lde_len, folds, j)?);
     }
     if !check_degree_ext(&final_points, &proof.final_poly, residual) {
+        return Err(Error::FriVerificationFailed);
+    }
+    // The final layer is sent in the clear, but its cap is part of the
+    // commitment and must be the actual cap of `final_poly`; otherwise the
+    // commitment has an unconstrained, malleable digest.
+    let final_tree = commit_layer(&proof.final_poly)?;
+    let expected_final_cap =
+        final_tree.cap(fri_drop_top(final_tree.num_leaves(), params.cap_height));
+    if commitment.caps.last() != Some(&expected_final_cap) {
         return Err(Error::FriVerificationFailed);
     }
 
@@ -940,7 +1012,7 @@ pub(crate) fn tune_shape(
     columns: &[(usize, usize)],
 ) -> (usize, usize) {
     debug_assert!(lde_len.is_power_of_two());
-    let mut shifted = (lde_len / 4).max(1);
+    let mut shifted = (lde_len / 4).max(2);
     while shifted > 32 {
         shifted /= 4;
     }
@@ -1051,7 +1123,12 @@ fn reverse_bits(x: usize, bits: usize) -> usize {
 }
 
 fn check_layers(lde_len: usize, final_size: usize) -> Result<()> {
-    if final_size > lde_len || lde_len % final_size != 0 {
+    // A fold-free instance (`final_size == lde_len`) would send the entire
+    // committed layer in the clear and perform no query openings: the
+    // verifier's final low-degree check would then inspect a proof-supplied
+    // polynomial with no binding to the commitment. Require at least one
+    // fold, matching `verify`.
+    if final_size >= lde_len || lde_len % final_size != 0 {
         return Err(Error::InvalidDomainSize { size: final_size });
     }
     // Ratio must be a power of four so quartering lands exactly.
@@ -1104,13 +1181,20 @@ fn verify_one(check: &QueryCheck<'_>) -> Result<()> {
             .ok_or(Error::BadMerklePath)?;
         let x = point_at(check.commitment.lde_len, depth, base)?;
         // The quad itself is the leaf; hash it once and walk the shared path.
+        // Direction bits must match the claimed quad position: otherwise a
+        // leaf committed at `j` could answer a query sampled at `i`.
         let mut node = leaf64_digest(&quad_leaf(witness.values));
+        let mut position = quad_index;
         for (sibling, is_left) in &witness.path {
+            if *is_left != (position & 1 == 0) {
+                return Err(Error::BadMerklePath);
+            }
             node = if *is_left {
                 hash_node(&node, sibling)
             } else {
                 hash_node(sibling, &node)
             };
+            position >>= 1;
         }
         if &node != entry {
             return Err(Error::BadMerklePath);
@@ -1248,9 +1332,9 @@ pub(crate) fn fold_values(
 
 /// Check `values` at distinct `points` interpolate to degree `<= bound`.
 ///
-/// Uses divided differences: degree `<= bound` iff every difference of order
-/// `> bound` vanishes. Vacuous (`true`) when `bound >= len - 1`; empty
-/// inputs return `false`.
+/// Uses divided differences: degree `<= bound` iff every difference of
+/// order `bound + 1` vanishes (higher orders then vanish automatically).
+/// Vacuous (`true`) when `bound >= len - 1`; empty inputs return `false`.
 #[must_use]
 pub fn check_degree_ext(points: &[Field], values: &[Ext4], bound: usize) -> bool {
     if points.len() != values.len() || values.is_empty() {
@@ -1261,7 +1345,10 @@ pub fn check_degree_ext(points: &[Field], values: &[Ext4], bound: usize) -> bool
         return true;
     }
     let mut table = values.to_vec();
-    for order in 1..n {
+    // See `check_degree`: order `bound + 1` is the last one that can
+    // witness a violation, so higher (quadratic-work) orders are skipped.
+    let last_order = bound.saturating_add(1).min(n - 1);
+    for order in 1..=last_order {
         for i in 0..n - order {
             let denom = points[i + order] - points[i];
             if denom == Field::ZERO {
@@ -1290,7 +1377,13 @@ pub fn check_degree(points: &[Field], values: &[Field], bound: usize) -> bool {
         return true;
     }
     let mut table = values.to_vec();
-    for order in 1..n {
+    // If every divided difference of order `bound + 1` vanishes, the
+    // interpolant has degree `<= bound` and every higher order vanishes
+    // automatically. Stopping there keeps the check cheap when the
+    // residual bound is much smaller than the final layer (the normal
+    // FRI case) and bounds verifier work on hostile parameters.
+    let last_order = bound.saturating_add(1).min(n - 1);
+    for order in 1..=last_order {
         for i in 0..n - order {
             let denom = points[i + order] - points[i];
             if denom == Field::ZERO {
@@ -1372,7 +1465,7 @@ mod tests {
     }
 
     fn test_params() -> Params {
-        Params::new(4, 8, 1).unwrap()
+        Params::new(4, 8, 4).unwrap()
     }
 
     #[test]
@@ -1380,6 +1473,7 @@ mod tests {
         assert!(Params::new(1, 8, 1).is_err());
         assert!(Params::new(3, 8, 1).is_err());
         assert!(Params::new(4, 0, 1).is_err());
+        assert!(Params::new(4, 8, 1).is_err());
         assert!(Params::new(4, 8, 3).is_err());
     }
 
@@ -1416,6 +1510,33 @@ mod tests {
         let mut t = Transcript::new(b"fri-test");
         assert!(commit(&[], params, &mut t).is_err());
         assert!(commit(&[Field::ONE; 3], params, &mut t).is_err());
+    }
+
+    #[test]
+    fn fold_free_instances_rejected() {
+        // `final_size == lde_len` has no folds and therefore no query
+        // openings; the proof-supplied final polynomial would not be bound
+        // to the commitment.
+        let params = Params::new(4, 8, 64).unwrap();
+        let coeffs = vec![Field::ONE; 16];
+        let mut prover = Transcript::new(b"fri-no-fold");
+        assert!(commit(&coeffs, params, &mut prover).is_err());
+
+        // Hand-built commitment/proof: verification must reject the
+        // zero-fold shape even before looking at the final polynomial.
+        let commitment = Commitment {
+            caps: vec![vec![[0u8; 32]]],
+            lde_len: 64,
+            poly_len: 16,
+            degree_bound: 15,
+        };
+        let proof = Proof {
+            final_poly: vec![Ext4::ZERO; 64],
+            queries: vec![QueryProof { folds: Vec::new() }; 8],
+            pow_nonce: 0,
+        };
+        let mut verifier = Transcript::new(b"fri-no-fold");
+        assert!(verify(&commitment, &proof, params, &mut verifier).is_err());
     }
 
     #[test]
@@ -1587,7 +1708,7 @@ mod tests {
         let commitment = public_commitment(&state);
         let (proof, _) = open(&state, &mut prover_t).unwrap();
 
-        let more_queries = Params::new(4, params.num_queries + 1, 1).unwrap();
+        let more_queries = Params::new(4, params.num_queries + 1, 4).unwrap();
         let mut verifier_t = Transcript::new(b"fri-dims");
         assert!(verify(&commitment, &proof, more_queries, &mut verifier_t).is_err());
 

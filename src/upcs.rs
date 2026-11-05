@@ -517,6 +517,11 @@ pub fn verify_multi(
     let cap = &proof.g_commitment.caps[0];
     let interp = interpolate(points, values)?;
     let vanishing = interpolation_vanishing(points);
+    // When the points determine the polynomial (`k == poly_len`), the
+    // quotient is identically zero. Check `g` against the interpolant
+    // directly instead of allowing a nonzero constant quotient to absorb
+    // the difference at random query points.
+    let full_interpolation = points.len() == commitment.poly_len;
 
     for ((query, opening), &index) in proof
         .q_fri
@@ -550,9 +555,12 @@ pub fn verify_multi(
         ) {
             return Err(Error::BadMerklePath);
         }
-        let z = fri::point_at(lde_len, 0, index)?;
-        let expected = eval_poly(&interp, Ext4::from_base(z))
-            + eval_poly(&vanishing, Ext4::from_base(z)) * *q_value;
+        let z = Ext4::from_base(fri::point_at(lde_len, 0, index)?);
+        let expected = if full_interpolation {
+            eval_poly(&interp, z)
+        } else {
+            eval_poly(&interp, z) + eval_poly(&vanishing, z) * *q_value
+        };
         if opening.value != expected {
             return Err(Error::FriVerificationFailed);
         }
@@ -640,7 +648,13 @@ pub fn verify(
             return Err(Error::BadMerklePath);
         }
         let z = fri::point_at(lde_len, 0, index)?;
-        if (Ext4::from_base(z) - point) * *q_value != opening.value - value {
+        if commitment.poly_len == 1 {
+            // A one-coefficient polynomial is the constant `value`; the
+            // quotient is zero and must not absorb a difference.
+            if opening.value != value {
+                return Err(Error::FriVerificationFailed);
+            }
+        } else if (Ext4::from_base(z) - point) * *q_value != opening.value - value {
             return Err(Error::FriVerificationFailed);
         }
     }

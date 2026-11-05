@@ -42,12 +42,17 @@
 use crate::babybear::Field as Bb;
 use crate::ext4::Ext4;
 use crate::gf2::{F128, F64};
-use crate::hash::{blake3_256, blake3_256_small, CHUNK_LEN};
+use crate::hash::{blake3_256, blake3_256_small, Hasher, CHUNK_LEN};
 
 /// Fiat-Shamir transcript: absorb statements, squeeze challenges.
+///
+/// The absorbed history is kept as a streaming BLAKE3 state rather than a
+/// byte log: a challenge hashes `H(history || label || counter)` by cloning
+/// the state, so squeeze cost is independent of the number of prior
+/// challenges. The digest is byte-identical to hashing the concatenation.
 #[derive(Clone, Debug)]
 pub struct Transcript {
-    log: Vec<u8>,
+    history: Hasher,
     counter: u64,
 }
 
@@ -56,7 +61,7 @@ impl Transcript {
     #[must_use]
     pub fn new(label: &[u8]) -> Self {
         let mut transcript = Self {
-            log: Vec::new(),
+            history: Hasher::new(),
             counter: 0,
         };
         transcript.absorb(b"domain", label);
@@ -65,12 +70,10 @@ impl Transcript {
 
     /// Absorb `(label, data)` with length-prefix framing.
     pub fn absorb(&mut self, label: &[u8], data: &[u8]) {
-        self.log
-            .extend_from_slice(&(label.len() as u64).to_le_bytes());
-        self.log.extend_from_slice(label);
-        self.log
-            .extend_from_slice(&(data.len() as u64).to_le_bytes());
-        self.log.extend_from_slice(data);
+        self.history.update(&(label.len() as u64).to_le_bytes());
+        self.history.update(label);
+        self.history.update(&(data.len() as u64).to_le_bytes());
+        self.history.update(data);
     }
 
     /// Absorb an [`F64`] word.
@@ -157,19 +160,12 @@ impl Transcript {
     }
 
     fn squeeze_raw(&mut self, label: &[u8]) -> [u8; 32] {
-        let mut input = Vec::with_capacity(self.log.len() + 16 + label.len());
-        input.extend_from_slice(&self.log);
-        input.extend_from_slice(&(label.len() as u64).to_le_bytes());
-        input.extend_from_slice(label);
-        input.extend_from_slice(&self.counter.to_le_bytes());
+        let mut hasher = self.history.clone();
+        hasher.update(&(label.len() as u64).to_le_bytes());
+        hasher.update(label);
+        hasher.update(&self.counter.to_le_bytes());
         self.counter += 1;
-        // The input buffer is needed as hash input either way; the
-        // single-chunk path only skips the hasher's second copy.
-        let out = if input.len() <= CHUNK_LEN {
-            blake3_256_small(&input)
-        } else {
-            blake3_256(&input)
-        };
+        let out = hasher.finalize();
         self.absorb(label, &out);
         out
     }
@@ -184,7 +180,7 @@ impl Transcript {
     /// exactly `head || nonce_le`, so a nonce found by one checks on the
     /// other whenever the absorbed histories match.
     fn pow_head(&self, label: &[u8]) -> Vec<u8> {
-        let history = blake3_256(&self.log);
+        let history = self.history.clone().finalize();
         let mut head = Vec::with_capacity(32 + 8 + label.len());
         head.extend_from_slice(&history);
         head.extend_from_slice(&(label.len() as u64).to_le_bytes());
@@ -198,6 +194,8 @@ impl Transcript {
     ///
     /// Prover work scales as `2^difficulty_bits` hashes; keep `<= 24` in
     /// production (`16` is seconds-friendly, `20` is the standard target).
+    /// Difficulties above the protocol's 32-bit cap fail closed (nonce
+    /// `0`) instead of starting an unbounded search.
     /// Attempts are allocation-free (short head, single-chunk path) and
     /// sharded across threads when the difficulty pays for spawning; the
     /// banded search returns exactly the nonce a sequential scan would, so
@@ -206,7 +204,12 @@ impl Transcript {
     /// Deterministic over the transcript state: the same history always
     /// yields the same nonce.
     pub fn grind(&mut self, label: &[u8], difficulty_bits: u32) -> u64 {
-        debug_assert!(difficulty_bits <= 32);
+        // Protocol params cap at 32; fail closed instead of searching an
+        // astronomically large space for hand-built callers.
+        if difficulty_bits > 32 {
+            self.absorb(label, &0u64.to_le_bytes());
+            return 0;
+        }
         let head = self.pow_head(label);
         let units = if difficulty_bits >= usize::BITS {
             usize::MAX
@@ -352,6 +355,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn streaming_history_matches_concatenation() {
+        // The streaming state must be byte-identical to the historical
+        // `H(framed_log || label || counter)` construction.
+        fn frame(out: &mut Vec<u8>, label: &[u8], data: &[u8]) {
+            out.extend_from_slice(&(label.len() as u64).to_le_bytes());
+            out.extend_from_slice(label);
+            out.extend_from_slice(&(data.len() as u64).to_le_bytes());
+            out.extend_from_slice(data);
+        }
+        let mut log = Vec::new();
+        frame(&mut log, b"domain", b"test");
+        frame(&mut log, b"stmt", b"hello");
+        let label = b"challenge";
+        let counter = 0u64;
+        let mut input = log;
+        input.extend_from_slice(&(label.len() as u64).to_le_bytes());
+        input.extend_from_slice(label);
+        input.extend_from_slice(&counter.to_le_bytes());
+        let expected = blake3_256(&input);
+
+        let mut transcript = Transcript::new(b"test");
+        transcript.absorb(b"stmt", b"hello");
+        assert_eq!(transcript.challenge_bytes(label), expected);
+    }
+
+    #[test]
     fn deterministic_and_bound() {
         let mut a = Transcript::new(b"test");
         a.absorb(b"stmt", b"hello");
@@ -416,6 +445,11 @@ mod tests {
         let mut strict = Transcript::new(b"pow");
         strict.absorb(b"stmt", b"hello");
         assert!(!strict.verify_grind(b"pow", nonce, 257));
+        // Prover-side excessive difficulty fails closed (no hang).
+        let mut impossible = Transcript::new(b"pow");
+        impossible.absorb(b"stmt", b"hello");
+        assert_eq!(impossible.grind(b"pow", 64), 0);
+        assert_eq!(impossible.grind(b"pow", 257), 0);
     }
 
     #[test]

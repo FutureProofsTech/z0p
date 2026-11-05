@@ -174,6 +174,9 @@ impl MerkleTree {
         if path.len() >= usize::BITS as usize || index >> path.len() != 0 {
             return false;
         }
+        if !directions_match_index(index, path) {
+            return false;
+        }
         let mut current = hash_leaf(leaf_data);
         for (sibling, is_left) in path {
             current = if *is_left {
@@ -197,6 +200,9 @@ impl MerkleTree {
         path: &[([u8; 32], bool)],
     ) -> bool {
         if path.len() >= usize::BITS as usize || index >> path.len() != 0 {
+            return false;
+        }
+        if !directions_match_index(index, path) {
             return false;
         }
         let mut current = *leaf_digest;
@@ -255,6 +261,7 @@ impl MerkleTree {
         if total_depth >= usize::BITS as usize
             || path.len() > total_depth
             || index >> total_depth != 0
+            || !directions_match_index(index, path)
         {
             return false;
         }
@@ -286,6 +293,7 @@ impl MerkleTree {
         if total_depth >= usize::BITS as usize
             || path.len() > total_depth
             || index >> total_depth != 0
+            || !directions_match_index(index, path)
         {
             return false;
         }
@@ -299,6 +307,20 @@ impl MerkleTree {
         }
         &current == cap_entry
     }
+}
+
+/// Whether every path direction matches the corresponding bit of `index`.
+///
+/// Merkle paths carry direction bits for hashing, but the position they
+/// authenticate must also be the caller's claimed index. Without this
+/// check a valid opening for leaf `j` verifies at any other in-range
+/// `index` with the same path length, which breaks every protocol that
+/// samples a position from the transcript and then trusts the opened row
+/// to belong there.
+fn directions_match_index(index: usize, path: &[([u8; 32], bool)]) -> bool {
+    path.iter()
+        .enumerate()
+        .all(|(level, (_, is_left))| *is_left == ((index >> level) & 1 == 0))
 }
 
 /// Capped-tree shape for `num_leaves` (must be a power of two, as all
@@ -410,6 +432,15 @@ mod tests {
             let mut bad = leaf.clone();
             bad[0] ^= 1;
             assert!(!MerkleTree::verify(&tree.root(), &bad, i, &path));
+            // A valid leaf/path must not verify at another in-range index:
+            // path directions bind the opening to its real position.
+            assert!(!MerkleTree::verify(&tree.root(), leaf, i ^ 1, &path));
+            assert!(!MerkleTree::verify_digest(
+                &tree.root(),
+                &hash_leaf(leaf),
+                i ^ 1,
+                &path
+            ));
         }
         assert_eq!(
             tree.prove(8),
@@ -481,6 +512,17 @@ mod tests {
                 assert_eq!(path.len(), depth - effective);
                 let entry = cap[i >> path.len()];
                 assert!(MerkleTree::verify_capped(&entry, leaf, i, depth, &path));
+                // Wrong in-range index: the cap entry may still cover the
+                // path, but the direction bits no longer match the index.
+                let wrong_index = i ^ 1;
+                let wrong_entry = cap[wrong_index >> path.len()];
+                assert!(!MerkleTree::verify_capped(
+                    &wrong_entry,
+                    leaf,
+                    wrong_index,
+                    depth,
+                    &path
+                ));
                 if cap.len() > 1 {
                     let entry_idx = i >> path.len();
                     let wrong = cap[(entry_idx + 1) % cap.len()];

@@ -311,17 +311,21 @@ pub fn prove(
     }
 
     // B: random-equality read-check quot_w * (beta + w) = 1.
+    //
+    // Use the committed witness column directly; deriving an uncommitted
+    // `beta + w` MLE would let a malicious prover choose it after seeing
+    // `r1` and satisfy the sumcheck while only matching `w` at the final
+    // point.
     transcript.absorb(b"lookup-pcs/ctx", b"read-w");
     let r1 = sample_point(transcript, b"lookup-pcs/r1", n_w);
     let eq_w = Mle::eq_evals(&r1);
-    let shifted_w: Vec<Ext4> = w_evals.iter().map(|&w| beta + w).collect();
-    let terms_read_w = read_terms(false);
+    let terms_read_w = read_terms(false, beta);
     let mut replay = transcript.clone();
     let sc_read_w = sumcheck::prove(
         &[
             eq_w.clone(),
             Mle::new(quot_w.clone())?,
-            Mle::new(shifted_w)?,
+            Mle::new(w_evals.clone())?,
         ],
         &terms_read_w,
         transcript,
@@ -337,6 +341,11 @@ pub fn prove(
     // C: sum(quot_t + gamma*m) = sum_w + gamma*W.
     transcript.absorb(b"lookup-pcs/ctx", b"sum-t");
     let gamma = transcript.challenge_ext(b"lookup-pcs/gamma");
+    if gamma == Ext4::ZERO {
+        return Err(Error::MalformedInput {
+            reason: "degenerate gamma challenge",
+        });
+    }
     transcript.absorb_ext(b"lookup-pcs/gamma", gamma);
     let padded_witness_len = ext4_len(w_evals.len())?;
     let sum_t_claim = sum_w + gamma * padded_witness_len;
@@ -361,14 +370,13 @@ pub fn prove(
     transcript.absorb(b"lookup-pcs/ctx", b"read-t");
     let r2 = sample_point(transcript, b"lookup-pcs/r2", n_t);
     let eq_t = Mle::eq_evals(&r2);
-    let shifted_t: Vec<Ext4> = t_evals.iter().map(|&t| beta + t).collect();
-    let terms_read_t = read_terms(true);
+    let terms_read_t = read_terms(true, beta);
     let mut replay = transcript.clone();
     let sc_read_t = sumcheck::prove(
         &[
             eq_t.clone(),
             Mle::new(quot_t.clone())?,
-            Mle::new(shifted_t)?,
+            Mle::new(t_evals.clone())?,
             Mle::new(multiplicity_evals.clone())?,
         ],
         &terms_read_t,
@@ -382,8 +390,8 @@ pub fn prove(
     }
     check_eq_eval(&eq_t, &r_read_t, sc_read_t.final_values[0])?;
 
-    let w_value = sc_read_w.final_values[2] - beta;
-    let t_value = sc_read_t.final_values[2] - beta;
+    let w_value = sc_read_w.final_values[2];
+    let t_value = sc_read_t.final_values[2];
     let mut openings = Vec::with_capacity(NUM_OPENINGS);
     openings.push(open(
         &witness_quotient_state,
@@ -515,7 +523,7 @@ pub fn verify(
     transcript.absorb(b"lookup-pcs/ctx", b"read-w");
     let r1 = sample_point(transcript, b"lookup-pcs/r1", n_w);
     let eq_w = Mle::eq_evals(&r1);
-    let terms_read_w = read_terms(false);
+    let terms_read_w = read_terms(false, beta);
     let r_read_w = sumcheck::verify_final(n_w, 3, &terms_read_w, &proof.sc_read_w, transcript)?;
     if proof.sc_read_w.sum != Ext4::ZERO {
         return Err(Error::FriVerificationFailed);
@@ -525,6 +533,9 @@ pub fn verify(
     // C.
     transcript.absorb(b"lookup-pcs/ctx", b"sum-t");
     let gamma = transcript.challenge_ext(b"lookup-pcs/gamma");
+    if gamma == Ext4::ZERO {
+        return Err(Error::FriVerificationFailed);
+    }
     transcript.absorb_ext(b"lookup-pcs/gamma", gamma);
     let sum_t_claim = proof.sum_w + gamma * padded_witness_len;
     let terms_sum_t = [Term::new(Ext4::ONE, vec![0]), Term::new(gamma, vec![1])];
@@ -537,15 +548,15 @@ pub fn verify(
     transcript.absorb(b"lookup-pcs/ctx", b"read-t");
     let r2 = sample_point(transcript, b"lookup-pcs/r2", n_t);
     let eq_t = Mle::eq_evals(&r2);
-    let terms_read_t = read_terms(true);
+    let terms_read_t = read_terms(true, beta);
     let r_read_t = sumcheck::verify_final(n_t, 4, &terms_read_t, &proof.sc_read_t, transcript)?;
     if proof.sc_read_t.sum != Ext4::ZERO {
         return Err(Error::FriVerificationFailed);
     }
     check_eq_eval(&eq_t, &r_read_t, proof.sc_read_t.final_values[0])?;
 
-    let w_value = proof.sc_read_w.final_values[2] - beta;
-    let t_value = proof.sc_read_t.final_values[2] - beta;
+    let w_value = proof.sc_read_w.final_values[2];
+    let t_value = proof.sc_read_t.final_values[2];
     verify_open(
         &commitments.quot_w,
         &r_sum_w,
@@ -659,15 +670,20 @@ fn verify_open(
     basefold::verify(commitment, point, value, proof, params, transcript)
 }
 
-fn read_terms(with_multiplicity: bool) -> Vec<Term> {
+fn read_terms(with_multiplicity: bool, beta: Ext4) -> Vec<Term> {
+    // `eq * (q * (beta + v) - target)`, expanded so the committed column
+    // `v` (not an uncommitted `beta + v` witness) is a sumcheck factor:
+    // `eq*q*v + beta*eq*q - eq*target`.
     if with_multiplicity {
         vec![
             Term::new(Ext4::ONE, vec![0, 1, 2]),
+            Term::new(beta, vec![0, 1]),
             Term::new(Ext4::NEG_ONE, vec![0, 3]),
         ]
     } else {
         vec![
             Term::new(Ext4::ONE, vec![0, 1, 2]),
+            Term::new(beta, vec![0, 1]),
             Term::new(Ext4::NEG_ONE, vec![0]),
         ]
     }
@@ -776,6 +792,18 @@ mod tests {
 
         let (commitments, mut proof) = sample();
         proof.openings[0].sumcheck.sum += Ext4::ONE;
+        let mut verifier = Transcript::new(b"lookup-pcs-test");
+        assert!(verify(&commitments, &proof, params(), &mut verifier).is_err());
+
+        // The read-check final values for the committed witness/table are
+        // opened directly; tampering them must fail.
+        let (commitments, mut proof) = sample();
+        proof.sc_read_w.final_values[2] += Ext4::ONE;
+        let mut verifier = Transcript::new(b"lookup-pcs-test");
+        assert!(verify(&commitments, &proof, params(), &mut verifier).is_err());
+
+        let (commitments, mut proof) = sample();
+        proof.sc_read_t.final_values[2] += Ext4::ONE;
         let mut verifier = Transcript::new(b"lookup-pcs-test");
         assert!(verify(&commitments, &proof, params(), &mut verifier).is_err());
     }

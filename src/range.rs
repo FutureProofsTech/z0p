@@ -77,7 +77,7 @@ impl Params {
         if num_queries == 0 {
             return Err(Error::NoQueries);
         }
-        if final_size == 0 || !final_size.is_power_of_two() {
+        if final_size < 2 || !final_size.is_power_of_two() {
             return Err(Error::InvalidDomainSize { size: final_size });
         }
         let Some(lde) = n_rows.checked_mul(blowup) else {
@@ -163,7 +163,7 @@ impl Params {
     /// Length of the LDE domain.
     #[must_use]
     pub const fn lde_len(&self) -> usize {
-        self.n_rows * self.blowup
+        self.n_rows.saturating_mul(self.blowup)
     }
 
     /// Column count: value plus one per bit.
@@ -198,9 +198,14 @@ impl Params {
         if self.num_queries == 0 {
             return Err(Error::NoQueries);
         }
-        if self.final_size == 0 || !self.final_size.is_power_of_two() {
+        if self.final_size < 2 || !self.final_size.is_power_of_two() {
             return Err(Error::InvalidDomainSize {
                 size: self.final_size,
+            });
+        }
+        if self.cap_height > 8 {
+            return Err(Error::MalformedInput {
+                reason: "cap_height above 8",
             });
         }
         let lde = self
@@ -330,6 +335,9 @@ pub fn build_columns(value: Field, n_bits: usize, n_rows: usize) -> (Vec<Field>,
 /// Returns [`Error`] for domain or Merkle failures (all structural; an
 /// out-of-range value still proves structurally and fails [`verify`]).
 pub fn prove(params: Params, transcript: &mut Transcript) -> Result<Proof> {
+    // Validate before allocating columns: public `Params` fields may be
+    // hand-built, and an absurd `n_bits`/`n_rows` must fail closed.
+    params.validate()?;
     let (v_col, bit_cols) = build_columns(params.value, params.n_bits, params.n_rows);
     prove_with_columns(params, &v_col, &bit_cols, transcript)
 }
@@ -373,7 +381,11 @@ pub fn prove_with_columns(
 /// to `n_rows + 2 * n_rand - 2` (boolean numerators double the masking
 /// degree; still rate `< 1/2`).
 ///
-/// Requires `n_rand >= num_queries`.
+/// Requires `n_rand >= num_queries`. Booleanity doubles the masked
+/// composition degree, so masked callers should size `blowup`, queries,
+/// and grinding for a rate near `2 / blowup` rather than the plain
+/// `1 / blowup`; the verifier caps the declared bound at the largest
+/// honest masked degree.
 ///
 /// # Errors
 /// Returns [`Error::MalformedInput`] when `n_rand < num_queries`, otherwise
@@ -436,7 +448,10 @@ fn prove_from_columns(
     }
     let m = ldes[0].len();
     let row_len = 4 * params.n_columns();
-    let mut flat = vec![0u8; m * row_len];
+    let flat_len = m
+        .checked_mul(row_len)
+        .ok_or(Error::InvalidDomainSize { size: m })?;
+    let mut flat = vec![0u8; flat_len];
     for (i, chunk) in flat.chunks_exact_mut(row_len).enumerate() {
         for (lde, slot) in ldes.iter().zip(chunk.chunks_exact_mut(4)) {
             slot.copy_from_slice(&lde[i].to_le_bytes());

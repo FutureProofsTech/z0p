@@ -7,8 +7,8 @@
 //! one is fed truncations, extensions, and single-bit flips.
 
 use z0p::{
-    air, babybear::Field, basefold, ext4::Ext4, fold, lookup_pcs, range, rng::ChaCha20, table,
-    transcript::Transcript, vm,
+    air, babybear::Field, basefold, ext4::Ext4, fold, fri, lookup_pcs, range, recursion,
+    rng::ChaCha20, table, transcript::Transcript, vm,
 };
 
 const LABEL: &[u8] = b"hardening";
@@ -381,6 +381,47 @@ fn field_invariant_and_constant_time_inverse() {
             assert_eq!(x * x.inv(), Field::ONE);
         }
     }
+}
+
+#[test]
+fn one_point_final_layers_are_rejected() {
+    // A one-point final layer makes FRI's degree check vacuous: any value
+    // interpolates a degree-0 polynomial at one point. Every constructor
+    // must reject it, including the tiny-table production tuner.
+    assert!(fri::Params::new(4, 8, 1).is_err());
+    let (_, trace_b) = air::build_trace(Field::ONE, Field::ONE, 16);
+    assert!(air::Params::new(16, 16, 8, 1, Field::ONE, Field::ONE, trace_b[15]).is_err());
+    assert!(range::Params::new(8, 8, 8, 8, 1, Field::new(5)).is_err());
+    assert!(table::Params::new(8, 8, 8, 1, Field::new(5)).is_err());
+    assert!(fold::Params::new(8, 8, 8, 1, Field::ONE, Field::ONE, Field::ONE).is_err());
+    let tiny = table::Params::for_security(2, 2, Field::new(999), 12).unwrap();
+    assert!(tiny.final_size >= 2);
+    // The tiny production shape must reject a non-member end to end.
+    let tiny_table = [Field::new(1), Field::new(2)];
+    let proof = table::prove(tiny, &tiny_table, &mut Transcript::new(LABEL)).unwrap();
+    assert!(table::verify(tiny, &tiny_table, &proof, &mut Transcript::new(LABEL)).is_err());
+}
+
+#[test]
+fn oversized_final_layers_and_fold_counts_fail_closed() {
+    // The FRI final layer drives the verifier's degree check; reject a
+    // hand-built/hostile oversized final instead of doing quadratic work.
+    assert!(fri::Params::new(4, 8, fri::MAX_FINAL_SIZE * 2).is_err());
+    assert!(fri::Params::new(4, 8, fri::MAX_FINAL_SIZE).is_ok());
+    // The recursion fragment must reject absurd fold counts before calling
+    // `next_power_of_two` on them.
+    assert!(recursion::Params::for_security(
+        16,
+        0,
+        usize::MAX,
+        &[],
+        [Ext4::ONE; 4],
+        Ext4::ONE,
+        100,
+    )
+    .is_err());
+    // Saturated degree arithmetic cannot overflow on hostile dimensions.
+    assert_eq!(table::membership_bound(usize::MAX, 2, 0), usize::MAX - 2);
 }
 
 #[test]

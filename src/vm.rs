@@ -43,7 +43,8 @@
 //! openings reveal trace values at queried positions. [`prove_zk`] masks both
 //! trace columns with vanishing multiples from [`crate::blind`], making the
 //! query responses independent of the private initial state when
-//! `n_rand >= num_queries`; the program and final registers remain public.
+//! `n_rand >= 2 * num_queries` (current and shifted rows); the program and
+//! final registers remain public.
 //! This is an execution prototype, not a production zkVM, and it has not been
 //! audited.
 
@@ -183,7 +184,7 @@ impl Params {
             n_steps,
             blowup: 16,
             num_queries: 1,
-            final_size: 1,
+            final_size: 4,
             grinding_bits: 0,
             cap_height: 0,
             program,
@@ -236,9 +237,14 @@ impl Params {
         if self.num_queries == 0 {
             return Err(Error::NoQueries);
         }
-        if self.final_size == 0 || !self.final_size.is_power_of_two() {
+        if self.final_size < 2 || !self.final_size.is_power_of_two() {
             return Err(Error::InvalidDomainSize {
                 size: self.final_size,
+            });
+        }
+        if self.cap_height > 8 {
+            return Err(Error::MalformedInput {
+                reason: "cap_height above 8",
             });
         }
         if self.program.len() > MAX_PROGRAM {
@@ -429,17 +435,20 @@ pub fn prove_with_trace(
 /// [`crate::blind::mask_coeffs`] (`n_rand` maskers each) before committing.
 ///
 /// Masking preserves every base-row value, so the same [`verify`] checks the
-/// same transition and boundary identities. `n_rand >= num_queries` makes the
-/// query responses jointly uniform and independent of the private initial
-/// state. The program and final registers remain public.
+/// same transition and boundary identities. Each query reveals both the
+/// current row and its shifted next row, i.e. two masked values per column
+/// per query; `n_rand >= 2 * num_queries` makes those responses jointly
+/// uniform and independent of the private initial state. The program and
+/// final registers remain public.
 ///
 /// `params.final_size` must be chosen for the masked LDE (its length is
 /// `n_steps + n_rand` rounded up to a power of two, times `blowup`), not for
 /// the plain domain; [`Params::for_security`] sizes the plain path only.
 ///
 /// # Errors
-/// Returns [`Error::MalformedInput`] when `n_rand < num_queries`, otherwise
-/// the structural errors of [`prove`], including an incompatible final layer.
+/// Returns [`Error::MalformedInput`] when the mask budget is too small,
+/// otherwise the structural errors of [`prove`], including an incompatible
+/// final layer.
 pub fn prove_zk(
     params: &Params,
     a0: Field,
@@ -459,8 +468,8 @@ pub fn prove_zk(
 /// rejects invalid traces. The columns are masked as in [`prove_zk`].
 ///
 /// # Errors
-/// Returns [`Error::MalformedInput`] on a column-length mismatch or
-/// `n_rand < num_queries`, otherwise the structural errors of [`prove`].
+/// Returns [`Error::MalformedInput`] on a column-length mismatch or an
+/// insufficient `n_rand`, otherwise the structural errors of [`prove`].
 pub fn prove_zk_with_trace(
     params: &Params,
     col_a: &[Field],
@@ -470,9 +479,15 @@ pub fn prove_zk_with_trace(
     transcript: &mut Transcript,
 ) -> Result<Proof> {
     params.validate()?;
-    if n_rand < params.num_queries {
+    let required = params
+        .num_queries
+        .checked_mul(2)
+        .ok_or(Error::MalformedInput {
+            reason: "query budget overflows the hiding requirement",
+        })?;
+    if n_rand < required {
         return Err(Error::MalformedInput {
-            reason: "n_rand must cover num_queries for hiding",
+            reason: "n_rand must cover both revealed rows for hiding",
         });
     }
     let n = params.n_steps;
@@ -485,9 +500,12 @@ pub fn prove_zk_with_trace(
     let coeff_b = interpolate(col_b)?;
     let masked_a = crate::blind::mask_coeffs(&coeff_a, n, n_rand, rng)?;
     let masked_b = crate::blind::mask_coeffs(&coeff_b, n, n_rand, rng)?;
+    // The `Mul` transition is quadratic in the masked columns, so its
+    // quotient degree is about twice the masked column degree.
     let degree_bound = n
         .checked_add(n_rand)
         .and_then(|total| total.checked_sub(1))
+        .and_then(|degree| degree.checked_mul(2))
         .ok_or(Error::InvalidDomainSize { size: n })?;
     prove_from_coeffs(params, &masked_a, &masked_b, degree_bound, transcript)
 }
@@ -520,7 +538,10 @@ fn prove_from_coeffs(
     }
     let offset = m / n;
     let row_len = 4 * lde_cols.len();
-    let mut flat = vec![0u8; m * row_len];
+    let flat_len = m
+        .checked_mul(row_len)
+        .ok_or(Error::InvalidDomainSize { size: m })?;
+    let mut flat = vec![0u8; flat_len];
     for (i, chunk) in flat.chunks_exact_mut(row_len).enumerate() {
         for (lde, slot) in lde_cols.iter().zip(chunk.chunks_exact_mut(4)) {
             slot.copy_from_slice(&lde[i].to_le_bytes());
@@ -622,8 +643,14 @@ pub fn verify(params: &Params, proof: &Proof, transcript: &mut Transcript) -> Re
         if degree_bound != 2 * n - 2 {
             return Err(Error::FriVerificationFailed);
         }
-    } else if degree_bound >= m / params.blowup {
-        return Err(Error::FriVerificationFailed);
+    } else {
+        // Masked trace: the `Mul` transition is quadratic in the masked
+        // columns, so the largest honest quotient degree is `2*padded - 2`.
+        let padded = m / params.blowup;
+        let max_bound = padded.saturating_sub(1).saturating_mul(2);
+        if degree_bound > max_bound {
+            return Err(Error::FriVerificationFailed);
+        }
     }
     if proof.fri_commitment.poly_len != m {
         return Err(Error::FriVerificationFailed);
@@ -991,6 +1018,27 @@ mod tests {
     }
 
     #[test]
+    fn zk_honest_final_layer_sixteen_verifies() {
+        // The masked `Mul` quotient is quadratic; a final layer large
+        // enough to expose a too-low declared bound must still verify.
+        let params = Params::new(16, 8, 2, 16, program(), Field::new(3), Field::new(15))
+            .unwrap()
+            .with_cap_height(1);
+        let mut prover = Transcript::new(b"vm-zk-final16");
+        let proof = prove_zk(
+            &params,
+            Field::new(10),
+            Field::new(20),
+            8,
+            &mut zk_rng(),
+            &mut prover,
+        )
+        .unwrap();
+        let mut verifier = Transcript::new(b"vm-zk-final16");
+        verify(&params, &proof, &mut verifier).unwrap();
+    }
+
+    #[test]
     fn zk_openings_differ_from_plain() {
         let (_, plain) = sample();
         let params = zk_params();
@@ -1042,7 +1090,7 @@ mod tests {
             &params,
             Field::new(10),
             Field::new(20),
-            params.num_queries - 1,
+            params.num_queries * 2 - 1,
             &mut zk_rng(),
             &mut prover,
         )

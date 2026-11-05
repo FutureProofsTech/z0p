@@ -171,6 +171,11 @@ impl Params {
         output: Ext4,
         target_bits: u32,
     ) -> Result<Self> {
+        if folds == 0 || folds > MAX_FOLDS {
+            return Err(Error::MalformedInput {
+                reason: "folds must be in 1..=MAX_FOLDS",
+            });
+        }
         let blowup = 16;
         let n = folds.next_power_of_two().max(2);
         let lde = n
@@ -198,9 +203,12 @@ impl Params {
     }
 
     /// Number of trace rows (power of two, at least two).
+    ///
+    /// Invalid hand-built parameters are clamped here so this accessor
+    /// cannot overflow; `Params::validate` still rejects them at entry.
     #[must_use]
     pub fn n_rows(&self) -> usize {
-        self.folds.next_power_of_two().max(2)
+        self.folds.clamp(1, MAX_FOLDS).next_power_of_two().max(2)
     }
 
     /// Declared composition degree bound (`4n - 5`; see module docs).
@@ -225,6 +233,7 @@ impl Params {
         }
         if self.lde_len < 4
             || !self.lde_len.is_power_of_two()
+            || self.lde_len > (1usize << Field::TWO_ADICITY)
             || 2 * self.folds > self.lde_len.trailing_zeros() as usize
         {
             return Err(Error::InvalidDomainSize { size: self.lde_len });
@@ -254,9 +263,14 @@ impl Params {
         if self.num_queries == 0 {
             return Err(Error::NoQueries);
         }
-        if self.final_size == 0 || !self.final_size.is_power_of_two() {
+        if self.final_size < 2 || !self.final_size.is_power_of_two() {
             return Err(Error::InvalidDomainSize {
                 size: self.final_size,
+            });
+        }
+        if self.cap_height > 8 {
+            return Err(Error::MalformedInput {
+                reason: "cap_height above 8",
             });
         }
         let lde = n
@@ -372,8 +386,8 @@ impl Proof {
         reader.end()?;
         Ok(Self {
             column_cap,
-            fri_commitment: fri_commitment.clone(),
-            fri_proof: fri_proof.clone(),
+            fri_commitment,
+            fri_proof,
             openings,
         })
     }
@@ -412,7 +426,10 @@ pub fn prove(params: Params, quads: &[[Ext4; 4]], transcript: &mut Transcript) -
     absorb_params(&params, transcript);
     // One joint tree over interleaved rows: a single path opens a whole row.
     let row_len = 16 * COLS;
-    let mut flat = vec![0u8; m * row_len];
+    let flat_len = m
+        .checked_mul(row_len)
+        .ok_or(Error::InvalidDomainSize { size: m })?;
+    let mut flat = vec![0u8; flat_len];
     for (i, chunk) in flat.chunks_exact_mut(row_len).enumerate() {
         for (lde, slot) in lde_columns.iter().zip(chunk.chunks_exact_mut(16)) {
             slot.copy_from_slice(&lde[i].to_le_bytes());

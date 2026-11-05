@@ -350,11 +350,28 @@ pub fn blake3_256(data: &[u8]) -> [u8; 32] {
 /// batch paths cannot drift.
 pub(crate) fn leaf_digest(data: &[u8]) -> [u8; 32] {
     if data.len() < CHUNK_LEN {
-        let mut buf = [0u8; CHUNK_LEN];
-        buf[0] = 0x00;
-        let end = 1 + data.len();
-        buf[1..end].copy_from_slice(data);
-        blake3_256_small(&buf[..end])
+        // Size the stack buffer to the leaf, not the chunk: range/table/
+        // BaseFold leaves are 4..100 bytes and zeroing 1 KiB per leaf is
+        // measurable at millions of leaves.
+        if data.len() <= 64 {
+            let mut buf = [0u8; 65];
+            buf[0] = 0x00;
+            let end = 1 + data.len();
+            buf[1..end].copy_from_slice(data);
+            blake3_256_small(&buf[..end])
+        } else if data.len() < 128 {
+            let mut buf = [0u8; 129];
+            buf[0] = 0x00;
+            let end = 1 + data.len();
+            buf[1..end].copy_from_slice(data);
+            blake3_256_small(&buf[..end])
+        } else {
+            let mut buf = [0u8; CHUNK_LEN + 1];
+            buf[0] = 0x00;
+            let end = 1 + data.len();
+            buf[1..end].copy_from_slice(data);
+            blake3_256_small(&buf[..end])
+        }
     } else {
         let mut prefixed = Vec::with_capacity(1 + data.len());
         prefixed.push(0x00);

@@ -6,7 +6,78 @@ All notable changes to `z0p` are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- Merkle path verification now binds every direction bit to the claimed
+  leaf index (plain, digest, capped, and 64-byte-leaf variants), and the
+  hand-rolled FRI/BaseFold path walks do the same. Previously a valid
+  opening for leaf `j` verified at any other in-range `index` with the same
+  path length, letting a prover substitute rows at transcript-sampled
+  positions. Regressions: `merkle::tests::prove_verify_pow2`,
+  `merkle::tests::capped_roundtrip`, and the in-range wrong-index vector in
+  `tests/security.rs`.
+- FRI now rejects fold-free instances (`final_size == lde_len`): with no
+  fold there are no query openings, so the proof-supplied final polynomial
+  was not bound to the commitment. `verify` also requires at least two
+  caps. Regression: `fri::tests::fold_free_instances_rejected`.
+- FRI caps the final layer at `MAX_FINAL_SIZE = 1024` and the divided-
+  difference degree check stops at order `bound + 1`, preventing a hostile
+  commitment from forcing quadratic verifier work.
+- `air::prove` and `range::prove` validate public parameters before
+  allocating; `recursion` clamps/rejects absurd fold counts before
+  `next_power_of_two`; `table::membership_bound` saturates; and
+  `Transcript::grind` fails closed above the protocol's 32-bit difficulty
+  cap instead of looping forever. Regression:
+  `tests/hardening.rs::oversized_final_layers_and_fold_counts_fail_closed`.
+- Reject one-point FRI final layers (`final_size < 2`) in every parameter
+  set and require a non-vacuous residual bound. Previously a one-point
+  final layer made the degree check vacuous, and the tiny-table
+  `for_security` tuner could select it; false AIR/range/table/VM/fold/
+  recursion statements were accepted. Regression:
+  `tests/hardening.rs::one_point_final_layers_are_rejected`.
+- `lookup_pcs` read-checks now use the committed witness/table/
+  multiplicity columns instead of uncommitted `beta + value` MLEs, which
+  a malicious prover could choose after the challenge.
+- VM masked proving now declares the true quadratic `Mul` quotient degree
+  (`2 * (n + n_rand - 1)`), and the verifier accepts up to `2 * padded - 2`.
+- FRI binds the final layer cap to `final_poly`, caps `cap_height` at 8,
+  checks the commit path's `lde_len = poly_len * blowup`, and validates
+  params before the encoding NTT. Flat trace buffers use `checked_mul`.
+- `gf2::F128::embed_f64` was removed: it claimed a subfield embedding but
+  the F64 modulus does not divide the F128 modulus, so multiplication did
+  not commute with it. Binary-field inverses no longer branch on zero.
+- `ChaCha20` is no longer `Clone`: duplicating a stream would replay the
+  same keystream under the same key/nonce. Seed a fresh stream instead.
+- Corrected the zero-knowledge mask budget for the values actually
+  revealed: VM openings expose the current and shifted rows
+  (`2 * num_queries`), while AIR openings expose an eight-row joint leaf
+  and its shifted leaf (`16 * num_queries`). `prove_zk` now enforces those
+  budgets instead of `num_queries`, and the docs/tests were updated.
+- Fixed the batched BaseFold opening: `open_multi`/`verify_multi` used the
+  equality-polynomial table for a monomial-coefficient commitment, so
+  honest multi-point proofs failed and a wrong batching relation was
+  checked. They now use the multilinear basis table (matching `open`) and
+  cap batches at `MAX_BATCH`. Regressions:
+  `basefold::tests::multi_point_opening_verifies`,
+  `multi_point_wrong_value_rejected`, and
+  `multi_point_batch_of_three_with_caps_verifies`.
+- `lookup_pcs` rejects a zero `gamma` challenge, and `blind::masked_column_degree`
+  saturates instead of underflowing for empty inputs.
+
+### Performance
+- Short Merkle leaves (`<= 128` bytes) hash through a small stack buffer
+  instead of zeroing a 1 KiB chunk buffer per leaf.
+- `Transcript` keeps a streaming BLAKE3 history instead of re-hashing its
+  byte log on every squeeze. Challenges are byte-identical to the old
+  construction (pinned by
+  `transcript::tests::streaming_history_matches_concatenation`) and squeeze
+  cost no longer grows with history length. The benchmark suite improved
+  roughly 2-3x on small proofs and 2x on verifier time, with proof sizes
+  unchanged.
+
 ### Added
+- Expanded GitHub README, white paper, yellow paper, and a 19-page LaTeX
+  technical report/PDF, all aligned with the current code and the
+  2026-11-05 measured benchmark run.
 - `RELEASING.md` and `tools/release_check.py` for immutable, reproducible
   releases and version/tag consistency checks.
 - An explicit project-status banner and an audit review order covering the

@@ -67,7 +67,7 @@ impl Params {
         if num_queries == 0 {
             return Err(Error::NoQueries);
         }
-        if final_size == 0 || !final_size.is_power_of_two() {
+        if final_size < 2 || !final_size.is_power_of_two() {
             return Err(Error::InvalidDomainSize { size: final_size });
         }
         let Some(lde) = n_rows.checked_mul(blowup) else {
@@ -131,9 +131,11 @@ impl Params {
             .ok_or(Error::MalformedInput {
                 reason: "table length overflows composition bound",
             })?;
-        // Smallest blowup in 2.. with `(bound + 1) <= lde / 4`.
+        // Smallest blowup in 4.. with `(bound + 1) <= lde / 4`.
+        // A floor of 4 keeps the LDE at least 8 for the smallest table,
+        // so FRI has a valid final layer of at least two points.
         let need = bound.saturating_add(1);
-        let mut blowup = 2usize;
+        let mut blowup = 4usize;
         let lde_len = loop {
             let lde = n_rows
                 .checked_mul(blowup)
@@ -165,7 +167,7 @@ impl Params {
     /// Length of the LDE domain.
     #[must_use]
     pub const fn lde_len(&self) -> usize {
-        self.n_rows * self.blowup
+        self.n_rows.saturating_mul(self.blowup)
     }
 
     fn fri_params(&self) -> Result<fri::Params> {
@@ -189,9 +191,14 @@ impl Params {
         if self.num_queries == 0 {
             return Err(Error::NoQueries);
         }
-        if self.final_size == 0 || !self.final_size.is_power_of_two() {
+        if self.final_size < 2 || !self.final_size.is_power_of_two() {
             return Err(Error::InvalidDomainSize {
                 size: self.final_size,
+            });
+        }
+        if self.cap_height > 8 {
+            return Err(Error::MalformedInput {
+                reason: "cap_height above 8",
             });
         }
         let lde = self
@@ -351,7 +358,12 @@ pub fn prove_zk(
 /// over the degree-`n` row vanishing polynomial.
 #[must_use]
 pub const fn membership_bound(table_len: usize, n: usize, n_rand: usize) -> usize {
-    table_len * (n + n_rand - 1) - n
+    // Saturating arithmetic keeps hostile/hand-built dimensions from
+    // overflowing (panic in debug, wrap in release); an overflowed bound
+    // is rejected by the FRI rate gate downstream.
+    table_len
+        .saturating_mul(n.saturating_add(n_rand).saturating_sub(1))
+        .saturating_sub(n)
 }
 
 /// Shared prover body over coefficient vectors of any power-of-two length.
@@ -567,7 +579,11 @@ fn lde_point_at(m: usize, index: usize) -> Result<Field> {
 }
 
 fn commit_evals(lde: &[Field]) -> Result<MerkleTree> {
-    let mut flat = vec![0u8; 4 * lde.len()];
+    let flat_len = lde
+        .len()
+        .checked_mul(4)
+        .ok_or(Error::InvalidDomainSize { size: lde.len() })?;
+    let mut flat = vec![0u8; flat_len];
     for (slot, f) in flat.chunks_exact_mut(4).zip(lde.iter()) {
         slot.copy_from_slice(&f.to_le_bytes());
     }

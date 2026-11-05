@@ -2,70 +2,226 @@
 
 [![CI](https://github.com/FutureProofsTech/z0p/actions/workflows/ci.yml/badge.svg)](https://github.com/FutureProofsTech/z0p/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/FutureProofsTech/z0p?display_name=tag&sort=semver)](https://github.com/FutureProofsTech/z0p/releases)
-[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
-[![Rust 1.74+](https://img.shields.io/badge/rust-1.74%2B-orange.svg)](Cargo.toml)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+[![Rust 1.74+](https://img.shields.io/badge/Rust-1.74%2B-orange.svg)](Cargo.toml)
 [![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](Cargo.toml)
+[![unsafe: forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](src/lib.rs)
 
-> **Project status:** v0.2.1, unaudited research software. The advertised
-> ~100-bit figure is a conjectured query/proof-of-work budget, not an
-> end-to-end soundness proof. See [SECURITY.md](SECURITY.md) and
-> [AUDIT.md](AUDIT.md).
+> **Status: v0.2.1, unaudited research software.**
+> The advertised ~100-bit figure is a conjectured query/proof-of-work
+> schedule, not an end-to-end soundness theorem. See [SECURITY.md](SECURITY.md)
+> and [AUDIT.md](AUDIT.md) before relying on any claim.
 
-A from-scratch, zero-dependency zero-knowledge proving stack in safe Rust:
-binary fields, an NTT-friendly prime field, BLAKE3, Merkle trees, FRI
-polynomial commitments, and STARKs (Fibonacci AIR, range checks, table
-lookups, register-machine execution, hash-folded IVC) — plus zero-knowledge
-masking throughout.
+**z0p** is a from-scratch, zero-dependency zero-knowledge proving stack in
+safe Rust: binary fields, the BabyBear prime field, a quartic extension field,
+BLAKE3-256, Merkle trees, a parallel NTT, FRI, sumcheck, univariate and
+multilinear polynomial commitments, LogUp lookups, STARKs, hash-folded IVC,
+a minimal register-machine AIR, and zero-knowledge masking. Every layer is
+implemented in this crate. `cargo tree` is one node.
 
-No elliptic curves. No trusted setup. No `unsafe`. No dependencies.
-Hash-based and transparent, in the plausibly post-quantum STARK family.
+No elliptic curves. No trusted setup. No `unsafe`. No runtime dependencies.
+Hash-based, transparent, and in the plausibly post-quantum STARK family.
 
-## Highlights
+---
 
-- **Truly from zero** — every layer (fields, hash, Merkle, NTT, FRI,
-  sumcheck, AIR) is implemented in this crate. `cargo tree` is one node.
-- **Platinum Rust** — `#![forbid(unsafe_code)]`, `cargo fmt --check` clean,
-  `cargo clippy --all-targets -- -D warnings` clean (pedantic), fallible
-  public APIs (`Result`, never `unwrap` on public paths), documented items.
-- **Transparent setup, PQ-oriented** — BLAKE3-256 digests, FRI Reed–Solomon
-  commitments over BabyBear; nothing to ceremony, nothing pairing-based.
-- **Extension-field challenges** — FRI folds, STARK composition batches,
-  `upcs`/Gemini points and betas, sumcheck rounds, and lookup identities
-  use `Fp4 = Fp[v,u]/(v²-u, u²-11)` over BabyBear, raising algebraic
-  challenge entropy from ~31 bits to ~124 bits. Wire format v5 stores
-  extension values canonically (16 bytes); FRI commits four values per
-  64-byte leaf and the AIR trace commits eight joint rows per leaf.
-- **Production parameter sizing** — `Params::for_security(steps, …, 100)`
-  sizes blowup 16, queries, grinding, final size, and cap height for a
-  ~100-bit query/proof-of-work schedule. See [Soundness](#soundness) for
-  what that schedule does and does not cover.
-- **Fast at scale** — 1,048,576-step production proof in **~1.69 s**
-  (~1.61 µs/step, ~620k steps/s), verified in **~1.9 ms**, 203,553 bytes.
-  `--features simd` on nightly brings the same row to **~1.56 s**.
-  Verification cost is essentially independent of trace size (the verifier
-  derives FRI domain points on demand, never materializing `O(lde_len)`).
-- **Adversarially tested** — 271 unit tests plus three attack suites
-  ([security](docs/security-tests.md), [red-team](docs/red-team.md),
-  hardening): ~800 hostile attempts plus decoder fuzzing per run, zero
-  acceptances, zero panics.
+## Contents
+
+- [At a glance](#at-a-glance)
+- [Why z0p](#why-z0p)
+- [Architecture](#architecture)
+- [Feature status](#feature-status)
+- [Quick start](#quick-start)
+- [Usage](#usage)
+- [Performance](#performance)
+- [Soundness](#soundness)
+- [Security model and evidence](#security-model-and-evidence)
+- [Wire format and compatibility](#wire-format-and-compatibility)
+- [Documentation map](#documentation-map)
+- [Project structure](#project-structure)
+- [Limitations](#limitations)
+- [Roadmap](#roadmap)
+- [Citation and license](#citation-and-license)
+
+---
+
+## At a glance
+
+| Property | Value |
+|---|---|
+| Crate | `z0p` v0.2.1 |
+| Language | Rust 2021, MSRV **1.74** |
+| Runtime dependencies | **0** (`cargo tree` is one node) |
+| `unsafe` | **forbidden** (`#![forbid(unsafe_code)]`) |
+| Trusted setup | **none** |
+| Hash | BLAKE3-256, implemented from the specification |
+| Base field | BabyBear, `p = 2^31 - 2^27 + 1` |
+| Challenge field | `Fp4 = Fp2[v]/(v^2-u)`, `Fp2 = Fp[u]/(u^2-11)` |
+| Commitment | Merkle-committed Reed–Solomon / FRI |
+| Proof systems | Fibonacci AIR, range, table, IVC, VM, LogUp, recursion fragment |
+| PCS | FRI, UPCs, Gemini v1, BaseFold-style prototype |
+| Zero knowledge | vanishing-multiple masking (`prove_zk`) |
+| Wire format | canonical, versioned, `VERSION = 5` |
+| License | GPL-3.0-only |
+
+### Latest measured result
+
+On the 16-core / 31 GB reference machine, release profile, `rustc 1.99.0`,
+median of runs:
+
+| Workload | Prove | Verify | Proof |
+|---|---:|---:|---:|
+| AIR Fibonacci, **1,048,576 steps**, production schedule | **1.734 s** | **1.13 ms** | **203,553 B** |
+| AIR Fibonacci, 65,536 steps | 115.49 ms | 0.90 ms | 141,641 B |
+| AIR Fibonacci, 1,024 steps | 37.05 ms | 0.48 ms | 68,573 B |
+| FRI polynomial, 1,024 coefficients | 21.50 ms | 0.31 ms | 43,174 B |
+
+The 1M-step row is **1.653 µs/step** (~**604,872 steps/s**) and a
+**198.8 KiB** proof. Verification is essentially independent of trace size
+because FRI domain points are derived on demand instead of materializing the
+`O(lde_len)` layer stack. Full methodology and all 24 rows:
+[docs/benchmarks.md](docs/benchmarks.md).
+
+---
+
+## Why z0p
+
+Most practical zero-knowledge stacks ask users to trust a large surface:
+pairing-friendly curves, multi-party setup ceremonies, deep dependency trees,
+and protocol behavior that is described in papers but not reproducible from
+the code. z0p takes the opposite constraint set:
+
+1. **From zero.** Fields, hash, Merkle trees, NTT, FRI, sumcheck, AIRs, and
+   lookups are owned by this crate. There is no third-party cryptography to
+   audit transitively.
+2. **Transparent and hash-based.** Security reduces to BLAKE3-256,
+   Reed–Solomon proximity testing, and Fiat–Shamir. No curves, no pairings,
+   no trusted setup, no quantum-vulnerable group assumptions.
+3. **Safe by construction.** `#![forbid(unsafe_code)]`; fallible public APIs;
+   canonical, fail-closed decoding; hostile parameters re-validated at every
+   entry point.
+4. **Quantified, not hand-waved.** Query and proof-of-work budgets are stated
+   explicitly. The production recipe uses rate `1/16`, 40 queries, and
+   20-bit grinding for a **conjectured ~100-bit query/PoW schedule**.
+5. **Evidence alongside claims.** 277 library tests, three adversarial suites,
+   exhaustive decoder fuzzing, byte-exact proof-size assertions, and a pinned
+   benchmark regression gate run in CI.
+6. **Auditable engineering.** One crate, one wire format, one gate command:
+   `python3 tools/check.py`.
+
+### What it is not
+
+z0p is **not** an audited production system, a general zkVM, a circuit
+compiler, or a private-table lookup protocol. The ~100-bit figure is a
+query/PoW sizing, not a theorem. `lookup` and `sumcheck` expose tables in
+clear; `lookup_pcs` hides columns from the wire but is not zero-knowledge;
+`basefold`, `lookup_pcs`, `gemini`, and `vm` are experimental. See
+[Limitations](#limitations).
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A[Witness / trace] --> B[Interpolate + coset LDE<br/>BabyBear, parallel NTT]
+    B --> C[Composition polynomial<br/>AIR constraints ÷ vanishing polynomials]
+    C --> D[FRI commit<br/>arity-4 folds, Merkle caps, PoW]
+    B --> E[Joint trace commitment<br/>Merkle cap / 64-byte leaves]
+    D --> F[Proof<br/>caps + final poly + query openings]
+    E --> F
+    F --> G[Verifier<br/>replay transcript, check paths, folds, degree, identities]
+    G --> H{accept / reject}
+```
+
+The stack is deliberately layered:
+
+| Layer | Modules | Responsibility |
+|---|---|---|
+| Algebra | `gf2`, `babybear`, `ext4` | Binary word fields, NTT-friendly prime field, quartic challenge field |
+| Hashing | `hash`, `merkle` | BLAKE3-256, domain separation, capped Merkle trees, index-bound paths |
+| Fiat–Shamir | `transcript`, `rng` | Streaming transcript, challenges, grinding, ChaCha20 CSPRNG |
+| Polynomial core | `ntt`, `mle`, `sumcheck`, `fri` | Coset NTT, multilinear tables, sumcheck, FRI |
+| Commitments | `upcs`, `gemini`, `basefold` | Univariate openings, multilinear PCS prototypes |
+| Lookups | `lookup`, `lookup_pcs` | LogUp in clear and committed-input LogUp |
+| Statements | `air`, `range`, `table`, `fold`, `vm`, `recursion` | STARKs, IVC, execution, recursion fragment |
+| Privacy | `blind` | Vanishing-multiple zero-knowledge masking |
+| Wire format | `codec` | Canonical versioned encoding, fail-closed decoding |
+| Parallelism | `par` | Deterministic `std::thread` data parallelism |
+
+### Design invariants
+
+- **Rate gate on both sides.** `degree_bound + 1 <= lde_len / 2` at prove
+  and verify.
+- **Transcript binding.** Dimensions, commitments, public inputs, and
+  proof-of-work nonces are absorbed before the challenges that depend on
+  them.
+- **Authenticated next rows.** AIR and IVC next-row values are the same
+  committed columns opened at the `omega`-shifted LDE index, not an
+  independent witness.
+- **Committed leaves.** FRI quads and AIR trace leaves are hashed from the
+  exact revealed bytes; Merkle path direction bits are bound to the claimed
+  index.
+- **Fail-closed decoding.** Canonical fields, bounded counts, no trailing
+  bytes, no allocation before limits are checked.
+- **No `unsafe`, no dependencies.** Enforced by the manifest, crate
+  attribute, CI, and `cargo tree`.
+
+---
+
+## Feature status
+
+| Component | Status | Notes |
+|---|---|---|
+| `babybear`, `ext4`, `gf2` | Stable core | Canonical arithmetic, inverses, tower laws |
+| `hash`, `merkle`, `codec`, `transcript` | Stable core | KATs, caps, canonical wire format, streaming FS |
+| `ntt`, `mle`, `sumcheck`, `fri` | Stable core | FRI production path, rate gate, final-degree check |
+| `air`, `range`, `table`, `fold` | Working STARKs | Plain and masked variants where documented |
+| `vm` | Experimental | Two-register straight-line program; not a zkVM |
+| `lookup` | Working prototype | In-clear witness/table; sound but not hiding |
+| `lookup_pcs` | Experimental | Committed-input LogUp; not zero-knowledge |
+| `upcs`, `gemini` | Working prototypes | Transparent, non-hiding point/multilinear openings |
+| `basefold` | Experimental prototype | Compact multilinear PCS; not wired into AIR |
+| `recursion` | Fragment | Re-checks one FRI fold chain; not self-proving |
+| `blind`, `rng` | Working | Query-response hiding; ChaCha20 CSPRNG |
+
+---
 
 ## Quick start
 
-`z0p` is not published on crates.io; build from source or use this repository
-as a path/git dependency. The default build is stable Rust 1.74+.
+`z0p` is not published on crates.io. Use it as a path or git dependency, or
+build this repository directly.
 
 ```sh
+git clone https://github.com/FutureProofsTech/z0p.git
+cd z0p
+
 cargo build --release
-cargo test                 # debug: lib + security/red-team/hardening suites
-cargo test --release       # same, optimized
-cargo bench                # speed/size report (release, median of runs)
-python3 tools/check.py     # platinum gates: fmt, links, rustdoc, clippy, tests, bench regression
+cargo test                 # debug: library + security/red-team/hardening
+cargo test --release       # optimized: same suites
+cargo bench                # 24 speed/size rows, release profile
+python3 tools/check.py     # full gate: fmt, links, rustdoc, clippy, tests, bench
 ```
 
-`BENCH_ROW=substr` runs only matching benchmark rows, e.g.
-`BENCH_ROW=N65536 cargo bench`.
+The default build is stable Rust 1.74+. The optional SIMD hash path needs a
+nightly toolchain:
+
+```sh
+RUSTC_BOOTSTRAP=1 cargo test --features simd
+RUSTC_BOOTSTRAP=1 cargo bench --features simd
+```
+
+`BENCH_ROW=substr` runs a subset, for example:
+
+```sh
+BENCH_ROW=N1048576 cargo bench
+BENCH_ROW='air prod' cargo bench
+```
+
+---
 
 ## Usage
+
+### Fibonacci AIR
 
 ```rust
 use z0p::{air, babybear::Field, transcript::Transcript};
@@ -73,9 +229,14 @@ use z0p::{air, babybear::Field, transcript::Transcript};
 let steps = 64;
 let (_, trace_b) = air::build_trace(Field::ONE, Field::ONE, steps);
 let params = air::Params::new(
-    steps, 8, 12, 8,
-    Field::ONE, Field::ONE, trace_b[steps - 1],
-).expect("params");
+    steps,
+    8,                    // blowup
+    12,                   // FRI queries
+    8,                    // final layer size
+    Field::ONE,           // a0
+    Field::ONE,           // b0
+    trace_b[steps - 1],   // claimed B[N-1]
+).expect("valid params");
 
 let mut prover = Transcript::new(b"my-app/fib");
 let proof = air::prove(params, &mut prover).expect("prove");
@@ -84,130 +245,394 @@ let mut verifier = Transcript::new(b"my-app/fib");
 air::verify(params, &proof, &mut verifier).expect("verify");
 ```
 
-Production query/PoW schedule (~100 bits) in one call:
+### Production query/PoW schedule
 
 ```rust
-let params = air::Params::for_security(steps, Field::ONE, Field::ONE, b_last, 100)
-    .expect("params");
+use z0p::{air, babybear::Field};
+
+let (_, trace_b) = air::build_trace(Field::ONE, Field::ONE, 1 << 20);
+let b_last = trace_b[(1 << 20) - 1];
+
+let params = air::Params::for_security(
+    1 << 20,
+    Field::ONE,
+    Field::ONE,
+    b_last,
+    100,                  // conjectured query/PoW target
+).expect("valid params");
 ```
 
-Zero-knowledge variants (`air::prove_zk`, `range::prove_zk`,
-`table::prove_zk`, `vm::prove_zk`) mask the trace so query openings reveal
-nothing; verification is unchanged.
+`for_security` selects blowup 16, sizes queries and grinding through
+`fri::tune_strength`, and chooses a size-optimal final layer and Merkle cap
+height through `fri::tune_shape`. It is a query/PoW recipe, not a proof of
+end-to-end soundness.
+
+### Range and table checks
+
+```rust
+use z0p::{babybear::Field, range, table, transcript::Transcript};
+
+let rp = range::Params::new(
+    32,        // rows
+    8,         // bit width, 1..=24
+    4,         // blowup
+    8,         // queries
+    8,         // final size
+    Field::new(42),
+).expect("range params");
+let mut t = Transcript::new(b"my-app/range");
+let rproof = range::prove(rp, &mut t).expect("range prove");
+let mut t = Transcript::new(b"my-app/range");
+range::verify(rp, &rproof, &mut t).expect("range verify");
+
+let table_values: Vec<Field> = [10, 20, 30, 40].iter().map(|v| Field::new(*v)).collect();
+let tp = table::Params::new(8, 8, 8, 4, Field::new(30)).expect("table params");
+let mut t = Transcript::new(b"my-app/table");
+let tproof = table::prove(tp, &table_values, &mut t).expect("table prove");
+let mut t = Transcript::new(b"my-app/table");
+table::verify(tp, &table_values, &tproof, &mut t).expect("table verify");
+```
+
+### Program execution (`vm`)
+
+```rust
+use z0p::{babybear::Field, transcript::Transcript, vm};
+
+let program = vec![
+    vm::Op::SetA(Field::new(2)),
+    vm::Op::SetB(Field::new(3)),
+    vm::Op::Add,
+    vm::Op::Mul,
+    vm::Op::Swap,
+    vm::Op::Halt,
+];
+let params = vm::Params::new(
+    16, 8, 2, 2,
+    program,
+    Field::new(3),
+    Field::new(15),
+).expect("vm params");
+
+let mut t = Transcript::new(b"my-app/vm");
+let proof = vm::prove(&params, Field::new(10), Field::new(20), &mut t)
+    .expect("vm prove");
+let mut t = Transcript::new(b"my-app/vm");
+vm::verify(&params, &proof, &mut t).expect("vm verify");
+```
+
+### Zero-knowledge variants
+
+`air::prove_zk`, `range::prove_zk`, `table::prove_zk`, and `vm::prove_zk`
+mask trace columns with random multiples of the trace-domain vanishing
+polynomial. Verification is unchanged.
+
+```rust
+use z0p::{babybear::Field, rng::ChaCha20, transcript::Transcript, vm};
+
+let program = vec![vm::Op::SetA(Field::new(2)), vm::Op::Halt];
+let params = vm::Params::new(8, 8, 2, 8, program, Field::new(2), Field::new(4))
+    .expect("vm params");
+let mut rng = ChaCha20::new([7u8; 32], [3u8; 12]);
+let mut t = Transcript::new(b"my-app/vm-zk");
+
+// Two revealed rows per query (current and shifted); use at least 2 * queries.
+let proof = vm::prove_zk(&params, Field::new(9), Field::new(4), 8, &mut rng, &mut t)
+    .expect("vm zk prove");
+let mut t = Transcript::new(b"my-app/vm-zk");
+vm::verify(&params, &proof, &mut t).expect("vm zk verify");
+```
+
+Masking budgets are protocol-specific:
+
+| Protocol | Revealed values per column | Minimum `n_rand` |
+|---|---|---|
+| `range`, `table` | one point per query | `num_queries` |
+| `vm` | current and shifted rows | `2 * num_queries` |
+| `air` | eight-row leaf and shifted leaf | `16 * num_queries` |
+
+### FRI directly
+
+```rust
+use z0p::{babybear::Field, fri, transcript::Transcript};
+
+let coeffs: Vec<Field> = (0..1024).map(|i| Field::new(i + 1)).collect();
+let params = fri::Params::for_security(1024, 100).expect("fri params");
+let mut prover = Transcript::new(b"my-app/fri");
+let state = fri::commit(&coeffs, params, &mut prover).expect("commit");
+let commitment = fri::public_commitment(&state);
+let (proof, _) = fri::open(&state, &mut prover).expect("open");
+
+let mut verifier = Transcript::new(b"my-app/fri");
+fri::verify(&commitment, &proof, params, &mut verifier).expect("verify");
+```
+
+### Multilinear BaseFold opening
+
+```rust
+use z0p::{babybear::Field, basefold, ext4::Ext4, transcript::Transcript};
+
+let coeffs: Vec<Field> = (0..1024).map(|i| Field::new(i + 3)).collect();
+let state = basefold::commit(&coeffs, 16).expect("commit");
+let commitment = state.commitment().clone();
+let point = vec![Ext4::ZERO; 10];
+let value = Ext4::from_base(coeffs[0]); // f(0,..,0) for monomial coefficients
+let params = basefold::Params::for_security(1024, 100).expect("params");
+
+let mut prover = Transcript::new(b"my-app/basefold");
+let proof = basefold::open(&state, &point, value, params, &mut prover)
+    .expect("open");
+let mut verifier = Transcript::new(b"my-app/basefold");
+basefold::verify(&commitment, &point, value, &proof, params, &mut verifier)
+    .expect("verify");
+```
+
+The BaseFold module is an experimental prototype, not an audited production
+commitment.
+
+---
 
 ## Performance
 
-Release profile, median of runs, 16-core / 31 GB machine, `rustc 1.99.0`.
-Full table with methodology: [docs/benchmarks.md](docs/benchmarks.md).
+**Method.** `benches/speed_size.rs`, release profile, median of runs after one
+warm-up, 16 cores / 31 GB, `rustc 1.99.0`, measured **2026-11-05**. Every row
+verifies its proof outside the timed region, and byte counters assert
+`to_bytes().len()` exactly. Proof sizes are deterministic; times are
+hardware- and load-dependent. The regression gate allows 3× timing drift and
+requires byte-exact sizes.
 
-## Audit and reproduce
+### Production AIR / FRI
 
-Start with [AUDIT.md](AUDIT.md): scope, invariants, reproduction commands,
-evidence, and known limitations. The formal specification is
-[docs/yellowpaper.md](docs/yellowpaper.md); the design and performance
-overview is [docs/whitepaper.md](docs/whitepaper.md). Evidence lives in
-[docs/security-tests.md](docs/security-tests.md),
-[docs/red-team.md](docs/red-team.md), and
-[docs/unit-tests.md](docs/unit-tests.md).
+| Row | Prove | Verify | Proof |
+|---|---:|---:|---:|
+| FRI polynomial, 256 coefficients (`B16 Q40 G20 C4 F16`) | 10.59 ms | 0.25 ms | 29,378 B |
+| AIR Fibonacci, 64 steps | 11.99 ms | 0.27 ms | 33,061 B |
+| FRI polynomial, 1,024 coefficients | 21.50 ms | 0.31 ms | 43,174 B |
+| AIR Fibonacci, 1,024 steps | 37.05 ms | 0.48 ms | 68,573 B |
+| AIR Fibonacci, 8,192 steps | 49.81 ms | 0.59 ms | 101,233 B |
+| AIR Fibonacci, 65,536 steps | 115.49 ms | 0.90 ms | 141,641 B |
+| **AIR Fibonacci, 1,048,576 steps** | **1,733.55 ms** | **1.13 ms** | **203,553 B** |
 
-| Proof (production query/PoW schedule) | Prove | Verify | Size |
-|---|---|---|---|
-| AIR Fibonacci, 1,024 steps | 42 ms | 0.86 ms | 68,573 B |
-| AIR Fibonacci, 8,192 steps | 54 ms | 1.2 ms | 101,233 B |
-| AIR Fibonacci, 65,536 steps | 138 ms | 1.7 ms | 141,641 B |
-| AIR Fibonacci, **1,048,576 steps** | **1.69 s** | **1.9 ms** | **203,553 B** |
-| FRI poly-1024 | 27 ms | 0.68 ms | 43,174 B |
+The 1M-step row is **1.653 µs/step** and **604,872 steps/s**. Proof size
+grows logarithmically; verification stays in the low-millisecond range from
+1,024 to 1,048,576 steps. On the optional nightly SIMD hash path, a
+representative run of the same row measured **1,693.58 ms** (~2.3% faster);
+the default scalar path remains the supported stable build.
 
-| Multilinear PCS, 1,024 coefficients, `B16 Q40 G20` | Prove | Verify | Commitment + proof |
-|---|---|---|---|
-| BaseFold-style prototype (`basefold`) | 31 ms | 0.97 ms | 127,658 B |
-| BaseFold, cap height 4 | 30 ms | 0.88 ms | 80,018 B |
-| Gemini v1 (`gemini`, one opening per layer) | 424 ms | 54 ms | 887,872 B |
+### Multilinear PCS, 1,024 coefficients, `B16 Q40 G20`
 
-| Committed lookup, 1,024-in-1,024, BaseFold C4 | Prove | Verify | Commitments + proof |
-|---|---|---|---|
-| `lookup_pcs` (five commitments, eight openings) | 367 ms | 21 ms | 642,443 B |
+| Construction | Prove | Verify | Commitment + proof |
+|---|---:|---:|---:|
+| BaseFold-style prototype | 22.65 ms | 0.88 ms | 127,658 B |
+| BaseFold-style, cap height 4 | 22.91 ms | 0.63 ms | 80,018 B |
+| Gemini v1 (one multi-point opening per layer) | 317.96 ms | 7.36 ms | 887,872 B |
 
-| Program execution, 64 steps, `B16 Q12 C2` | Prove | Verify | Proof |
-|---|---|---|---|
-| `vm` (public program, private input, two registers) | 1.5 ms | 0.24 ms | 14,933 B |
+Cap height 4 reduces the BaseFold proof by **37.3%** (127,658 → 80,018 B).
+The BaseFold rows are experimental and not wired into the AIR/STARK stack.
 
-The BaseFold rows are a prototype (not wired into the AIR stack); optional
-Merkle caps replace the top path steps of every layer with one frontier,
-shrinking the proof by ~37% on this shape. Gemini remains the conservative
-v1 choice for small multilinear instances. The committed lookup commits the
-witness, table, multiplicities, and both quotient columns, then carries
-eight BaseFold openings; it hides columns from the wire but is not
-zero-knowledge. The `vm` row is the plain proving path: the program is
-public, the initial registers are a witness, and FRI query openings are not
-masked. `vm::prove_zk` masks both columns; it is not benchmarked here.
+### Committed lookup and execution
 
-| Primitive | Result |
-|---|---|
-| BLAKE3 1 MiB | ~1.3–2.9 ms (load-dependent) |
-| BabyBear mul | ~136 Mops/s |
-| NTT forward 2¹⁴ | 0.33 ms |
-| Merkle 65,536 leaves | ~4.0 ms |
+| Workload | Prove | Verify | Size |
+|---|---:|---:|---:|
+| `lookup_pcs`, 1,024-in-1,024, `B16 Q40 G20 C4` | 273.01 ms | 5.77 ms | 642,443 B |
+| `vm`, 64-step, `B16 Q12 C2` | 0.69 ms | 0.18 ms | 14,933 B |
 
-Proof sizes are deterministic; rows with a separate byte counter assert it
-equals the wire format on every benchmark run.
+`lookup_pcs` commits witness, table, multiplicities, and both quotient
+columns, then carries eight BaseFold openings. It is committed-input but not
+zero-knowledge. The `vm` row is the plain path; `vm::prove_zk` is not
+benchmarked.
+
+### Fast bench shapes (~18 conjectured query bits)
+
+| Workload | Prove | Verify | Proof |
+|---|---:|---:|---:|
+| FRI polynomial, 256 coefficients | 0.15 ms | 0.08 ms | 11,522 B |
+| AIR Fibonacci, 64 steps | 0.17 ms | 0.11 ms | 15,465 B |
+| Range, 16-bit | 0.10 ms | 0.07 ms | 5,217 B |
+| Table, 4 entries | 0.04 ms | 0.04 ms | 4,673 B |
+| Lookup, 64-in-16 | 0.19 ms | 0.09 ms | 2,897 B |
+| Fold, 4×8 Fibonacci | 0.19 ms | 0.19 ms | 16,845 B |
+| AIR Fibonacci, 1,024 steps | 2.01 ms | 0.20 ms | 28,257 B |
+
+### Primitives
+
+| Primitive | Measured |
+|---|---:|
+| BLAKE3, 1 MiB | 1.17 ms (856.5 MB/s) |
+| BabyBear multiplication | 6.59 ms / 1M ops (151.8 Mops/s) |
+| GF(2^64) multiplication | 272.84 ms / 1M ops (3.7 Mops/s) |
+| NTT forward, 2^14 | 0.32 ms |
+| Merkle tree, 65,536 leaves | 3.24 ms |
+
+---
 
 ## Soundness
 
-Conjectured query/PoW bit-levels (Fiat–Shamir + FRI in the QROM,
-Johnson-radius heuristic) — see the `fri` module docs for the full sizing
-table:
+The following table is **conjectured** under the Johnson-radius FRI
+heuristic and Fiat–Shamir in the (quantum) random-oracle model. It counts
+query sampling and proof-of-work only; it is not an end-to-end soundness
+proof.
 
-| Shape | Rate | Queries | Grinding | Query+PoW target |
-|---|---|---|---|---|
-| Bench (fast, weak) | 1/8 | 12 | 0-bit | ~18 bits |
-| Production | 1/16 | 40 | 20-bit | ~100 bits |
+| Shape | Rate | Queries | Grinding | Conjectured query + PoW |
+|---|---:|---:|---:|---:|
+| Bench (fast, weak) | 1/8 | 12 | 0 bits | ~18 bits |
+| Production | 1/16 | 40 | 20 bits | ~100 bits (80 + 20) |
 
-Grinding bits add one-to-one: a `d`-bit nonce costs the prover `2^d`
-hashes and denies a forger a `2^-d` shortcut. Size the queries from the
-rate first, then top up with grinding — `for_security` does exactly this,
-plus the size-optimal final layer and Merkle cap height.
+**Challenge field.** FRI folds, STARK composition batches, `upcs`/Gemini
+points and betas, sumcheck rounds, and lookup's rational-identity challenge
+draw from the quartic extension `Fp4` over BabyBear. A degree-`d` algebraic
+identity collides with probability roughly `d / p^4` per challenge, giving
+about **124 bits** of per-challenge algebraic entropy. This removes the
+former ~31-bit algebraic ceiling but does not turn the query/PoW schedule
+into a theorem.
 
-**Challenge fields.** The totals above count query sampling and grinding.
-All algebraic challenges now draw from the quartic extension `Fp4`:
-FRI folds, STARK composition batches, `upcs`/Gemini evaluation points
-and fold betas, sumcheck rounds, and lookup's rational-identity
-challenge. Per-challenge collision probability is about `degree / p^4`,
-so the former ~31-bit algebraic ceiling is gone. These are still
-conjectured bounds with concrete parameters; do not deploy a high-value
-system before an external audit.
+**Parameter sizing.** `Params::for_security(..., target_bits)` uses blowup
+16 and splits the target between queries and grinding. Production callers
+should use it rather than the small bench defaults. The FRI verifier enforces
+an absolute rate below `1/2`, requires `final_size >= 2` (a one-point final
+layer would make the degree check vacuous), caps `final_size` at 1024, and
+requires a non-vacuous residual bound. Merkle cap height is capped at 8.
 
-## Security testing
+**What is not claimed.** No external audit, no end-to-end theorem, no
+general-purpose circuit compiler, no zkVM, no private-table lookup, and no
+side-channel resistance against the host OS, compiler, or CPU. See
+[SECURITY.md](SECURITY.md) and [AUDIT.md](AUDIT.md).
 
-| Suite | What | Result |
-|---|---|---|
-| Unit (`cargo test --lib`) | 271 tests across 25 modules | [docs/unit-tests.md](docs/unit-tests.md) |
-| `tests/security.rs` | 13 attack vectors, 477 hostile attempts | [docs/security-tests.md](docs/security-tests.md) |
-| `tests/redteam.rs` | 10 deeper vectors incl. 500-input garbage storm | [docs/red-team.md](docs/red-team.md) |
-| `tests/hardening.rs` | 9 vectors: hostile `Params` (incl. VM), decoder bit-flip fuzz, RNG uniformity | this README |
-| `fuzz/decode` | coverage-guided decoder + canonical round-trip (dev-only harness) | [fuzz/README.md](fuzz/README.md) |
+---
 
-Every forgery attempt is rejected; hostile input fails closed with `Err`
-(never panics); honest proofs always verify. Past findings and their fixes
-are recorded in the security docs.
+## Security model and evidence
 
-The project is **unaudited** — engineering for audit is complete (transparent
-setup, versioned wire format, pinned baselines, adversarial suites), but do not
-deploy for high-value statements before an external audit. See
-[SECURITY.md](SECURITY.md) for the threat model and reporting policy.
+### Threat model
+
+The verifier is the adversary-facing surface. Untrusted inputs are proof
+bytes, commitments, public parameters, and public tables/claims. Hostile
+inputs must fail closed with `Err`, never panic, and never force unbounded
+allocation or work. Proof-of-work grinding is a prover-side cost; the
+verifier only checks a nonce. `lookup` and `sumcheck` expose their tables in
+clear; `lookup_pcs` hides columns from the wire but is not zero-knowledge.
+The full threat model and out-of-scope items are in
+[SECURITY.md](SECURITY.md#threat-model).
+
+### Test matrix
+
+| Suite | Tests | Evidence |
+|---|---:|---|
+| Library (`cargo test --lib`) | **277** | Arithmetic KATs, Horner cross-checks, parallel determinism, protocol roundtrips |
+| `tests/security.rs` | **13** | 479 hostile attempts: FRI/trace/path/commitment tampering, PoW forgery, rate gates, byte fuzz |
+| `tests/redteam.rs` | **10** | 37 targeted attacks + 500-input garbage storm: transplants, false statements, IVC surgery, transcript abuse |
+| `tests/hardening.rs` | **11** | Hostile `Params`, exhaustive per-bit AIR decoder fuzz, 14,000 random mutations across seven encodings, RNG checks |
+| Doc tests | **5** | Public examples |
+| **Total** | **316** | Plus the coverage-guided `fuzz/decode` target |
+
+Standing result on the current tree: **zero acceptances, zero panics** for
+the adversarial suites — **1,016 targeted hostile trials** (479 security +
+537 red-team) plus exhaustive decoder fuzzing. `python3 tools/check.py`
+runs fmt, Markdown links, rustdoc, pedantic clippy, debug tests, release
+tests, and the benchmark regression gate.
+
+### Closed findings worth knowing
+
+The adversarial suites and internal review have already closed real issues.
+The most important are documented in
+[docs/security-tests.md](docs/security-tests.md):
+
+- **Merkle paths did not bind direction bits to the claimed index**, allowing
+  a valid opening to be replayed at another in-range position. Fixed in
+  `merkle`, FRI, and BaseFold path walks.
+- **A one-point FRI final layer made the final degree check vacuous**, and the
+  tiny-table `for_security` tuner could select it. Every `Params` now requires
+  `final_size >= 2`, and FRI rejects vacuous residual bounds.
+- **Fold-free FRI (`final_size == lde_len`) had no query openings** and did not
+  bind `final_poly` to the commitment. Commit and verify now reject it.
+- **`lookup_pcs` read-checks used uncommitted `beta + value` MLEs.** They now
+  use the committed witness/table/multiplicity columns directly.
+- **VM masked proving under-declared its quadratic `Mul` quotient degree.**
+  The prover now declares `2 * (n + n_rand - 1)`.
+- **ZK mask budgets undercounted revealed leaf/row values.** AIR requires
+  `16 * num_queries`; VM requires `2 * num_queries`.
+- **Batched BaseFold openings used the equality table for a monomial
+  commitment.** They now use the multilinear basis table.
+
+### Fuzzing
+
+```sh
+cargo install cargo-fuzz   # once
+cargo +nightly fuzz run decode
+cargo +nightly fuzz run decode -- -runs=100000 -max_len=8192
+```
+
+The target covers every public decoder and requires a canonical
+`to_bytes`/`from_bytes` round-trip for every successful decode. See
+[fuzz/README.md](fuzz/README.md).
+
+---
+
+## Wire format and compatibility
+
+All proof types use a canonical versioned encoding, `VERSION = 5`:
+
+- little-endian integers; `u32` counts; `u64` dimensions and indices;
+- base-field elements are 4 canonical bytes (`< p`, otherwise rejected);
+- extension elements are 16 canonical bytes (four checked coordinates);
+- digests are 32 bytes; Merkle directions are `0`/`1` only;
+- trailing bytes, truncation, non-canonical fields, and oversized counts are
+  rejected before allocation.
+
+Hard decoder limits:
+
+| Limit | Value |
+|---|---:|
+| `MAX_QUERIES` | 2^20 (1,048,576) |
+| `MAX_FOLDS` | 64 |
+| `MAX_PATH_STEPS` | 128 |
+| `MAX_CAP_DIGESTS` | 256 |
+| `MAX_ELEMS` | 2^27 (134,217,728) |
+| `MAX_STEPS` (IVC) | 2^20 (1,048,576) |
+| FRI `MAX_FINAL_SIZE` | 1024 |
+| Maximum Merkle cap height | 8 |
+| BaseFold `MAX_BATCH` | 1024 |
+| BaseFold `MAX_VARS` | 16 |
+| Gemini `MAX_VARS` | 20 |
+| UPCs `MAX_POINTS` | 16 |
+| VM `MAX_PROGRAM` | 2^20 |
+
+Proof sizes are asserted byte-for-byte by the benchmark harness and pinned
+in `tools/baseline.json`. A wire-format change must bump `VERSION` and update
+the size assertions; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## Documentation map
+
+| Document | Purpose |
+|---|---|
+| [AUDIT.md](AUDIT.md) | Auditor entry point: scope, invariants, reproduction, evidence |
+| [docs/whitepaper.md](docs/whitepaper.md) | High-level academic overview, design, evaluation, roadmap |
+| [docs/yellowpaper.md](docs/yellowpaper.md) | Formal specification: mathematics, protocols, encodings, parameters |
+| [docs/benchmarks.md](docs/benchmarks.md) | Full measured tables, methodology, SIMD notes |
+| [docs/security-tests.md](docs/security-tests.md) | Attack-suite results and closed findings |
+| [docs/red-team.md](docs/red-team.md) | Cross-proof, false-statement, IVC, garbage-storm results |
+| [docs/unit-tests.md](docs/unit-tests.md) | Per-module test breakdown |
+| [papers/z0p-eprint.tex](papers/z0p-eprint.tex) | Long-form LaTeX technical report |
+| [papers/z0p-eprint.pdf](papers/z0p-eprint.pdf) | Compiled 19-page PDF |
+| [SECURITY.md](SECURITY.md) | Threat model, reporting, disclosure policy |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Ground rules, gates, wire-format policy |
+| [RELEASING.md](RELEASING.md) | Immutable tags and release checklist |
+| [CHANGELOG.md](CHANGELOG.md) | Release history and security fixes |
+
+---
 
 ## Project structure
 
 ```text
 src/
-  gf2.rs        binary fields GF(2⁸)/GF(2⁶⁴)/GF(2¹²⁸)
+  gf2.rs        binary fields GF(2^8)/GF(2^64)/GF(2^128)
   babybear.rs   NTT-friendly prime field (Barrett mul, batch inversion)
-  ext4.rs       quartic extension field Fp4 over BabyBear
+  ext4.rs       quartic extension Fp4 over BabyBear
   hash.rs       BLAKE3-256 from spec (KAT-validated)
-  transcript.rs Fiat–Shamir transcript + proof-of-work grinding
-  merkle.rs     domain-separated trees, caps, capped openings
-  ntt.rs        parallel Cooley–Tukey NTT, Reed–Solomon extension
-  par.rs        thread-scope data parallelism (bit-identical)
+  transcript.rs streaming Fiat-Shamir transcript + proof-of-work grinding
+  merkle.rs     domain-separated trees, caps, index-bound paths
+  ntt.rs        parallel Cooley-Tukey NTT, Reed-Solomon extension
+  par.rs        deterministic std::thread data parallelism
   fri.rs        FRI polynomial commitment (commit / open / verify)
   mle.rs        multilinear polynomials
   sumcheck.rs   sumcheck over MLE products
@@ -216,7 +641,7 @@ src/
   basefold.rs   compact multilinear PCS prototype (sumcheck + FRI folds)
   lookup.rs     LogUp-style table membership via sumcheck
   lookup_pcs.rs committed LogUp over compact BaseFold openings
-  vm.rs         minimal register-machine program-execution AIR (+ ZK)
+  vm.rs         two-register program-execution AIR (+ ZK)
   air.rs        Fibonacci AIR/STARK (+ ZK)
   range.rs      range-check AIR (+ ZK)
   recursion.rs  one-query FRI fold-chain AIR (recursion fragment)
@@ -230,9 +655,9 @@ tests/
   redteam.rs    cross-proof, false-statement, IVC, garbage vectors
   hardening.rs  hostile Params, decoder fuzz, invariant + RNG checks
 benches/
-  speed_size.rs speed + wire-exact size harness
+  speed_size.rs 24-row speed + wire-exact size harness
 tools/
-  check.py      platinum gates · baseline.json  pinned regression table
+  check.py      full gate + baseline.json regression table
   check_links.py    relative Markdown link checker
   release_check.py  version/changelog/tag consistency check
 fuzz/
@@ -241,85 +666,83 @@ fuzz/
 .github/
   workflows/ci.yml  fmt, links, tests, MSRV, rustdoc, release-tag gates
 docs/
-  whitepaper.md      vision, design, performance, roadmap
-  yellowpaper.md     formal specification (math, protocols, encodings)
-  benchmarks.md measured numbers + methodology
+  whitepaper.md      design, evaluation, roadmap
+  yellowpaper.md     formal specification
+  benchmarks.md      measured numbers + methodology
   security-tests.md  attack-suite results
   red-team.md        red-team results
   unit-tests.md      unit-test breakdown
 papers/
-  z0p-eprint.tex     ePrint submission source (nul0, Future Proofs Tech)
-  z0p-eprint.pdf     compiled submission-ready PDF
-AUDIT.md         auditor entry point, invariants, reproduction commands
+  z0p-eprint.tex     long-form technical report source
+  z0p-eprint.pdf     compiled PDF
+AUDIT.md         auditor entry point
 CITATION.cff     software citation metadata
 SECURITY.md      threat model + vulnerability reporting
 CONTRIBUTING.md  ground rules, gates, wire-format policy
 RELEASING.md     immutable tag and release checklist
-CHANGELOG.md     release history (Keep a Changelog)
+CHANGELOG.md     release history
 ```
+
+---
+
+## Limitations
+
+- **Unaudited.** No external audit; soundness figures are conjectured.
+- **No general circuit compiler or zkVM.** The `vm` prototype is a
+  two-register straight-line machine with public programs and no memory or
+  control flow.
+- **Not all paths are hiding.** `lookup`, `sumcheck`, `upcs`, `gemini`, and
+  `basefold` are transparent/non-hiding. `lookup_pcs` hides columns from the
+  wire but is not zero-knowledge; candidate inputs can be tested against its
+  commitments.
+- **Small-table table AIR.** `table` scales with the public table size; large
+  private tables need committed sumcheck and a hiding PCS.
+- **Experimental components.** `basefold`, `lookup_pcs`, `gemini`, `vm`, and
+  `recursion` are prototypes, not audited production paths.
+- **Side channels.** No claim of resistance to host OS, compiler, or CPU
+  side channels; the crate forbids `unsafe` but is not a hardware token.
+- **Bench defaults are weak.** Use `for_security` for production-sized query
+  and grinding budgets.
+
+---
 
 ## Roadmap
 
-- **Tier 4 — vectorized hashing (done).** `--features simd` (nightly)
-  runs 8-lane portable-SIMD BLAKE3 over Merkle leaf/node batches,
-  byte-identical to the scalar path (pinned by
-  `batch_digests_match_reference`), ~6% end-to-end at 1M steps. The scalar
-  path also gained specialized one-compression leaf/node digests. The
-  default build stays scalar, stable, and MSRV 1.74; the feature is
-  additive with a scalar fallback.
-- **Extension-field challenges — done across the stack.** FRI, STARK
-  compositions, `upcs`/Gemini points and betas, sumcheck, and lookup use
-  `Fp4` challenges; the wire format is v5.
-- **Recursion — fragment done.** `recursion.rs` proves one FRI query's
-  fold chain as a STARK: public `(lde_len, leaf, challenges, initial quad,
-  output)`, committed quads, shifted-index transition openings, FRI over
-  the composition at degree bound `4n - 5`; honest chains verify and
-  tampered chains/outputs/openings fail. Remaining for self-proving:
-  Merkle/BLAKE3 path checks, final-degree check, and transcript
-  derivation inside the AIR — the path to L1-sized proofs.
-- **Point-evaluation commitments — done.** `upcs.rs` opens a committed
-  univariate polynomial at an arbitrary field point: quotient commitment
-  `(g - y)/(X - beta)`, two FRI low-degree proofs, and Merkle-checked
-  identity at the quotient's query points. `open_multi` batches up to 16
-  distinct points behind one quotient (`(g - I)/Z`) and one FRI pair.
-  Transparent, non-hiding (`v1`); optional Merkle caps shorten each path
-  and are authenticated against the commitment root. This is the opening
-  primitive for a multilinear PCS.
-- **Multilinear commitments — Gemini done, BaseFold prototype done.**
-  `gemini.rs` commits the monomial-coefficient encoding and proves
-  `f(r) = y` with Gemini-style fold-chain checks; `commit_evals` applies
-  the Möbius transform. Each layer is opened once with a multi-point
-  `upcs` proof, so the `v1` proof carries `n` openings rather than
-  `3n - 2`; it remains `O(n)`. `Params::with_cap_height` threads optional
-  Merkle caps through every layer opening. `basefold.rs` now adds a compact prototype:
-  one commitment root, sumcheck reduces `f(r)` to `c(rho)`, and Möbius
-  FRI folds reuse the sumcheck challenges. At 1,024 coefficients and the
-  production-shaped `B16 Q40 G20` schedule it proves in 44 ms, verifies
-  in 1.1 ms, and carries 127,658 B; cap height 4 cuts that to 80,018 B
-  and 0.9 ms verify, versus Gemini's 693 ms / 54 ms / 888,672 B. It is
-  not wired into AIR/STARK yet and needs an audit; decoder fuzzing and
-  optional Merkle caps are in place, and WHIR-style cap batching plus
-  self-proving recursion are the next PCS steps.
-- **Programs / zkVM — lookup and register-machine prototypes done.**
-  `lookup_pcs` commits the witness, table, multiplicities, and quotient
-  columns, then binds every sumcheck final value with a BaseFold opening;
-  at 1,024 rows it proves in ~367 ms, verifies in ~21 ms, and carries
-  642,443 B with cap height 4. `vm` proves execution of a public
-  two-register straight-line program from a private initial state to a
-  public output: public one-hot opcode selectors and immediate
-  polynomials drive a trace of committed `A`/`B` columns, with a
-  64-step plain proof at ~1.5 ms prove, ~0.24 ms verify, and 14,933 B.
-  `prove_zk` masks both columns with the existing vanishing-multiple
-  layer, so query responses hide the initial state when
-  `n_rand >= num_queries`; callers must size `final_size` for the masked
-  LDE. It remains an execution prototype, not a general zkVM; control
-  flow, memory, instruction privacy, hiding PCS/sumcheck, and an audit
-  remain.
-- **External audit.** The suite, gates, versioned wire format, and pinned
-  baselines are the pre-audit package.
+1. **External audit.** The evidence package — suites, gates, pinned sizes,
+   versioned wire format — is ready for review.
+2. **Hiding PCS and sumcheck.** Private tables and witness-independent
+   multilinear openings.
+3. **Batched BaseFold openings.** Replace `lookup_pcs`'s eight separate
+   openings with the `open_multi` batch path.
+4. **Self-proving recursion.** BLAKE3 path checks, final-degree check, and
+   transcript derivation inside the recursion AIR.
+5. **zkVM direction.** Control flow, memory, instruction privacy, and a
+   general circuit compiler.
+6. **SIMD and scheduling.** More portable-SIMD hash coverage and lower
+   parallel scheduling overhead.
 
-## License
+---
 
-GPLv3 only — see [LICENSE](LICENSE). This is free software: you can
-redistribute it and/or modify it under the terms of the GNU General
-Public License version 3 as published by the Free Software Foundation.
+## Citation and license
+
+If you use z0p in academic work, cite the software metadata in
+[CITATION.cff](CITATION.cff):
+
+```bibtex
+@software{z0p,
+  title  = {z0p: a zero-dependency transparent STARK stack in safe Rust},
+  author = {Future Proofs Tech},
+  year   = {2026},
+  url    = {https://github.com/FutureProofsTech/z0p},
+  note   = {Version 0.2.1, unaudited research software}
+}
+```
+
+The long-form technical report is [papers/z0p-eprint.pdf](papers/z0p-eprint.pdf).
+The formal specification is [docs/yellowpaper.md](docs/yellowpaper.md).
+
+**License:** GPL-3.0-only. See [LICENSE](LICENSE).
+
+**Security reports:** do not open a public issue for suspected soundness,
+zero-knowledge, or memory-safety bugs. Follow [SECURITY.md](SECURITY.md) and
+email **futureproofs@proton.me**.

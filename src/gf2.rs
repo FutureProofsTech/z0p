@@ -143,10 +143,7 @@ impl F64 {
     /// branch on secret zero-ness. Documented, intentional.
     #[must_use]
     pub fn inv(self) -> Self {
-        if self.is_zero() {
-            return Self::ZERO;
-        }
-        // 2^64 - 2.
+        // Fixed exponentiation maps zero to zero without a zero branch.
         self.pow(u64::MAX - 1)
     }
 
@@ -319,17 +316,8 @@ impl F128 {
     /// Maps zero to zero instead of failing; see [`F64::inv`].
     #[must_use]
     pub fn inv(self) -> Self {
-        if self.is_zero() {
-            return Self::ZERO;
-        }
-        // 2^128 - 2.
+        // Fixed exponentiation maps zero to zero without a zero branch.
         self.pow(u128::MAX - 1)
-    }
-
-    /// Embed an [`F64`] word in the low bits (subfield embedding).
-    #[must_use]
-    pub const fn embed_f64(x: F64) -> Self {
-        Self(x.0 as u128)
     }
 
     /// Serialize as little-endian bytes.
@@ -487,13 +475,6 @@ mod tests {
         assert_eq!(a.add(a), F128::ZERO);
         assert_eq!(a.mul(F128::ZERO), F128::ZERO);
         assert_eq!(a.mul(F128::ONE), a);
-        assert_eq!(
-            F128::embed_f64(F64::new(7))
-                .mul(F128::embed_f64(F64::new(9)))
-                .0
-                & 0xFFFF,
-            63
-        );
     }
 
     #[test]

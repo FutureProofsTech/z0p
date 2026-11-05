@@ -153,9 +153,8 @@ impl Ext4 {
     /// Maps zero to zero, consistent with [`Field::inv`].
     #[must_use]
     pub fn inv(self) -> Self {
-        if self.is_zero() {
-            return Self::ZERO;
-        }
+        // Zero flows through the tower norm and maps to zero without a
+        // branch on secret zero-ness.
         let c = [self.0[0], self.0[1]];
         let d = [self.0[2], self.0[3]];
         let norm = fp2_sub(fp2_mul(c, c), fp2_mul_u(fp2_mul(d, d)));

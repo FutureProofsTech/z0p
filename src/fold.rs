@@ -7,8 +7,11 @@
 //! assumptions. Instead this module accumulates as production STARK systems
 //! do:
 //! - **Hash-chained step proofs.** Each segment of `seg_steps` Fibonacci rows
-//!   is committed independently (streaming prover, `O(1)` memory per step)
-//!   with explicit in/out claims; the verifier checks the chain links.
+//!   is committed independently with explicit in/out claims; the verifier
+//!   checks the chain links. The accumulator retains every segment's LDE,
+//!   Merkle tree, and composition until finalization, so prover memory is
+//!   `O(segments * seg_steps * blowup)` (the wire proof stays linear in the
+//!   number of segments).
 //! - **One batched FRI.** All step composition polynomials share one
 //!   evaluation domain, so a transcript-random linear combination
 //!   `V = sum gamma_i * C_i` is committed through a single
@@ -84,7 +87,7 @@ impl Params {
         if num_queries == 0 {
             return Err(Error::NoQueries);
         }
-        if final_size == 0 || !final_size.is_power_of_two() {
+        if final_size < 2 || !final_size.is_power_of_two() {
             return Err(Error::InvalidDomainSize { size: final_size });
         }
         let Some(lde) = seg_steps.checked_mul(blowup) else {
@@ -168,7 +171,7 @@ impl Params {
     /// Length of the shared step LDE domain.
     #[must_use]
     pub const fn lde_len(&self) -> usize {
-        self.seg_steps * self.blowup
+        self.seg_steps.saturating_mul(self.blowup)
     }
 
     fn fri_params(&self) -> Result<fri::Params> {
@@ -194,9 +197,14 @@ impl Params {
         if self.num_queries == 0 {
             return Err(Error::NoQueries);
         }
-        if self.final_size == 0 || !self.final_size.is_power_of_two() {
+        if self.final_size < 2 || !self.final_size.is_power_of_two() {
             return Err(Error::InvalidDomainSize {
                 size: self.final_size,
+            });
+        }
+        if self.cap_height > 8 {
+            return Err(Error::MalformedInput {
+                reason: "cap_height above 8",
             });
         }
         let lde = self
@@ -438,7 +446,10 @@ impl Accumulator {
         let offset = m_step / s;
         let all_refs = [&lde_cols[0], &lde_cols[1]];
         let row_len = 4 * all_refs.len();
-        let mut flat = vec![0u8; m_step * row_len];
+        let flat_len = m_step
+            .checked_mul(row_len)
+            .ok_or(Error::InvalidDomainSize { size: m_step })?;
+        let mut flat = vec![0u8; flat_len];
         for (i, chunk) in flat.chunks_exact_mut(row_len).enumerate() {
             for (lde, slot) in all_refs.iter().zip(chunk.chunks_exact_mut(4)) {
                 slot.copy_from_slice(&lde[i].to_le_bytes());
@@ -549,6 +560,11 @@ impl Accumulator {
 
 /// Verify a folded IVC [`IvcProof`]: chain links, then one shared FRI plus
 /// per-step composition identities at the shared query positions.
+///
+/// The statement is existential over the number of chained segments: the
+/// verifier accepts any nonempty chain from the public input to the public
+/// output. Callers that require an exact step count must check
+/// `proof.steps.len()` themselves.
 ///
 /// # Errors
 /// Returns [`Error::FriVerificationFailed`] or [`Error::BadMerklePath`] on

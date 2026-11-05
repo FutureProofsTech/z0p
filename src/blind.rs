@@ -7,9 +7,13 @@
 //! Because `Z_H` is zero on every base row, masked and unmasked columns
 //! agree on the trace, so every AIR quotient stays exact and low-degree;
 //! off-domain (at LDE query points) the mask term is nonzero and, with
-//! `n_rand >= num_queries`, the per-column query responses are jointly
-//! uniform and independent of the witness (Vandermonde surjectivity over
-//! distinct off-domain points), giving perfect hiding of query responses.
+//! `n_rand` at least the number of distinct masked values revealed per
+//! column, the per-column query responses are jointly uniform and
+//! independent of the witness (Vandermonde surjectivity over distinct
+//! off-domain points). That budget is `num_queries` for one-point
+//! openings (`range`, `table`), `2 * num_queries` for the current plus
+//! shifted rows (`vm`), and `16 * num_queries` for AIR, whose query
+//! response carries an eight-row joint leaf and its shifted leaf.
 //! Merkle roots remain computationally hiding under BLAKE3-256.
 //!
 //! Scope: this blinds STARK trace/column commitments ([`crate::air`],
@@ -73,7 +77,7 @@ pub fn mask_coeffs(
 /// Maximum formal degree of a masked length-`n` column with `n_rand` maskers.
 #[must_use]
 pub const fn masked_column_degree(n: usize, n_rand: usize) -> usize {
-    n + n_rand - 1
+    n.saturating_add(n_rand).saturating_sub(1)
 }
 
 #[cfg(test)]

@@ -1,408 +1,1519 @@
-# z0p — Yellow Paper (formal specification)
+# z0p — Yellow Paper
 
-*The exact mathematics, protocols, encodings, and parameters implemented
-by the z0p crate. Normative where stated; conjectured bit-levels are
-marked as such.*
+## Formal specification of the z0p proving stack
 
-Version 1.0 — 2026-09-26. Code references are to `src/` modules.
-High-level companion: the [White Paper](whitepaper.md).
+**Version 1.1 — 2026-11-05.** Normative where marked. Code references are to
+the `src/` modules of the crate at version `0.2.1`. The companion
+[White Paper](whitepaper.md) gives the design rationale and evaluation; this
+document gives the exact mathematics, algorithms, encodings, validation
+rules, and security invariants implemented by the code.
+
+> **Status.** v0.2.1, unaudited research software. The production figure is a
+> **conjectured query/proof-of-work schedule**, not an end-to-end soundness
+> theorem. Normative parameter checks are enforced by the code; conjectured
+> bit-levels are explicitly marked.
 
 ---
 
-## 1. Notation and fields
+## Contents
 
-### 1.1 BabyBear prime field $\mathbb{F}_p$
+1. [Conventions and notation](#1-conventions-and-notation)
+2. [Fields](#2-fields)
+3. [Domains, NTT, and Reed–Solomon encoding](#3-domains-ntt-and-reed-solomon-encoding)
+4. [BLAKE3 and Merkle commitments](#4-blake3-and-merkle-commitments)
+5. [Fiat–Shamir transcript and proof of work](#5-fiat-shamir-transcript-and-proof-of-work)
+6. [FRI polynomial commitment](#6-fri-polynomial-commitment)
+7. [Multilinear polynomials and sumcheck](#7-multilinear-polynomials-and-sumcheck)
+8. [Univariate point openings (UPCs)](#8-univariate-point-openings-upcs)
+9. [Gemini multilinear commitments](#9-gemini-multilinear-commitments)
+10. [BaseFold prototype](#10-basefold-prototype)
+11. [Lookup arguments](#11-lookup-arguments)
+12. [AIR systems](#12-air-systems)
+13. [Zero-knowledge masking](#13-zero-knowledge-masking)
+14. [Wire format](#14-wire-format)
+15. [Parameter validation and sizing](#15-parameter-validation-and-sizing)
+16. [Security analysis](#16-security-analysis)
+17. [Evidence and reproducibility](#17-evidence-and-reproducibility)
+18. [Appendices](#18-appendices)
 
-$$p = 2^{31} - 2^{27} + 1 = 2013265921, \qquad g = 31.$$
+---
 
-$p - 1 = 2^{27} \cdot 15$: multiplicative subgroups of order $2^k$ exist
-for $k \le 27$. `two_adic_generator(bits)` returns
-$g^{(p-1)/2^{\mathrm{bits}}}$; `primitive_root(m)` the primitive $m$-th
-root of unity for $m = 2^k \le 2^{27}$. Elements serialize as 4
-little-endian bytes, canonical ($< p$); the decoder rejects $\ge p$.
+## 1. Conventions and notation
 
-Multiplication uses Barrett reduction with $\mu = \lfloor 2^{64}/p
-\rfloor$; inversion is Fermat ($a^{p-2}$, mapping $0 \mapsto 0$);
-batch inversion is Montgomery's trick. All operation counts are
-input-independent for fixed parameters.
+### 1.1 Normative language
 
-**Quartic extension field.** All algebraic challenges use
-$\mathbb{F}_{p^4} = \mathbb{F}_{p^2}[v]/(v^2-u)$ with
-$\mathbb{F}_{p^2} = \mathbb{F}_p[u]/(u^2-11)$, represented as
-$a + bu + cv + duv$ (four canonical field coordinates, 16 bytes).
-Inversion uses the tower norm: for $x = c + dv$,
-$x^{-1} = (c - dv)/(c^2 - ud^2)$, so one $\mathbb{F}_{p^2}$ inversion
-suffices; multiplication is the tower formula. `11` is a quadratic
-non-residue and `u` is a non-square in $\mathbb{F}_{p^2}$.
+- **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are used normatively.
+- A **proof object** is the in-memory Rust value; its **encoding** is the
+  canonical byte string produced by `to_bytes`.
+- A **verifier** MUST reject on any failed check with `Err`; it MUST NOT panic
+  on untrusted input.
+- Public `Params` structs have public fields. Every entry point MUST
+  re-validate them rather than trusting a constructor.
+- All integer arithmetic in encodings is little-endian.
+- `usize` is the platform word; the crate supports 32-bit and 64-bit targets
+  subject to the domain ceilings below.
 
-### 1.2 Binary fields
+### 1.2 Symbols
 
-$GF(2^8)$, $GF(2^{64})$, $GF(2^{128})$ hold program words (XOR addition,
-carryless multiplication). They carry transcript challenges and digest
-parsing; polynomial domains always use $\mathbb{F}_p$.
-
-### 1.3 Domains
-
-- Base trace domain $H = \{1, \omega, \dots, \omega^{N-1}\}$,
-  $\omega = $ `primitive_root(N)`, $N$ a power of two, $N \ge 2$.
-- Evaluation (LDE) domain $D = \gamma \cdot \langle \Omega \rangle$,
-  $|\,D\,| = M = N \cdot \beta$ ($\beta$ = blowup, power of two),
-  $\Omega = $ `primitive_root(M)`, coset shift $\gamma = g$
-  (`LDE_SHIFT`, equal to the field generator $31$).
-- $M \le 2^{27}$ is enforced at every entry point.
-- Vanishing polynomial of $H$: $Z_H(x) = x^N - 1$.
-
-## 2. Hash function and transcripts
-
-### 2.1 BLAKE3-256
-
-Unkeyed BLAKE3, 256-bit output, implemented from the specification:
-7-round ARX compression on a 16-word state, message permutation
-$[2,6,3,10,7,0,4,13,1,11,12,5,9,14,15,8]$, flags `CHUNK_START = 1`,
-`CHUNK_END = 2`, `PARENT = 4`, `ROOT = 8`, 1024-byte chunks, Bao-style
-merge-while-even stacking. Validated against reference vectors
-(empty, `abc`, and multi-chunk inputs crossing chunk boundaries).
-
-### 2.2 Merkle trees
-
-Binary trees, leaves padded by duplicating the last leaf to a power of
-two. Column trees domain-separate leaves and internal nodes:
-
-$$\mathrm{leaf}(d) = H(0x00 \,\|\, d), \qquad
-  \mathrm{node}(l, r) = H(0x01 \,\|\, l \,\|\, r).$$
-
-FRI layers commit one 64-byte leaf per quad (four canonical 16-byte
-$\mathbb{F}_{p^4}$ values) and AIR trace layers commit one 64-byte leaf
-per eight joint rows; both use standard BLAKE3 for the leaf digest and
-the same $0x01$ internal-node hash.
-
-**Caps.** `cap(dropped)` exposes the layer at depth
-$\mathrm{depth} - \mathrm{dropped}$ ($2^{\mathrm{dropped}}$ digests) in
-the commitment; openings then carry only the middle path segment.
-Column trees drop $\min(h, \mathrm{depth})$; FRI quad and AIR trace
-trees drop $\min(h, \mathrm{depth})$ over their 64-byte-leaf counts
-(the verifier hashes the revealed leaf and follows the remaining path).
-
-### 2.3 Fiat–Shamir transcript
-
-Append-only, length-prefix-framed absorbs; each squeeze hashes
-$\mathrm{log} \,\|\, \mathrm{label} \,\|\, \mathrm{counter}$ and feeds
-the output back into the log. $\mathbb{F}_p$ challenges reduce a
-64-bit word mod $p$ (bias $< 2^{-31}$, documented); query indices mask
-low bits for power-of-two domains (unbiased).
-
-**Label schedule (both sides must match exactly):**
-
-| Protocol | Labels (in order) |
+| Symbol | Meaning |
 |---|---|
-| FRI | `fri-dims` (dimensions first), `fri-layer-root` per cap digest, `fri-fold` ×3 per layer, `fri-final`, `fri-pow` (nonce), `fri-query` per query |
-| AIR / range / table | `<proto>/params` (all parameters first), `<proto>/column` (column cap), `<proto>/alpha` (one squeeze per constraint class, fixed count) |
-| fold (IVC) | `fold/params`, then per step `fold/step`, `fold/trace`, six `fold/alpha`, finally one `fold/gamma` per step |
-| lookup | `lookup/ctx` separators (`sum-w`/`read-w`/`sum-t`/`read-t`), `witness`, `table`, `sums`, `qw`, `qt`, `m`, `beta`, `beta-challenge`, `r1`, `r2` |
-| lookup_pcs | `lookup-pcs/commitments`, `beta`, `quotients`, `sum-w`, four `ctx` separators, `r1`, `gamma`, `r2`, and one `open` label per BaseFold opening |
-| vm | `vm/params`, `vm/trace`, and four `vm/alpha` challenges |
-| sumcheck | `sumcheck/claim`, then per round `sumcheck/round`, `sumcheck/challenge` |
+| `p` | BabyBear modulus `2^31 - 2^27 + 1 = 2013265921` |
+| `Fp` | Prime field `Z/pZ` |
+| `Fp2` | `Fp[u]/(u^2 - 11)` |
+| `Fp4` | `Fp2[v]/(v^2 - u)` |
+| `H` | Base trace domain of size `N` |
+| `D` | Coset LDE domain of size `M = N * beta` |
+| `beta` | Blowup factor, a power of two |
+| `omega` | Primitive `N`-th root of unity |
+| `Omega` | Primitive `M`-th root of unity |
+| `gamma` | Coset shift `LDE_SHIFT = 31` |
+| `Z_H(x)` | `x^N - 1` |
+| `w_last` | `omega^(N-1)` |
+| `Q` | Number of FRI queries |
+| `f` | Number of FRI folds |
+| `F` | Final layer size (`final_size`) |
+| `C` | Composition polynomial |
+| `Fp4` challenge | Element of the quartic extension field |
+| `H(x)` | BLAKE3-256 digest of `x` |
 
-**Proof of work.** `grind(label, d)` returns the smallest $u64$ nonce
-with $\ge d$ leading zero bits under the history commitment (banded
-parallel search, bit-identical to sequential scan); `verify_grind`
-re-checks and absorbs on success only. Difficulties $> 256$ always fail.
+### 1.3 Complexity notation
 
-## 3. FRI polynomial commitment
+`O(n)` and `O(n log n)` refer to field or hash operations as appropriate.
+The verifier avoids `O(M)` materialization; it derives domain points on
+demand. Proof sizes are reported in bytes of the canonical encoding.
 
-### 3.1 Encoding
+---
 
-`commit` maps $n$ coefficients to $M = n\beta$ coset evaluations
-(shifted NTT); `commit_evals` takes caller-supplied LDE values of
-declared degree $\le \mathrm{bound} < M$. Both reject vacuous bounds
-($\mathrm{bound} \ge M$) and enforce the **rate gate**
-$\mathrm{bound} + 1 \le M/2$ at prove *and* verify time.
+## 2. Fields
 
-### 3.2 Folding (arity 4)
+### 2.1 BabyBear prime field
 
-Layers are bit-reversed. Each quad of adjacent values sits at
-$(x, -x, j_0 x, -j_0 x)$ for the fixed fourth root
-$j_0 = $ `two_adic_generator(2)`, sharing $x^4$. With
-$P(X) = A + BX + CX^2 + DX^3$ in $Y = X^4$:
+```text
+p = 2^31 - 2^27 + 1 = 2013265921
+p - 1 = 2^27 * 15
+g = 31  (primitive root)
+```
 
-$$\mathrm{fold}(e_0,e_1,e_2,e_3) = A + r_0 B + r_1 C + r_2 D,$$
+`Fp` elements are canonical integers in `[0, p)`. The private representation
+is a `u32` with the invariant `value < p`. The public constructor reduces
+modulo `p`; the decoder rejects non-canonical bytes.
 
-solved as: $A$ = mean; $B = ((e_0-e_1) - j_0(e_2-e_3))/4 \cdot x^{-1}$;
-$C = ((e_0+e_1)-(e_2+e_3))/4 \cdot x^{-2}$;
-$D = ((e_0-e_1) + j_0(e_2-e_3))/4 \cdot x^{-3}$,
-with $(r_0, r_1, r_2) \in \mathbb{F}_{p^4}$ the layer's `fri-fold`
-challenges, values in $\mathbb{F}_{p^4}$ (base values embed in the first
-coordinate), and point inverses (base field) batch-inverted once per
-layer. Each fold quarters the degree.
+#### 2.1.1 Addition and subtraction
 
-### 3.3 Proof and verification
+For `a, b < p`:
 
-`Proof { final_poly, queries, pow_nonce }`, where each query opens all
-four $\mathbb{F}_{p^4}$ values (16 bytes each) of every folded quad plus
-the middle Merkle path segment; each leaf hashes the canonical 64-byte
-encoding of its four $\mathbb{F}_{p^4}$ values.
+```text
+a + b = a + b            if a + b < p
+        a + b - p        otherwise
+a - b = a - b            if a >= b
+        a - b + p        otherwise
+```
+
+Both fit in `u32` because `2p < 2^32`. Negation maps `0` to `0` and `a` to
+`p - a`.
+
+#### 2.1.2 Multiplication
+
+Let
+
+```text
+MU = floor(2^64 / p) = 9162596893
+x  = a * b < p^2 < 2^62
+q  = ((x >> 32) * MU) >> 32
+r  = x - q * p
+```
+
+Then `q <= floor(x/p)` and `r < 2p`; a short loop subtracts `p` until
+`r < p`. This is the Barrett reduction used by the hot NTT/FRI paths. It is
+cross-checked against wide `%` on 100,000 random pairs and edge values.
+
+#### 2.1.3 Inversion and halving
+
+Inversion is Fermat:
+
+```text
+a^-1 = a^(p-2)
+```
+
+with `0^-1 = 0` by convention. The exponentiation uses a fixed exponent
+`p-2`; the loop length is public. `halve(a)` computes
+`(a + (a mod 2) * p) / 2`, which is exact because `p` is odd.
+
+#### 2.1.4 Batch inversion
+
+For a slice `a_0, ..., a_{n-1}`, Montgomery's trick computes all nonzero
+inverses with one field inversion and `3n` multiplications. Zeros map to
+zero and do not contribute to the running product. The in-place variant is
+used in composition and folding hot loops.
+
+#### 2.1.5 Roots of unity
+
+For `k <= 27`, `two_adic_generator(k) = g^((p-1)/2^k)` generates the unique
+subgroup of order `2^k`. `primitive_root(m)` requires `m` to be a power of
+two `<= 2^27`. The NTT and FRI domains never exceed `2^27`.
+
+### 2.2 Quartic extension field
+
+Define the tower
+
+```text
+Fp2 = Fp[u] / (u^2 - 11)
+Fp4 = Fp2[v] / (v^2 - u)
+```
+
+An element is `a + b u + c v + d u v`, stored as four canonical `Fp`
+coordinates `[a, b, c, d]`.
+
+#### 2.2.1 Addition and subtraction
+
+Coordinate-wise in `Fp`.
+
+#### 2.2.2 Multiplication
+
+For `x = a + b u + c v + d u v` and `y = a' + b' u + c' v + d' u v`, write
+`x = A + C v`, `y = B + D v` with `A, B, C, D in Fp2`. Then
+
+```text
+x y = (A B + u C D) + (A D + C B) v.
+```
+
+The implementation uses Karatsuba for the cross term:
+
+```text
+cross = (A + C)(B + D) - A B - C D.
+```
+
+`Fp2` multiplication is
+
+```text
+(a0 + a1 u)(b0 + b1 u)
+  = (a0 b0 + 11 a1 b1) + (a0 b1 + a1 b0) u.
+```
+
+#### 2.2.3 Inversion
+
+For `x = c + d v` with `c, d in Fp2`,
+
+```text
+x^-1 = (c - d v) / (c^2 - u d^2).
+```
+
+The denominator is an `Fp2` element; its inverse uses the `Fp2` norm
+
+```text
+(c0 + c1 u)^-1
+  = (c0 - c1 u) / (c0^2 - 11 c1^2).
+```
+
+One `Fp2` inversion therefore suffices. `inv(0) = 0`; no branch on
+zero-ness is used in the field core.
+
+#### 2.2.4 Canonical encoding
+
+Each coordinate is four canonical little-endian bytes; an element is 16
+bytes. The decoder checks every coordinate against `p`.
+
+### 2.3 Binary fields
+
+The word layer provides:
+
+| Field | Polynomial |
+|---|---|
+| `GF(2^8)` | `x^8 + x^4 + x^3 + x + 1` (`0x11B`) |
+| `GF(2^64)` | `x^64 + x^4 + x^3 + x + 1` |
+| `GF(2^128)` | `x^128 + x^7 + x^2 + x + 1` |
+
+Addition is XOR. Multiplication is carryless multiplication followed by
+reduction modulo the field polynomial. The arithmetic loops run fixed
+iteration counts; inverses use fixed Fermat exponentiation and map zero to
+zero. Every bit pattern is a valid element, so decoding is infallible.
+`F128::embed_f64` is **not** provided: a bit-level embedding of `F64` into
+`F128` is not a field homomorphism because the `F64` modulus does not divide
+the `F128` modulus.
+
+---
+
+## 3. Domains, NTT, and Reed-Solomon encoding
+
+### 3.1 Domains
+
+The base domain is
+
+```text
+H = {1, omega, ..., omega^(N-1)},   omega = primitive_root(N).
+```
+
+The evaluation domain is the coset
+
+```text
+D = gamma * <Omega>,   |D| = M = N * beta,
+```
+
+with `Omega = primitive_root(M)` and `gamma = 31`. The domain ceiling is
+`M <= 2^27`.
+
+The vanishing polynomial of `H` is `Z_H(x) = x^N - 1`. It is zero exactly on
+`H` and nonzero on the coset `D` because `gamma != 0` and `D` is disjoint
+from `H` for the chosen coset.
+
+### 3.2 Bit-reversal permutation
+
+For length `n = 2^k`, the bit-reversal permutation maps index `i` to
+
+```text
+rev_k(i) = reverse_bits(i) >> (usize::BITS - k).
+```
+
+Small arrays are permuted in place; large arrays gather into a fresh buffer
+in parallel. FRI layers are stored in bit-reversed order so that each
+adjacent quad corresponds to the four points `(x, -x, j0 x, -j0 x)`.
+
+### 3.3 Forward and inverse NTT
+
+The forward NTT evaluates a coefficient vector at powers of `omega`. The
+inverse NTT interpolates and scales by `1/n`. The implementation uses
+Cooley–Tukey stages:
+
+```text
+for len = 2, 4, ..., n:
+    for each block of length len:
+        for j in 0 .. len/2:
+            u = block[j]
+            v = block[j + len/2] * twiddle[j * (n/len)]
+            block[j]         = u + v
+            block[j + len/2] = u - v
+```
+
+Twiddles are precomputed once per transform as chained powers
+`1, root, ..., root^(n/2-1)`. The inverse transform uses the inverse root
+and folds the `1/n` scaling into the final stage. Domains must be nonempty
+powers of two `<= 2^27`.
+
+### 3.4 Coset evaluation and interpolation
+
+For coefficients `c_0, ..., c_{n-1}` and blowup `beta`, coset evaluation
+computes `M = n beta` values
+
+```text
+c(gamma * Omega^i),   i = 0, ..., M-1,
+```
+
+by multiplying `c_i` by `gamma^i`, zero-padding to `M`, and applying the
+forward NTT. Interpolation inverts the base-domain transform. Extension-field
+coset evaluation applies the base-field transform to each of the four
+coordinates and recombines.
+
+### 3.5 Complexity
+
+A transform of size `n` uses `O(n log n)` field operations and `O(n)`
+memory. Parallel stages are deterministic and bit-identical to the
+sequential reference; worker count depends only on lengths and available
+parallelism.
+
+---
+
+## 4. BLAKE3 and Merkle commitments
+
+### 4.1 BLAKE3-256
+
+The crate implements unkeyed BLAKE3 with 256-bit output:
+
+- 16-word state, 7 ARX rounds;
+- message permutation
+  `[2,6,3,10,7,0,4,13,1,11,12,5,9,14,15,8]`;
+- flags `CHUNK_START = 1`, `CHUNK_END = 2`, `PARENT = 4`, `ROOT = 8`;
+- 1024-byte chunks and 64-byte blocks;
+- Bao-style merge-while-even chaining-value stack.
+
+The implementation is validated against reference vectors for the empty
+input, `abc`, exactly one chunk, one byte over a chunk, two chunks, and a
+multi-chunk input crossing boundaries. Incremental updates with arbitrary
+splits must equal the one-shot digest.
+
+### 4.2 Merkle trees
+
+A tree is a complete binary tree over leaves padded by duplicating the last
+leaf to a power of two. For raw leaves:
+
+```text
+leaf(d)    = BLAKE3(0x00 || d)
+node(l, r) = BLAKE3(0x01 || l || r)
+```
+
+FRI quad trees and AIR trace trees use 64-byte leaves hashed with standard
+BLAKE3 (one compression per full block); internal nodes use the same
+`0x01 || l || r` construction.
+
+A path is a sequence `(sibling, is_left)`. Verification recomputes the leaf
+digest, folds upward, and compares to the root. A path is valid for index
+`i` only if, for every level `k`,
+
+```text
+is_left_k = ((i >> k) & 1 == 0).
+```
+
+This index binding is mandatory. Without it, a valid opening for leaf `j`
+would verify at any other in-range index with the same path length.
+
+### 4.3 Caps
+
+A cap at drop `d` is the tree layer at depth `depth - d`:
+
+```text
+cap(d) = layers[depth - min(d, depth)].
+```
+
+It contains `2^min(d, depth)` digests. Openings omit the top `d` path steps
+and authenticate the remaining path to the selected cap entry. The verifier
+recomputes the cap root by hashing pairs with `node`. Cap height is capped at
+8 in every public `Params`; `MAX_CAP_DIGESTS = 256`.
+
+For FRI, opened layers commit one 64-byte leaf per quad; the final layer is
+sent in the clear and its cap is recomputed from `final_poly`. For AIR, a
+64-byte trace leaf contains eight joint rows (`A || B`, 8 bytes per row).
+The verifier checks the row at `(index & 7) * 8` and authenticates the whole
+leaf at `index / 8`.
+
+### 4.4 Padding and tree shape
+
+`num_leaves` is always a power of two after padding. `capped_shape(n, h)`
+returns
+
+```text
+(drop, depth) = (min(h, log2(n)), log2(n)).
+```
+
+Prover and verifier derive the same shape from the same leaf count.
+
+---
+
+## 5. Fiat-Shamir transcript and proof of work
+
+### 5.1 Framing
+
+The transcript is an append-only byte history. `absorb(label, data)` appends
+
+```text
+u64_le(label.len()) || label || u64_le(data.len()) || data.
+```
+
+The implementation stores the history as a streaming BLAKE3 state. A squeeze
+clones the state, appends
+
+```text
+u64_le(label.len()) || label || u64_le(counter),
+```
+
+finalizes, increments `counter`, and absorbs the 32-byte output back into the
+history. This is byte-identical to hashing the full concatenation, but cost
+is independent of history length.
+
+### 5.2 Challenge derivation
+
+- `challenge_f64`: first 8 bytes as little-endian `u64`.
+- `challenge_f128`: first 16 bytes as little-endian `u128`.
+- `challenge_bb`: first 8 bytes as `u64 mod p`; reduction bias below
+  `2^-31`.
+- `challenge_ext`: four 4-byte coordinates reduced modulo `p`.
+- `challenge_index(label, domain_size)`: masks the low 64 bits with
+  `domain_size - 1`; requires a nonzero power-of-two domain. Returns `None`
+  otherwise.
+
+Every squeeze is domain-separated by label and counter and is bound to all
+prior absorptions.
+
+### 5.3 Proof of work
+
+`grind(label, d)` computes
+
+```text
+head = BLAKE3(history) || u64_le(label.len()) || label
+```
+
+and searches for the smallest nonce `u64` such that
+`BLAKE3(head || u64_le(nonce))` has at least `d` leading zero bits
+(most-significant-bit first). The search is banded across threads and returns
+the same nonce as a sequential scan.
+
+Protocol parameters cap `d <= 32`. `grind` fails closed above 32 by absorbing
+nonce `0` and returning `0`. `verify_grind` re-hashes and accepts only if the
+nonce meets the target; it hard-rejects `d > 256`. Queries are sampled after
+the nonce is absorbed, so they bind to the work.
+
+### 5.4 Label schedule
+
+| Protocol | Labels, in order |
+|---|---|
+| FRI | `fri-dims` (dimensions first), `fri-layer-root` per cap digest, `fri-fold` ×3 per layer, `fri-final`, `fri-pow`, `fri-query` per query |
+| AIR / range / table | `<proto>/params`, `<proto>/column`, `<proto>/alpha` (fixed count) |
+| fold (IVC) | `fold/params`; per step `fold/step`, `fold/trace`, six `fold/alpha`; then one `fold/gamma` per step |
+| lookup | `lookup/witness`, `lookup/table`, `lookup/beta-challenge`, `lookup/beta`, `lookup/m`, `lookup/qw`, `lookup/qt`, `lookup/sums`, `lookup/ctx` separators, `lookup/r1`, `lookup/r2` |
+| lookup_pcs | `lookup-pcs/commitments`, `lookup-pcs/beta`, `lookup-pcs/quotients`, `lookup-pcs/sum-w`, `lookup-pcs/ctx`, `lookup-pcs/r1`, `lookup-pcs/gamma`, `lookup-pcs/r2`, and one `lookup-pcs/open` label per BaseFold opening |
+| vm | `vm/params`, `vm/trace`, four `vm/alpha` |
+| recursion | `rec/params`, `rec/trace`, seven `rec/alpha` |
+| sumcheck | `sumcheck/claim`; per round `sumcheck/round`, `sumcheck/challenge` |
+
+A caller MUST start the transcript with a unique application label. The
+transcript constructor absorbs `("domain", label)` first.
+
+---
+
+## 6. FRI polynomial commitment
+
+### 6.1 Parameters
+
+```text
+Params {
+    blowup: usize,       // power of two, >= 2
+    num_queries: usize,  // >= 1, <= MAX_QUERIES = 2^20
+    final_size: usize,   // power of two, 2 ..= MAX_FINAL_SIZE = 1024
+    grinding_bits: u32,  // <= 32
+    cap_height: usize,   // <= 8
+}
+```
+
+`final_size` MUST be strictly below the LDE length: at least one fold is
+required. `final_size >= 2` is required for a non-vacuous final degree
+check. The ratio `M / final_size` MUST be a power of four so quartering lands
+exactly.
+
+### 6.2 Commitment
+
+`commit(coeffs, params, transcript)`:
+
+1. validate params;
+2. require nonempty power-of-two coefficients and `M = n beta <= 2^27`;
+3. evaluate on the coset and bit-reverse;
+4. absorb `fri-dims = (M, n, degree_bound)` where
+   `degree_bound = n - 1`;
+5. for each layer:
+   - commit the layer with 64-byte quads (or 16-byte values if the layer is
+     not divisible by four);
+   - compute the cap and absorb every cap digest under
+     `fri-layer-root`;
+   - if the layer is larger than `final_size`, squeeze three `fri-fold`
+     challenges and fold every quad;
+6. absorb `fri-final` with the final layer;
+7. return prover state.
+
+`commit_evals(lde, bound, ...)` takes already-expanded natural-order coset
+values, requires `bound < M`, sets `poly_len = M`, and follows the same
+inner path. `commit_ext` and `commit_ext_evals` are the extension-field
+analogues.
+
+The rate gate is
+
+```text
+degree_bound + 1 <= M / 2.
+```
+
+It is enforced at prove and verify.
+
+### 6.3 Arity-4 folding
+
+Let the four values of a quad be `e0, e1, e2, e3` at
+`(x, -x, j0 x, -j0 x)`, where `j0` is the primitive fourth root. Write
+
+```text
+P(X) = A + B X + C X^2 + D X^3,   Y = X^4.
+```
+
+Then
+
+```text
+A = (e0 + e1 + e2 + e3) / 4
+B = ((e0 - e1) - j0 (e2 - e3)) / (4 x)
+C = ((e0 + e1) - (e2 + e3)) / (4 x^2)
+D = ((e0 - e1) + j0 (e2 - e3)) / (4 x^3)
+```
+
+and the fold is
+
+```text
+fold(e0,e1,e2,e3) = A + r0 B + r1 C + r2 D,
+```
+
+with `(r0,r1,r2) in Fp4^3`. Each fold quarters the degree. Point inverses
+are base-field values and are batch-inverted once per layer.
+
+### 6.4 Proof object
+
+```text
+Proof {
+    final_poly: Vec<Fp4>,
+    queries: Vec<QueryProof>,
+    pow_nonce: u64,
+}
+QueryProof { folds: Vec<FoldWitness> }
+FoldWitness { values: [Fp4; 4], path: Vec<(Digest, bool)> }
+```
+
+Each query opens all four values of every folded quad plus the middle Merkle
+path segment. The leaf digest is the standard BLAKE3 root of the canonical
+64-byte encoding of the four `Fp4` values. With caps, the stored path omits
+the top `cap_height` steps and the cap entry is selected by the query index.
+
+### 6.5 Verification
+
+`verify(commitment, proof, params, transcript)` performs:
+
+1. `params.validate()`;
+2. `proof.queries.len() == params.num_queries`;
+3. `proof.final_poly.len() == params.final_size`;
+4. nonempty caps, power-of-two `lde_len <= 2^27`;
+5. `degree_bound < lde_len`, `poly_len` nonzero power of two;
+6. if `poly_len != lde_len` (the `commit` path), require
+   `lde_len == poly_len * params.blowup`;
+7. rate gate `degree_bound + 1 <= lde_len / 2`;
+8. at least one fold: `folds = caps.len() - 1 >= 1`;
+9. fold-count consistency `(lde_len >> 2 f) == params.final_size`;
+10. cap shape pins before hashing: each cap has exactly `2^drop` digests;
+11. replay `fri-dims`, cap absorptions, `fri-fold` challenges, and
+    `fri-final`;
+12. PoW gate: with zero grinding require nonce `0`; otherwise
+    `verify_grind`;
+13. compute `residual = degree_bound >> 2f`; reject if
+    `residual + 1 >= final_size`;
+14. compute the true folded domain points and check the final layer by
+    divided differences;
+15. recompute the final cap from `final_poly` and compare it to the last
+    commitment cap;
+16. sample `num_queries` indices after grinding and check every query:
+    exact path length, cap entry, direction bits, leaf hash, fold relation,
+    and chaining into the next layer or `final_poly`.
+
+### 6.6 Final degree check
+
+Given distinct points `x_0, ..., x_{n-1}` and values `v_0, ..., v_{n-1}`,
+the divided-difference table is
+
+```text
+T^{(0)}_i = v_i
+T^{(k)}_i = (T^{(k-1)}_{i+1} - T^{(k-1)}_i) / (x_{i+k} - x_i).
+```
+
+The values interpolate a polynomial of degree `<= bound` iff every divided
+difference of order `bound + 1` vanishes. Higher orders then vanish
+automatically, so the implementation stops at order `bound + 1` rather than
+computing the full quadratic table. If `bound >= n - 1`, the check is
+vacuous and the verifier rejects the shape earlier via the residual test.
+
+### 6.7 Conjectured soundness
+
+Under the Johnson-radius heuristic, a word at distance `delta` from the code
+survives one query with probability at most `1 - delta`, where
+
+```text
+delta ~= 1 - sqrt(rate).
+```
+
+| Shape | Rate | Queries | Grinding | Conjectured query + PoW |
+|---|---:|---:|---:|---:|
+| Bench | 1/8 | 12 | 0 | ~18 bits |
+| Production | 1/16 | 40 | 20 | ~100 bits (80 + 20) |
+
+These counts exclude finite-field algebraic error. FRI folds, STARK
+compositions, UPCs/Gemini points and betas, sumcheck rounds, and lookup
+identities use `Fp4`, so a degree-`d` identity collides with probability
+about `d/p^4` per challenge (~124 bits). This is still a conjectured
+query/PoW schedule, not an end-to-end theorem.
+
+---
+
+## 7. Multilinear polynomials and sumcheck
+
+### 7.1 MLE representation
+
+An `Mle` with `n` variables stores `2^n` evaluations in index order. The
+index, read most-significant-bit first, is the variable assignment. Index
+`0` is `(0,...,0)`; index `2^n - 1` is `(1,...,1)`.
+
+`evaluate(point)` folds the least-significant variable first:
+
+```text
+buf[i] = buf[2i] + r (buf[2i+1] - buf[2i]).
+```
+
+The equality polynomial is
+
+```text
+eq(r, x) = product_i (r_i x_i + (1 - r_i)(1 - x_i)).
+```
+
+`eq_evals(r)` builds its hypercube table in MSB-first order.
+
+### 7.2 Sumcheck protocol
+
+A summand is a sum of terms
+
+```text
+f(x) = sum_k c_k product_{j in factors_k} mle_j(x),
+```
+
+with `c_k in Fp4`. The prover claims `S = sum_{x in {0,1}^n} f(x)` and sends
+round polynomials `g_i` of degree at most the maximum factor count. Round
+`i` restricts the current buffers to the line through the two halves of
+variable `i` and evaluates at `0, 1, ..., degree`.
+
+Verification:
+
+1. absorb the claimed sum;
+2. for each round, require `g_i(0) + g_i(1) = previous`, absorb the round,
+   sample `r_i`, and set `previous = g_i(r_i)`;
+3. require the final oracle values to satisfy the summand;
+4. if the oracle is committed, open each final value at the challenge point.
+
+Challenges are `Fp4`. The degree is bounded by the largest factor count.
+
+### 7.3 Complexity
+
+Prover work is `O(n * 2^n * terms * factors)` field operations; verifier work
+is `O(n * terms * factors)` plus oracle evaluation/opening. The
+implementation keeps dense buffers and folds them in place.
+
+---
+
+## 8. Univariate point openings (UPCs)
+
+### 8.1 Commitment
+
+`upcs::commit(coeffs, blowup)` computes the bit-reversed coset LDE of the
+coefficient polynomial and commits it as 64-byte leaves (four `Fp4` values
+per leaf). `poly_len` is the coefficient count; `lde_len = poly_len * blowup`.
+`check_dims` enforces a power-of-two `poly_len`, blowup at least 2, and
+`lde_len <= 2^27`.
+
+### 8.2 Single-point opening
+
+To prove `g(beta) = y`:
+
+1. absorb the commitment root, dimensions, point, and value;
+2. commit `g` with FRI and check that the FRI base cap hashes to the
+   statement root;
+3. compute the quotient `q = (g - y)/(X - beta)` and commit it with FRI at
+   degree bound `max(poly_len - 2, 0)`;
+4. sample the quotient's FRI query indices;
+5. for each index, open the quad containing the evaluation of `g` and the
+   quotient value, and check
+
+```text
+(X - beta) q(X) = g(X) - y.
+```
+
+### 8.3 Multi-point opening
+
+For distinct points `p_0, ..., p_{k-1}` and values `y_j`, let `I` interpolate
+the claims and `Z = product_j (X - p_j)`. The prover commits
+`q = (g - I)/Z` at degree bound `poly_len - k - 1` and proves the identity
+
+```text
+g(X) = I(X) + Z(X) q(X)
+```
+
+at the quotient's query points. `check_points` requires `1 <= k <= 16`,
+`k <= poly_len`, and distinct points.
+
+When `k == poly_len`, `I` determines `g` and the quotient is identically
+zero. The verifier checks `g` against `I` directly rather than allowing a
+nonzero constant quotient to absorb the difference at random points. For
+`poly_len == 1`, the single-point verifier checks `opening.value == value`.
+
+### 8.4 Caps
+
+UPCs uses the FRI base cap for the statement commitment and threads the same
+cap height through evaluation paths. The FRI base cap must hash to the
+statement root; evaluation paths are authenticated against the corresponding
+cap entry.
+
+### 8.5 Soundness sketch
+
+FRI certifies both `g` and `q` are low-degree. The identity difference has
+degree below `poly_len`; it is checked at the quotient's random coset points,
+so a nonzero difference is missed with probability at most
+`(poly_len - 1)/lde_len = 1/blowup` per query. For multi-point openings the
+same bound holds because `g - I - Z q` has degree below `poly_len`. The
+full-point case is checked directly against the interpolant.
+
+---
+
+## 9. Gemini multilinear commitments
+
+### 9.1 Coefficient encoding
+
+For a multilinear polynomial `f` with monomial coefficients `c_b`, commit
+
+```text
+g_0(X) = sum_b c_b X^index(b)
+```
+
+with UPCs. `commit_evals` applies the Möbius transform to hypercube
+evaluations; the index order matches `Mle` (MSB-first).
+
+### 9.2 Folding
+
+For `i = 1..n`, write
+
+```text
+g_{i-1}(X) = A_i(X^2) + X B_i(X^2)
+g_i(Y) = A_i(Y) + r_i B_i(Y),
+```
+
+where `r_i` is the `i`-th unfolding coordinate. The prover commits
+`g_1, ..., g_{n-1}` and checks, for a nonzero random `beta_i`:
+
+```text
+g_i(beta_i^2) = (g_{i-1}(beta_i) + g_{i-1}(-beta_i))/2
+              + r_i (g_{i-1}(beta_i) - g_{i-1}(-beta_i))/(2 beta_i).
+```
+
+The final public check is `g_{n-1}(r_0) = y`.
+
+### 9.3 Openings
+
+Each layer is opened once with a multi-point UPCs proof at all points its
+relations use:
+
+- `g_0` at `beta_1, -beta_1`;
+- interior `g_i` at `beta_i^2, beta_{i+1}, -beta_{i+1}`;
+- `g_{n-1}` at `beta_{n-1}^2, r_0`.
+
+Layer commitments are absorbed before the betas. The proof carries `n-1`
+layer commitments, one multi-point opening per layer, and the layer-opening
+values. It is linear-size, not constant-size.
+
+### 9.4 Verification
+
 The verifier:
 
-1. checks dimensions, the rate gate, cap shapes ($2^{\mathrm{drop}}$
-   digests per layer), and fold-count consistency
-   ($M / 4^f = \mathrm{final\_size}$);
-2. replays absorbs/challenges, checks the PoW gate;
-3. checks the final layer by divided differences against residual bound
-   $\mathrm{bound} \gg 2f$ at the true folded domain points;
-4. checks every Merkle path (rebuilding quad nodes from values) and
-   every fold relation, chaining intermediate parents into the next
-   layer's revealed quad, the last into `final_poly`.
+1. validates dimensions (`n_vars <= MAX_VARS = 20`, blowup at least 8);
+2. absorbs the statement and layer commitments;
+3. samples nonzero fold betas;
+4. verifies each layer's multi-point UPCs opening;
+5. checks each fold identity and the final public value.
 
-Query indices are verifier-recomputed (`fri-query` squeezes) and never
-stored.
+### 9.5 Soundness
 
-### 3.4 Conjectured soundness (normative for parameter choice)
+Each fold identity has degree below `2^(n-i+1)`, so one random check misses a
+nonzero identity with probability at most `2^(n-i+1)/p^4`. Over `n` layers
+the algebraic error is at most `n 2^n / p^4` (below `2^-99` for `n = 20`).
+The query/PoW schedule is separate and conjectured.
 
-Johnson-radius heuristic ($\delta \approx 1 - \sqrt{\rho}$ per-query
-survival $\le 1 - \delta$):
+---
 
-- Bench shape ($\beta = 8$, $\rho = 1/8$, 12 queries, no grinding):
-  $\delta \approx 0.65$, ~1.5 bits/query, **~18 bits** total.
-- Production shape ($\beta = 16$, $\rho = 1/16$, 40 queries, 20-bit
-  grinding): $\delta \approx 0.75$, ~2 bits/query, a **100-bit
-  query/PoW schedule** (80 + 20). `tune_strength` caps grinding at 20
-  bits (half the target when smaller); `tune_shape` picks finals
-  $\le 32$ and caps $0..=4$ minimizing the exact byte estimator. Merkle
-  caps are size-only and do not affect bit-levels.
+## 10. BaseFold prototype
 
-**Challenge fields.** This heuristic counts query sampling and grinding
-only. FRI folds, STARK composition batches, `upcs`/`gemini` evaluation
-points and fold betas, `sumcheck` rounds, and lookup's rational-identity
-challenge use the quartic extension field $\mathbb{F}_{p^4}$ (tower
-$\mathbb{F}_p[u]/(u^2-11)$, then $\mathbb{F}_{p^2}[v]/(v^2-u)$), so a
-degree-$d$ identity collides with probability about $d/p^4$ per
-challenge. The former $\approx 31$-bit algebraic ceiling is gone. The
-production schedule remains a query/PoW formula, not an end-to-end
-soundness proof.
+### 10.1 Commitment
 
-## 4. AIR systems
+`basefold::commit(coeffs, blowup)` commits the monomial-coefficient encoding
+with FRI. Coefficients are in Möbius order, matching `Mle`. The maximum
+variable count is `MAX_VARS = 16`. `commit_ext` accepts extension-field
+coefficients; `commit_evals`/`commit_evals_ext` apply the Möbius transform to
+hypercube evaluations.
 
-All four protocols share one pattern: interpolate columns, extend on
-the LDE coset, Merkle-commit the joint rows, evaluate the composition
-vector (geometric vanishing recurrence + Montgomery-batched
-denominators, bit-identical to scalar evaluation), FRI-commit it with
-`commit_evals`, open trace columns at the FRI query positions, and
-re-verify the composition identity per query.
+### 10.2 Sumcheck reduction
 
-### 4.1 Fibonacci AIR (`air`)
+To prove `f(r) = y`, the prover builds the multilinear basis table
 
-Trace $A[0] = a_0$, $B[0] = b_0$, $A[i+1] = B[i]$,
-$B[i+1] = A[i] + B[i]$, claim $B[N-1] = b_{\mathrm{last}}$.
-With $w_{\mathrm{last}} = \omega^{N-1}$ and
-$Z_{\mathrm{trans}}(x) = (x^N - 1)/(x - w_{\mathrm{last}})$ (zero exactly
-on rows $0..N-2$), at point $x$ with values $(a, b)$ and next-row
-$(a', b')$:
+```text
+w_b = product_i r_i^{b_i}
+```
 
-$$C(x) = \alpha_0\frac{a' - b}{Z_{\mathrm{trans}}(x)}
-       + \alpha_1\frac{b' - (a + b)}{Z_{\mathrm{trans}}(x)}
-       + \alpha_2\frac{a - a_0}{x - 1}
-       + \alpha_3\frac{b - b_0}{x - 1}
-       + \alpha_4\frac{b - b_{\mathrm{last}}}{x - w_{\mathrm{last}}}.$$
+and uses sumcheck on
 
-Five `fib/alpha`-class challenges; $\deg C < N$ iff the trace is valid
-(dividing — not multiplying — by $Z_{\mathrm{trans}}$ is load-bearing:
-see the `bad_trace` regression test). Blowup $\ge 4$ keeps the rate
-$< 1/2$.
+```text
+sum_b c_b w_b = f(r).
+```
 
-### 4.2 Range check (`range`)
+The sumcheck outputs a challenge `rho in Fp4^n` and a claimed value
+`c(rho)`, where `c` is the multilinear extension of the coefficient table.
 
-Value column $V$ plus $n$ bit columns ($1 \le n \le 24$), $n_{\mathrm{rows}}$
-rows. With challenges $\alpha_{\mathrm{decomp}}$,
-$\{\alpha_j\}$, $\alpha_{\mathrm{bound}}$:
+### 10.3 Möbius FRI fold
 
-$$C = \alpha_{\mathrm{decomp}}\frac{V - \sum_j 2^j C_j}{Z_H}
-    + \sum_j \alpha_j\frac{C_j(C_j - 1)}{Z_H}
-    + \alpha_{\mathrm{bound}}\frac{V - v}{Z_{\mathrm{row0}}}.$$
+The prover folds the LDE with the Möbius/eq rule
 
-### 4.3 Table membership (`table`)
+```text
+(1 - rho_i) E(X) + rho_i O(X)
+```
 
-Constant column $v$ against public table $T$:
+rather than the coefficient-encoding rule `E(X) + rho_i O(X)`, so the final
+FRI constant is exactly `c(rho)`. The verifier recomputes
 
-$$C(x) = \alpha_{\mathrm{member}}\frac{\prod_{t \in T}(v - t)}{Z_H(x)}
-       + \alpha_{\mathrm{bound}}\frac{v - \mathrm{value}}{x - 1}.$$
+```text
+w(rho) = product_i (1 - rho_i + rho_i r_i)
+```
 
-Declared bound $|T|\cdot(n + k - 1)$-style via `membership_bound`
-($n$ rows, $k$ maskers). Small tables by design; cost scales with $|T|$.
+and checks `f(r) = c(rho) w(rho)`.
 
-### 4.4 Folding / IVC (`fold`)
+### 10.4 Proof and queries
 
-$S$-step Fibonacci segments chained ($out$ of step $s$ = $in$ of step
-$s+1$, enforced at accumulation). Per-step AIR compositions $C_s$ share
-one batched FRI commitment over the random combination
-$\sum_s \gamma_s C_s$ ($\gamma_s$ = per-step `fold/gamma` challenge).
-One proof covers the whole chain.
+A proof carries:
 
-### 4.5 LogUp lookups (`lookup`)
+- sumcheck claimed sum and `n` rounds of three `Fp4` evaluations;
+- `n-1` layer roots;
+- optional cap frontiers, one per committed layer;
+- a PoW nonce;
+- one query per `num_queries`: one pair of values per layer plus a Merkle
+  path from the pair parent to the layer root or cap entry.
 
-Witness $w$ ($|w|$ a power of two after padding) against table $t$:
-multiplicities $m$ (first-index matching; prove fails closed on
-no-match), $\beta$ challenge, quotients
-$q^w_i = 1/(\beta + w_i)$, $q^t_j = m_j/(\beta + t_j)$, rational-sum
-equality plus four sumchecks (two sums, two read-checks at random
-evaluation points).
+Paths make the prototype `O(Q n^2)` bytes, not `O(n)`. Caps replace the top
+path steps with a digest frontier and are authenticated against the layer
+root.
 
-**Committed variant (`lookup_pcs`).** The witness, table, multiplicities,
-and both quotient columns are committed with BaseFold. The verifier
-receives five commitment roots and eight point-opening proofs; all
-sumcheck final values are bound to openings, and the witness/table never
-travel on the wire. A fresh $\gamma$ folds the total multiplicity weight
-into the sum-t claim:
-$\sum(q^t+\gamma m)=\sum q^w+\gamma W$. At 1,024-in-1,024 with blowup
-16, 40 queries, 20-bit grinding, and cap height 4, the prototype proves
-in ~367 ms, verifies in ~21 ms, and carries 642,443 bytes. It is
-committed-input but not zero-knowledge, does not constrain columns to the
-base field, and still uses eight separate openings.
+### 10.5 Batched openings
 
-### 4.6 Zero knowledge
+`open_multi` proves several evaluations with one sumcheck and one fold walk.
+The prover samples nonzero batch weights `lambda_j` after absorbing the
+commitment, points, and values, then shows
 
-`prove_zk` blinds columns with vanishing-multiple masks from a ChaCha20
-(RFC 8439) stream ($n_{\mathrm{rand}} \ge$ queries enforced), raising
-the composition degree (callers size finals accordingly). Query openings
-become uniform and witness-independent; verification is identical, and
-masked false statements still fail.
+```text
+sum_j lambda_j f(point_j) = sum_j lambda_j value_j.
+```
 
-### 4.7 Multilinear commitments (`gemini`, `basefold` prototype)
+The summand weight is the multilinear basis table, not the equality table;
+using the equality table for a monomial-coefficient commitment is a
+correctness bug (fixed). `verify_multi` recomputes the same weighted sum.
+Batches are capped at `MAX_BATCH = 1024` points.
 
-For monomial coefficients $c_b$ of a multilinear polynomial $f$, both
-constructions commit the coefficient encoding
-$g_0(X)=\sum_b c_b X^{\mathrm{index}(b)}$ with a Merkle-committed
-Reed--Solomon LDE.
+### 10.6 Caps and status
 
-`gemini` folds one variable at a time,
-$g_{i-1}(X)=A_i(X^2)+X B_i(X^2)$, opens each committed layer once with a
-multi-point `upcs` proof, and checks
-$g_i(\beta^2)=A_i(\beta^2)+r_i B_i(\beta^2)$ at a fresh $\beta$.
-The proof has one root plus $n-1$ layer commitments and $n$ opening
-proofs, so it is linear-size. Optional Merkle caps shorten every layer
-path and are authenticated against that layer's commitment root.
+`MAX_CAP_HEIGHT = 8`. The top cap hashes to the commitment root; lower caps
+hash to the proof's layer roots. The BaseFold prototype is not wired into the
+AIR/STARK stack and has no end-to-end soundness proof. It backs the committed
+lookup prototype.
 
-The experimental `basefold` prototype replaces the per-layer openings
-with sumcheck and one FRI instance. Let
-$w_b=\prod_i r_i^{b_i}$ and
-$w(X)=\prod_i (1+(r_i-1)X_i)$. Sumcheck proves
-$\sum_b c_b w_b=f(r)$ and outputs $c(\rho)$ for a challenge
-$\rho\in\mathbb{F}_{p^4}^n$, where $c(\cdot)$ is the multilinear
-extension of the coefficient table. The prover folds the LDE with the
-Möbius/eq rule
-$(1-\rho_i)E(X)+\rho_i O(X)$ rather than the coefficient-encoding rule
-$E(X)+\rho_i O(X)$, so the final FRI constant is exactly $c(\rho)$.
-The verifier recomputes
-$w(\rho)=\prod_i(1-\rho_i+\rho_i r_i)$ and checks
-$f(r)=c(\rho)w(\rho)$. The proof contains one root, $n-1$ layer roots,
-$3n$ extension-field sumcheck evaluations, and $Q$ queries with one pair
-and one Merkle path per layer per query; paths make the prototype
-$O(Qn^2)$ bytes, not $O(n)$.
+---
 
-Optional Merkle caps store the top $h$ levels of every committed layer as
-a frontier of $2^h$ digests. Each query path drops $h$ steps, and the
-verifier hashes the frontier back to the layer root (top: the commitment
-root; lower layers: the proof's layer roots). The cap is part of the
-proof, not the commitment, so no commitment API changes are needed.
+## 11. Lookup arguments
 
-At 1,024 coefficients with blowup 16, 40 queries, and 20-bit grinding,
-the prototype proves in about 44 ms, verifies in 1.1 ms, and carries
-127,658 bytes; cap height 4 gives about 36 ms / 0.9 ms and 80,018 bytes.
-Gemini on the same shape takes 693 ms / 54 ms and carries 888,672 bytes.
-The prototype is not wired into the AIR/STARK stack, has no hiding, and
-has no end-to-end soundness proof; it must not be treated as
-production-ready.
+### 11.1 LogUp in clear
 
-### 4.8 Program execution (`vm`)
+Let witness `w` and table `t` be padded to powers of two. The prover computes
+first-index multiplicities
+
+```text
+m_j = |{ i : w_i = t_j }|,
+```
+
+samples `beta` avoiding all poles `-w_i` and `-t_j`, and forms
+
+```text
+q^w_i = 1/(beta + w_i)
+q^t_j = m_j/(beta + t_j).
+```
+
+The rational identity is
+
+```text
+sum_i q^w_i = sum_j q^t_j.
+```
+
+Four sumchecks establish:
+
+1. `sum q^w = sum_w`;
+2. read-check `q^w_i (beta + w_i) = 1`;
+3. `sum q^t = sum_t`;
+4. read-check `q^t_j (beta + t_j) = m_j`.
+
+Read-checks use a random equality point `r` and the summand
+
+```text
+eq(r,x) (q(x)(beta + v(x)) - target(x)).
+```
+
+The verifier has the witness and table in clear and recomputes canonical
+multiplicities exactly; fractional multiplicities are rejected. The API is
+sound for membership but not hiding.
+
+### 11.2 Committed LogUp (`lookup_pcs`)
+
+The committed variant commits witness, table, multiplicities, and both
+quotient columns with BaseFold. The verifier sees five commitments and eight
+openings. The read-checks use the committed columns directly:
+
+```text
+eq * (q * (beta + v) - target) = 0
+```
+
+expanded as
+
+```text
+eq*q*v + beta*eq*q - eq*target.
+```
+
+Using an uncommitted `beta + v` MLE would let a prover choose it after the
+challenge and satisfy the sumcheck while only matching `v` at the final
+point; the committed form closes that gap.
+
+A fresh `gamma` folds the total multiplicity weight into the sum-t claim:
+
+```text
+sum(q^t + gamma m) = sum q^w + gamma W.
+```
+
+The verifier rejects `gamma = 0`. Every final sumcheck value is opened against
+its commitment. At 1,024-in-1,024 with `B16 Q40 G20 C4`, the prototype
+measures 273.01 ms prove, 5.77 ms verify, and 642,443 bytes. It is
+committed-input but not zero-knowledge and does not constrain columns to the
+base field.
+
+### 11.3 Padding
+
+Witness and table are padded to powers of two. The witness repeats its last
+value; the table repeats its last value but padding slots receive zero
+multiplicity. The lookup statement is membership of the padded witness, not
+just its original prefix.
+
+---
+
+## 12. AIR systems
+
+### 12.1 Common machinery
+
+All AIRs:
+
+1. interpolate trace columns;
+2. extend on the coset `D`;
+3. Merkle-commit joint rows;
+4. absorb parameters and the column cap;
+5. sample composition challenges;
+6. evaluate the composition vector on `D` using geometric vanishing
+   recurrences and Montgomery-batched inverses;
+7. FRI-commit the composition with `commit_evals`;
+8. open trace columns at FRI query positions;
+9. re-check the composition identity per query.
+
+Next-row values are the same committed columns at the `omega`-shifted LDE
+index, authenticated by a second Merkle path. This prevents a prover from
+decoupling the transition relation from the committed trace.
+
+### 12.2 Fibonacci AIR
+
+Trace:
+
+```text
+A[0] = a0
+B[0] = b0
+A[i+1] = B[i]
+B[i+1] = A[i] + B[i]
+B[N-1] = b_last.
+```
+
+Let `w_last = omega^(N-1)` and
+
+```text
+Z_trans(x) = (x^N - 1)/(x - w_last),
+```
+
+which is zero on rows `0..N-2`. At point `x` with values `(a,b)` and next
+row `(a',b')`:
+
+```text
+C(x) = alpha0 (a' - b) / Z_trans(x)
+     + alpha1 (b' - (a + b)) / Z_trans(x)
+     + alpha2 (a - a0) / (x - 1)
+     + alpha3 (b - b0) / (x - 1)
+     + alpha4 (b - b_last) / (x - w_last).
+```
+
+Five `fib/alpha` challenges. `deg C < N` iff the trace is valid. Dividing by
+`Z_trans` is load-bearing; multiplying would make the constraint vacuous.
+Blowup is at least 4.
+
+Plain proof degree bound is `N-1`. Masked proofs use a larger padded LDE and
+a bound `N + n_rand - 1`. The verifier pins the plain domain and bound
+exactly; for masked proofs it requires `m >= N*blowup`, `m % (N*blowup) == 0`,
+`poly_len == m`, and `degree_bound < m/blowup`.
+
+### 12.3 Range check AIR
+
+Columns: value `V` and bits `C_0..C_{n-1}`, `1 <= n <= 24`. With challenges
+`alpha_decomp`, `{alpha_j}`, `alpha_bound`:
+
+```text
+C = alpha_decomp (V - sum_j 2^j C_j) / Z_H
+  + sum_j alpha_j C_j (C_j - 1) / Z_H
+  + alpha_bound (V - value) / (x - 1).
+```
+
+The honest composition is identically zero; the declared bound covers the
+boundary quotient. Any violated constraint leaves a nonzero numerator over a
+vanishing denominator, whose coset interpolant is dense and rejected by FRI.
+Masked booleanity doubles the degree; the verifier caps the declared bound
+at `2*padded - n - 2`.
+
+### 12.4 Table membership AIR
+
+Constant column `v` against public table `T`:
+
+```text
+C(x) = alpha_member product_{t in T}(v - t) / Z_H(x)
+     + alpha_bound (v - value) / (x - 1).
+```
+
+The membership numerator is zero on every row iff `v` is in `T`. The honest
+composition bound is
+
+```text
+membership_bound(|T|, n, k) = |T| (n + k - 1) - n,
+```
+
+for `n` rows and `k` maskers. `table::Params::for_security` floors blowup at
+4 so the smallest LDE is 8 and FRI has a valid final layer. Large tables need
+proportionally larger blowup; the AIR is small-table by design.
+
+### 12.5 Hash-folded IVC
+
+Segments of `seg_steps` Fibonacci rows are committed independently with
+claims `(in_a, in_b, out_a, out_b)`. The verifier checks:
+
+- the first segment's input claims equal the public inputs;
+- adjacent segments satisfy `out_a = next in_a` and `out_b = next in_b`;
+- the last segment's `out_b` equals the public output.
+
+Each segment has a composition `C_s`. After all segments are committed, the
+prover samples `gamma_s` and commits
+
+```text
+V = sum_s gamma_s C_s
+```
+
+with one FRI instance. A far-from-code segment keeps the combination far with
+overwhelming probability over the gammas. The statement is existential over
+the number of segments; callers requiring an exact step count must check
+`proof.steps.len()`. The accumulator retains each segment's LDE, Merkle tree,
+and composition until finalization.
+
+### 12.6 Register-machine AIR (`vm`)
 
 A public two-register straight-line program executes on a private initial
-state. Trace columns $A,B$ apply one of `Add`, `Mul`, `Swap`, `SetA`,
-`SetB`, or `Halt` per row; the last row is the public output claim and has
-no outgoing transition. Public one-hot selector polynomials
-$\sigma_o(x)$ and immediate polynomials $I_A(x),I_B(x)$ carry the opcode
-and constants. With $Z=(x^n-1)/(x-w_{\mathrm{last}})$, the composition is
-$$
-C(x)=\alpha_0\frac{T(x)}{Z(x)}+\alpha_1\frac{U(x)}{Z(x)}
-+\alpha_2\frac{A(x)-a_{\mathrm{last}}}{x-w_{\mathrm{last}}}
-+\alpha_3\frac{B(x)-b_{\mathrm{last}}}{x-w_{\mathrm{last}}},
-$$
-where $T,U$ are the selector-weighted transition numerators. Composition
-degree is below $2n-1$, so blowup is at least $8$ (production $16$). A
-64-step $B16Q12C2$ proof takes about 1.5 ms prove, 0.24 ms verify, and
-14,933 bytes for the plain path. `prove_zk` masks both columns with
-random multiples of $x^n-1$, preserving trace values and making query
-responses independent of the private initial state when
-$n_{\mathrm{rand}}\ge Q$; the caller must choose `final_size` for the
-larger masked LDE. The program and output remain public, execution is
-straight-line, and control flow, memory, instruction privacy, and a
-general zkVM remain future work.
+state. Opcodes:
 
-## 5. Encodings (normative wire format, `VERSION = 5`)
+| Opcode | Effect |
+|---|---|
+| `Add` | `a <- a + b` |
+| `Mul` | `a <- a * b` |
+| `Swap` | swap `a` and `b` |
+| `SetA(v)` | `a <- v` |
+| `SetB(v)` | `b <- v` |
+| `Halt` | leave both registers unchanged |
 
-```
-proof      := VERSION || body
-u32/u64    := little-endian, counts as u32
-field      := 4 canonical LE bytes (< p, else MalformedInput)
-ext4       := 16 canonical LE bytes (four field coordinates)
-digest     := 32 bytes
-direction  := 0 | 1 (else MalformedInput)
-path       := count || (digest || direction)*
-cap        := count || digest*
-commitment := VERSION || lde_len u64 || poly_len u64
-              || degree_bound u64 || caps
+Rows `0..program.len()` execute the program; shorter traces pad with `Halt`.
+The last row is the public output and has no outgoing transition. Public
+one-hot selectors `sigma_o(x)` and immediate polynomials `I_A(x), I_B(x)`
+drive the transition numerators `T, U`. With
+`Z = (x^n - 1)/(x - w_last)`:
+
+```text
+C(x) = alpha0 T(x)/Z(x)
+     + alpha1 U(x)/Z(x)
+     + alpha2 (A(x) - a_last)/(x - w_last)
+     + alpha3 (B(x) - b_last)/(x - w_last).
 ```
 
-Hard decoder limits (fail before allocation, vectors grow
-incrementally): `MAX_QUERIES = 2^20`, `MAX_FOLDS = 64`,
-`MAX_PATH_STEPS = 128`, `MAX_CAP_DIGESTS = 256`,
-`MAX_ELEMS = 2^27`, `MAX_STEPS = 2^20`. Trailing bytes rejected.
+Plain composition degree is below `2n-1`, so blowup is at least 8. Masked
+columns have degree `padded-1`; the `Mul` transition is quadratic, so the
+prover declares
+
+```text
+degree_bound = 2 (n + n_rand - 1)
+```
+
+and the verifier accepts up to `2*padded - 2` for masked traces. Each query
+reveals the current and shifted rows, so the mask budget is
+`2*num_queries`. The program and output remain public; there is no control
+flow or memory.
+
+### 12.7 Recursion fragment
+
+`recursion` proves one FRI query's fold chain as a small STARK. Public inputs:
+
+```text
+(lde_len, leaf, folds, challenges, initial quad, output).
+```
+
+Witness: the quads and fold outputs. Constraints:
+
+| Constraint | Divisor | Quotient degree |
+|---|---|---:|
+| `out - fold_values(q, 1/x, c)` | `x^n - 1` | `4n - 5` |
+| `out - sum_j e_j q_j(omega x)` | `(x^n - 1)/(x - w_last)` | `n - 1` |
+| `q_j - initial_j` on row 0 | `x - 1` | `n - 2` |
+| `e_last (out - output)` | `x^n - 1` | `n - 2` |
+
+`MAX_FOLDS = 16`; outer `lde_len` must be a power of two `<= 2^27`, at least
+4, with `2*folds <= log2(lde_len)`. The fragment does not yet verify BLAKE3
+paths, the final degree check, or transcript derivation inside the AIR.
+
+---
+
+## 13. Zero-knowledge masking
+
+### 13.1 Mask construction
+
+For a column `T` of degree `< n`, choose `R` of degree `< n_rand` with
+uniform coefficients and set
+
+```text
+M(x) = T(x) + Z_H(x) R(x).
+```
+
+Because `Z_H` vanishes on every base row, `M` agrees with `T` on `H`, so all
+AIR quotient identities are preserved. Off-domain, the mask term is nonzero.
+
+### 13.2 Hiding condition
+
+The verifier sees evaluations of `M` at a set of distinct off-domain points.
+The evaluations of `R` at `k` distinct points are jointly uniform if
+`n_rand >= k` (Vandermonde). Therefore the mask budget is the number of
+distinct values revealed per column:
+
+| Protocol | Revealed values per column per query | Minimum `n_rand` |
+|---|---|---:|
+| `range`, `table` | one point | `num_queries` |
+| `vm` | current and shifted rows | `2 * num_queries` |
+| `air` | eight-row joint leaf plus shifted leaf | `16 * num_queries` |
+
+The composition degree grows accordingly:
+
+- AIR: `n + n_rand - 1`;
+- range: `n + 2 n_rand - 2`;
+- table: `|T| (n + n_rand - 1) - n`;
+- VM: `2 (n + n_rand - 1)` for the quadratic `Mul` transition.
+
+Callers MUST size `final_size` and FRI queries for the masked LDE.
+
+### 13.3 Scope
+
+This is query-response hiding, not full program privacy. Merkle roots,
+commitments, public inputs, and composition values remain visible.
+`lookup`, `sumcheck`, `upcs`, `gemini`, and `basefold` are not hiding.
+`lookup_pcs` hides columns from the wire but candidate inputs can be tested
+against its commitments.
+
+---
+
+## 14. Wire format
+
+### 14.1 Version
+
+```text
+VERSION = 5
+```
+
+All proof types encode as `VERSION || body`.
+
+### 14.2 Primitive encodings
+
+| Type | Encoding |
+|---|---|
+| `u32` | 4 little-endian bytes |
+| `u64` | 8 little-endian bytes |
+| count | `u32`, checked against a hard limit |
+| `Field` | 4 canonical little-endian bytes, `< p` |
+| `Ext4` | 16 canonical bytes, four checked coordinates |
+| digest | 32 bytes |
+| direction | one byte, `0` or `1` only |
+| path | `count || (digest || direction)*` |
+| cap | `count || digest*` |
+
+### 14.3 Hard limits
+
+| Limit | Value |
+|---|---:|
+| `MAX_QUERIES` | `2^20 = 1,048,576` |
+| `MAX_FOLDS` | 64 |
+| `MAX_PATH_STEPS` | 128 |
+| `MAX_CAP_DIGESTS` | 256 |
+| `MAX_ELEMS` | `2^27 = 134,217,728` |
+| `MAX_STEPS` (IVC) | `2^20 = 1,048,576` |
+| FRI `MAX_FINAL_SIZE` | 1024 |
+| maximum Merkle cap height | 8 |
+| BaseFold `MAX_BATCH` | 1024 |
+| BaseFold `MAX_VARS` | 16 |
+| Gemini `MAX_VARS` | 20 |
+| UPCs `MAX_POINTS` | 16 |
+| VM `MAX_PROGRAM` | `2^20` |
+| recursion `MAX_FOLDS` | 16 |
+
+Counts are checked before looping. Vectors grow incrementally; the decoder
+never calls `with_capacity` from an untrusted count. Trailing bytes,
+truncations, non-canonical fields, and invalid direction bytes are rejected.
 Decoding is shape-only; all soundness checks live in `verify`.
 
-## 6. Parameters (normative validation)
+### 14.4 Proof bodies
 
-- $N$ (steps/rows/poly length): power of two, $\ge 2$ (FRI coeff path:
-  non-empty power of two).
-- Blowup: power of two, $\ge 2$ (AIR/fold: $\ge 4$).
-- Queries $\ge 1$; final size a power of two with $M/\mathrm{final}$
-  a power of four (quartering lands exactly); finals tuned $\le 32$.
-- $M = N\cdot\mathrm{blowup} \le 2^{27}$; caps $0..=4$ (tuned).
-- `for_security(len, …, target)`: blowup 16, strength split by
-  `tune_strength`, shape by `tune_shape`. Masked callers size manually.
+- **FRI:** final polynomial, PoW nonce, queries; each query has one fold
+  witness per layer with four `Ext4` values and a path.
+- **AIR/range/table/vm/recursion:** column cap, FRI commitment and proof,
+  openings (index, values, paths, and 64-byte leaves where applicable).
+- **fold:** step count, per-step claims/cap/openings, shared FRI commitment
+  and proof.
+- **BaseFold:** sumcheck sum/rounds, layer roots, caps, PoW nonce, queries.
+- **UPCs:** two FRI instances, quotient commitment/proof, openings.
+- **Gemini:** layer commitments, values, nested UPCs openings.
+- **lookup:** beta, multiplicities, quotient columns, sums, four nested
+  sumcheck proofs.
+- **lookup_pcs:** beta, sum, four nested sumcheck proofs, eight BaseFold
+  openings.
+- **sumcheck:** claimed sum, rounds, final values.
 
-## 7. Security analysis
+---
 
-**Assumptions.** BLAKE3 collision/preimage resistance; FRI soundness
-under the Johnson-radius heuristic; Fiat–Shamir in the (Q)ROM. No
-discrete-log, pairing, or trusted-setup assumptions — Shor-inert by
-construction.
+## 15. Parameter validation and sizing
 
-**Enforced invariants.** Rate gate both sides; verifier-derived domains
-and query indices; final divided-difference check at true folded points;
-cap/path shape pins before hashing; `fri-dims` dimension binding
-(closes proof malleability of echoed dimensions); canonical-only
-decoding; PoW bound to history with queries sampled after.
+### 15.1 Common validation
 
-**Validation.** 271 unit tests (KATs, cross-checks against Horner/`%`,
-parallel-vs-sequential identity), 13-test security suite and 10-test
-red-team suite (~800 hostile attempts/run, zero acceptances, zero
-panics), wire-exact size assertions on every benchmark, and a
-`tools/check.py` gate (fmt, pedantic clippy, debug+release tests, bench
-regression vs `tools/baseline.json`).
+Every entry point validates:
 
-**Out of scope / stated limits.** Bench shapes (~18 bits) are not
-production soundness. The `table` AIR is small-table by design; the
-committed `lookup_pcs` prototype removes clear witness/table inputs but
-still uses eight separate BaseFold openings, lacks hiding, and does not
-enforce base-field column values. Vectorized hashing, the one-query
-recursion fragment, FRI-backed univariate point and multi-point openings,
-a Gemini-style multilinear PCS (`O(n)` openings, one batched opening per
-layer), a compact BaseFold-style prototype (one root, sumcheck plus
-Möbius FRI folds), committed LogUp, and a two-register program-execution
-prototype with plain and masked proving are done. The BaseFold,
-`lookup_pcs`, and `vm` modules are experimental and not wired into
-AIR/STARK production paths; batched openings, a hiding PCS/sumcheck,
-self-proving recursion, control flow, memory, and a zkVM are roadmap
-items. No external audit has yet been performed.
+- domains are nonempty powers of two within `2^27`;
+- blowup is a power of two (`>= 4` for AIR/fold, `>= 2` for FRI/range/table,
+  `>= 8` for Gemini/VM);
+- queries `>= 1` and `<= 2^20`;
+- `final_size >= 2`, power of two, `<= 1024`, and strictly below the LDE
+  size;
+- `M / final_size` is a power of four;
+- cap height `<= 8`;
+- grinding bits `<= 32`;
+- rate gate `degree_bound + 1 <= M/2`;
+- residual bound non-vacuous: `(degree_bound >> 2f) + 1 < final_size`;
+- recursion outer `lde_len <= 2^27`.
 
-## 8. License
+### 15.2 Production sizing
 
-GPLv3 only — see [LICENSE](../LICENSE).
+`Params::for_security(len, ..., target_bits)`:
+
+1. selects blowup 16;
+2. computes `millibits_per_query` from the rate and composition degree;
+3. splits the target between queries and grinding with
+   `tune_strength(target, millibits)`;
+4. chooses `final_size` and `cap_height` with `tune_shape`, minimizing the
+   exact byte estimator.
+
+For target 100, the AIR/FRI production shape is rate `1/16`, 40 queries,
+20-bit grinding. The FRI tuner never selects a one-point final layer and
+caps finals at 32 in normal tuning; the hard verifier cap is 1024.
+
+### 15.3 Masked sizing
+
+| Protocol | Degree bound | Mask budget |
+|---|---|---:|
+| AIR | `N + n_rand - 1` | `16 * num_queries` |
+| Range | `N + 2 n_rand - 2` | `num_queries` |
+| Table | `|T| (N + n_rand - 1) - N` | `num_queries` |
+| VM | `2 (N + n_rand - 1)` | `2 * num_queries` |
+
+Masked callers must size `final_size` for the padded LDE. The verifiers cap
+declared bounds at the largest honest masked degree.
+
+---
+
+## 16. Security analysis
+
+### 16.1 Assumptions
+
+- BLAKE3-256 collision and preimage resistance;
+- FRI soundness under the Johnson-radius heuristic;
+- Fiat–Shamir in the (quantum) random-oracle model;
+- standard Reed–Solomon list-decoding bounds.
+
+No discrete-log, pairing, or trusted-setup assumptions. The construction is
+Shor-inert by design.
+
+### 16.2 Adversary model
+
+The adversary controls proof bytes, commitments, public parameters, and
+public statements. It may choose malformed counts, paths, caps, field
+encodings, and dimensions. The verifier must fail closed, never panic, and
+never allocate based on an unchecked count. The adversary may also choose
+the prover's witness and strategy; soundness is argued against a malicious
+prover, not only random errors.
+
+### 16.3 Enforced invariants
+
+1. Rate gate at prove and verify.
+2. Verifier-derived domains and query indices.
+3. Non-vacuous final divided-difference check.
+4. Cap/path shape pins before hashing.
+5. Direction bits bound to claimed indices.
+6. `fri-dims` dimension binding.
+7. Canonical-only decoding with hard caps.
+8. PoW bound to the full history; queries sampled after grinding.
+9. Committed read-checks in `lookup_pcs`.
+10. Correct masked composition bounds in VM.
+11. Next-row openings authenticated against the same trace cap.
+12. No allocation before count limits are checked.
+
+### 16.4 Closed findings
+
+The internal adversarial review has closed, among others:
+
+- Merkle path index substitution (all verifiers and hand-rolled FRI/BaseFold
+  walks).
+- One-point FRI final layer / vacuous degree check; fold-free FRI; final cap
+  not bound to `final_poly`.
+- `lookup_pcs` read-checks using uncommitted shifted MLEs.
+- VM masked `Mul` degree under-declaration.
+- AIR/VM ZK mask budgets undercounting revealed values.
+- Batched BaseFold openings using the equality table instead of the
+  multilinear basis table.
+- Prover allocation ordering, cap-height/roundtrip limits, recursion domain
+  bounds, checked buffer arithmetic, and transcript/grinding hardening.
+
+Regression tests and reproducer descriptions are in
+[Security tests](security-tests.md).
+
+### 16.5 Residual risk
+
+The system is unaudited. The query/PoW figures are conjectured. The
+small-table AIR scales with table size. `lookup_pcs` is not zero-knowledge
+and does not constrain columns to the base field. BaseFold, Gemini, VM, and
+recursion are prototypes. Side channels in the host OS, compiler, or CPU are
+out of scope. Do not deploy for high-value statements before an external
+audit.
+
+---
+
+## 17. Evidence and reproducibility
+
+### 17.1 Test matrix
+
+| Suite | Tests | Evidence |
+|---|---:|---|
+| Library | 277 | KATs, Horner/`%` cross-checks, parallel determinism, protocol roundtrips |
+| `security.rs` | 13 | 479 hostile attempts, zero accepted |
+| `redteam.rs` | 10 | 37 targeted + 500 garbage, zero accepted/panics |
+| `hardening.rs` | 11 | Hostile params, exhaustive per-bit AIR decoder fuzz, 14,000 mutations, zero panics |
+| Doc tests | 5 | Public examples |
+| **Total** | **316** | Plus coverage-guided `fuzz/decode` |
+
+### 17.2 Benchmark methodology
+
+`benches/speed_size.rs`, release profile, median of runs after one warm-up,
+16 cores / 31 GB, `rustc 1.99.0`, measured 2026-11-05. Every row verifies its
+proof outside the timed region and asserts byte counters equal
+`to_bytes().len()`. The gate allows 3× timing drift and requires byte-exact
+sizes.
+
+### 17.3 Production numbers
+
+| Workload | Prove | Verify | Proof |
+|---|---:|---:|---:|
+| AIR Fibonacci, 1,024 steps | 37.05 ms | 0.48 ms | 68,573 B |
+| AIR Fibonacci, 8,192 steps | 49.81 ms | 0.59 ms | 101,233 B |
+| AIR Fibonacci, 65,536 steps | 115.49 ms | 0.90 ms | 141,641 B |
+| AIR Fibonacci, 1,048,576 steps | 1,733.55 ms | 1.13 ms | 203,553 B |
+| FRI polynomial, 1,024 coefficients | 21.50 ms | 0.31 ms | 43,174 B |
+
+The 1M-step row is 1.653 µs/step and 604,872 steps/s. Proof size grows
+logarithmically; verification is size-independent in the measured range.
+Full tables: [Benchmarks](benchmarks.md).
+
+### 17.4 Gate
+
+```sh
+python3 tools/check.py
+```
+
+runs fmt, relative Markdown links, rustdoc, pedantic clippy, debug tests,
+release tests, and the benchmark regression. The baseline pins all 24 rows.
+
+---
+
+## 18. Appendices
+
+### 18.1 Error taxonomy
+
+| Error | Meaning |
+|---|---|
+| `EmptyInput` | Empty table/vector where at least one element is required |
+| `IndexOutOfBounds` | Index outside a committed domain |
+| `InvalidDomainSize` | Non-power-of-two, zero, or above the domain ceiling |
+| `InvalidBlowup` | Blowup below the protocol floor or not a power of two |
+| `NoQueries` | Zero FRI queries |
+| `BadMerklePath` | Failed path, cap, shape, or index check |
+| `FriVerificationFailed` | Fold, degree, PoW, or identity failure |
+| `MalformedInput` | Canonical encoding or parameter violation |
+| `RngUnavailable` | OS RNG failure |
+
+### 18.2 Public API map
+
+| Module | Main entry points |
+|---|---|
+| `babybear` | `Field`, `batch_invert` |
+| `ext4` | `Ext4`, `from_base`, `mul_base`, `inv` |
+| `gf2` | `F8`, `F64`, `F128`, `splitmix64` |
+| `hash` | `blake3_256`, `Hasher` |
+| `merkle` | `MerkleTree`, `hash_leaf`, `hash_node`, `capped_shape` |
+| `transcript` | `Transcript`, `challenge_*`, `grind`, `verify_grind` |
+| `ntt` | `forward`, `inverse`, `interpolate`, `evaluate_on_coset`, `evaluate` |
+| `fri` | `Params`, `commit`, `commit_evals`, `open`, `verify` |
+| `mle` | `Mle`, `eq_evals`, `evaluate`, `fix_last` |
+| `sumcheck` | `Term`, `Proof`, `prove`, `verify`, `interpolate_at` |
+| `upcs` | `commit`, `open`, `open_multi`, `verify`, `verify_multi` |
+| `gemini` | `commit`, `commit_evals`, `open`, `verify` |
+| `basefold` | `commit`, `open`, `open_multi`, `verify`, `verify_multi` |
+| `lookup` | `prove`, `verify` |
+| `lookup_pcs` | `prove`, `verify`, `Commitments` |
+| `air` | `Params`, `build_trace`, `prove`, `prove_zk`, `verify` |
+| `range` | `Params`, `build_columns`, `prove`, `prove_zk`, `verify` |
+| `table` | `Params`, `prove`, `prove_zk`, `verify` |
+| `fold` | `Params`, `Accumulator`, `verify` |
+| `vm` | `Params`, `Op`, `prove`, `prove_zk`, `verify` |
+| `recursion` | `Params`, `prove`, `verify` |
+| `blind` | `mask_coeffs`, `masked_column_degree` |
+| `rng` | `ChaCha20`, `os_seed`, `fresh_stream` |
+| `codec` | internal canonical reader/writer (`VERSION = 5`) |
+
+### 18.3 Parameter quick reference
+
+| Constructor | Key validation |
+|---|---|
+| `fri::Params::new(blowup, queries, final)` | blowup `>=2`, queries `>=1`, final `2..=1024` |
+| `air::Params::new(N, blowup, Q, F, a0,b0,b_last)` | `N` power of two `>=2`, blowup `>=4`, `M<=2^27` |
+| `range::Params::new(rows, bits, blowup, Q, F, value)` | bits `1..=24`, blowup `>=2` |
+| `table::Params::new(rows, blowup, Q, F, value)` | table checked at prove/verify, blowup `>=2` |
+| `fold::Params::new(seg, blowup, Q, F, in_a,in_b,out_b)` | seg `>=2`, blowup `>=4` |
+| `vm::Params::new(N, blowup, Q, F, program, a_last,b_last)` | blowup `>=8`, program `<= N-1` |
+| `recursion::Params::new(lde, leaf, folds, challenges, initial, output, blowup, Q, F)` | folds `1..=16`, outer lde `<=2^27` |
+| `basefold::Params::new(blowup, Q, G)` | blowup `>=2`, cap `<=8`, vars `<=16` |
+| `gemini::Params::new(blowup, Q, G)` | blowup `>=8`, vars `<=20` |
+| `upcs` | points `<=16`, blowup `>=2`, lde `<=2^27` |
+
+### 18.4 Glossary
+
+| Term | Meaning |
+|---|---|
+| AIR | Algebraic Intermediate Representation |
+| FRI | Fast Reed–Solomon IOP of Proximity |
+| LDE | Low-degree extension |
+| MLE | Multilinear extension |
+| PCS | Polynomial commitment scheme |
+| PoW | Proof of work / Fiat–Shamir grinding |
+| STARK | Scalable Transparent Argument of Knowledge |
+| UPCs | Univariate polynomial commitment scheme |
+| ZK | Zero knowledge |
+
+### 18.5 Reproducibility checklist
+
+```sh
+cargo fmt --check
+python3 tools/check_links.py
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo test --release
+cargo bench
+python3 tools/check.py
+```
+
+The formal specification, white paper, benchmark table, security results,
+red-team results, and unit-test breakdown are linked from
+[AUDIT.md](../AUDIT.md).
+
+---
+
+**License.** GPL-3.0-only. See [LICENSE](../LICENSE).
+
+**Security reporting.** Follow [SECURITY.md](../SECURITY.md); email
+**futureproofs@proton.me**. Do not open a public issue for suspected
+soundness, zero-knowledge, or memory-safety bugs.

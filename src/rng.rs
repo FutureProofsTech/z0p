@@ -75,7 +75,10 @@ pub fn block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u8; 64] {
 /// Seekable `ChaCha20` stream: `counter` selects the 64-byte block.
 ///
 /// `Debug` redacts the key and buffered keystream (never log streams).
-#[derive(Clone)]
+///
+/// Deliberately not `Clone`: duplicating a stream would replay the same
+/// keystream under the same key/nonce. Callers that need independent
+/// streams must seed a fresh instance.
 pub struct ChaCha20 {
     key: [u8; 32],
     nonce: [u8; 12],

@@ -414,10 +414,11 @@ fn zk_roundtrips_and_tamper() {
     // AIR blinded roundtrip + tamper. Masking enlarges the composition,
     // so the ZK shape needs the smaller final (mirrors `test_params_zk`).
     let (_, trace_b) = air::build_trace(Field::ONE, Field::ONE, 16);
+    // Eight queries reveal up to 16 masked leaf rows each.
     let aparams =
-        air::Params::new(16, 8, 8, 4, Field::ONE, Field::ONE, trace_b[15]).expect("air params");
+        air::Params::new(16, 8, 8, 8, Field::ONE, Field::ONE, trace_b[15]).expect("air params");
     let mut t = Transcript::new(b"redteam/zk-air");
-    let aproof = air::prove_zk(aparams, 8, &mut rng, &mut t).expect("zk prove");
+    let aproof = air::prove_zk(aparams, 128, &mut rng, &mut t).expect("zk prove");
     let mut t = Transcript::new(b"redteam/zk-air");
     rejected += usize::from(air::verify(aparams, &aproof, &mut t).is_ok());
     attempts += 1;

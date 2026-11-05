@@ -9,18 +9,28 @@
 //! our sizes) and cross-column loops (few columns; internal Merkle work is
 //! parallel instead).
 
+/// Cached CPU parallelism.
+///
+/// `available_parallelism` queries the OS (syscall / procfs on Linux) and
+/// is called from every parallel hot path; caching it removes that cost
+/// from NTT stages, Merkle levels, and composition loops.
+fn max_workers() -> usize {
+    use std::sync::OnceLock;
+    static MAX_WORKERS: OnceLock<usize> = OnceLock::new();
+    *MAX_WORKERS.get_or_init(|| match std::thread::available_parallelism() {
+        Ok(count) => count.get(),
+        Err(_) => 1,
+    })
+}
+
 /// Worker count for `units` items with at least `min_per_thread` each.
 ///
 /// Returns 1 (caller runs sequentially) when parallelism would not pay.
 #[must_use]
 pub fn worker_count(units: usize, min_per_thread: usize) -> usize {
-    let max_workers = match std::thread::available_parallelism() {
-        Ok(count) => count.get(),
-        Err(_) => 1,
-    };
     let floor = min_per_thread.max(1);
     let by_work = units / floor;
-    by_work.min(max_workers).max(1).min(units.max(1))
+    by_work.min(max_workers()).max(1).min(units.max(1))
 }
 
 /// Apply `f` to disjoint mutable chunks with their base indices, in

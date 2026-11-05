@@ -52,6 +52,8 @@ use crate::transcript::Transcript;
 
 /// Maximum variable count for this prototype (coefficient vectors up to `2^16`).
 pub const MAX_VARS: usize = 16;
+/// Maximum number of points in one batched opening.
+pub const MAX_BATCH: usize = 1 << 10;
 /// Maximum accepted sumcheck rounds.
 const MAX_ROUNDS: u32 = 32;
 /// Sumcheck round degree is two, hence three evaluations.
@@ -623,7 +625,146 @@ pub fn open(
     let challenges = replay_sumcheck(&mut replay, &sc.round_evals, sc.sum)?;
     let fold_challenges: Vec<Ext4> = challenges.iter().rev().copied().collect();
     let final_value = coeff_mle.evaluate(&challenges)?;
+    let fold = prove_fold(
+        state,
+        n_vars,
+        lde_len,
+        &fold_challenges,
+        final_value,
+        params,
+        transcript,
+    )?;
 
+    Ok(Proof {
+        sumcheck: SumcheckProof {
+            sum: sc.sum,
+            rounds: sc.round_evals,
+        },
+        layer_roots: fold.layer_roots,
+        caps: fold.caps,
+        pow_nonce: fold.pow_nonce,
+        queries: fold.queries,
+    })
+}
+
+/// Prove several evaluations of one committed multilinear polynomial in a
+/// single `BaseFold` argument.
+///
+/// The prover samples batch weights after absorbing the commitment, points,
+/// and claimed values, then shows the weighted sum
+/// `sum_j lambda_j * f(point_j) = sum_j lambda_j * value_j` with one
+/// sumcheck and one fold/query walk. This is the batched opening used by
+/// committed lookup arguments; the single-point [`open`] transcript is
+/// unchanged.
+///
+/// # Errors
+/// Returns [`Error::MalformedInput`] for an empty or mismatched batch,
+/// otherwise the shape and protocol errors of [`open`].
+#[allow(clippy::too_many_lines)]
+pub fn open_multi(
+    state: &ProverState,
+    points: &[Vec<Ext4>],
+    values: &[Ext4],
+    params: Params,
+    transcript: &mut Transcript,
+) -> Result<Proof> {
+    params.validate()?;
+    if points.is_empty() || points.len() != values.len() || points.len() > MAX_BATCH {
+        return Err(Error::MalformedInput {
+            reason: "batch needs one value per point within the batch cap",
+        });
+    }
+    let n_vars = state.commitment.n_vars;
+    for point in points {
+        if point.len() != n_vars {
+            return Err(Error::MalformedInput {
+                reason: "point dimension must match n_vars",
+            });
+        }
+    }
+    if state.commitment.blowup != params.blowup {
+        return Err(Error::InvalidBlowup {
+            factor: params.blowup,
+        });
+    }
+    let lde_len = params.lde_len(n_vars)?;
+    if state.lde.len() != lde_len {
+        return Err(Error::InvalidDomainSize {
+            size: state.lde.len(),
+        });
+    }
+
+    absorb_statement_multi(transcript, &state.commitment, points, values);
+    let coeff_mle = Mle::new(state.coeffs.clone())?;
+    let lambdas = sample_batch_lambdas(transcript, points.len())?;
+    let mut weight_evals = vec![Ext4::ZERO; state.coeffs.len()];
+    let mut batched = Ext4::ZERO;
+    for ((point, value), lambda) in points.iter().zip(values).zip(&lambdas) {
+        // `open` represents the multilinear polynomial in monomial
+        // (Möbius) coefficient order, so the summand weight is the
+        // multilinear basis table `prod_{i in x} point_i`, not the
+        // equality-polynomial table `eq(point, x)`.
+        let weights = weight_table(point);
+        for (slot, weight) in weight_evals.iter_mut().zip(weights) {
+            *slot += *lambda * weight;
+        }
+        batched += *lambda * *value;
+    }
+    let weight_mle = Mle::new(weight_evals)?;
+    let term = Term::new(Ext4::ONE, vec![0, 1]);
+    let mut replay = transcript.clone();
+    let sc = sumcheck::prove(&[coeff_mle.clone(), weight_mle], &[term], transcript)?;
+    if sc.sum != batched {
+        return Err(Error::MalformedInput {
+            reason: "batched evaluation does not match the multilinear polynomial",
+        });
+    }
+    if sc.round_evals.len() != n_vars {
+        return Err(Error::MalformedInput {
+            reason: "sumcheck round count does not match n_vars",
+        });
+    }
+    let challenges = replay_sumcheck(&mut replay, &sc.round_evals, sc.sum)?;
+    let fold_challenges: Vec<Ext4> = challenges.iter().rev().copied().collect();
+    let final_value = coeff_mle.evaluate(&challenges)?;
+    let fold = prove_fold(
+        state,
+        n_vars,
+        lde_len,
+        &fold_challenges,
+        final_value,
+        params,
+        transcript,
+    )?;
+
+    Ok(Proof {
+        sumcheck: SumcheckProof {
+            sum: sc.sum,
+            rounds: sc.round_evals,
+        },
+        layer_roots: fold.layer_roots,
+        caps: fold.caps,
+        pow_nonce: fold.pow_nonce,
+        queries: fold.queries,
+    })
+}
+
+struct FoldProof {
+    layer_roots: Vec<[u8; 32]>,
+    caps: Vec<Vec<[u8; 32]>>,
+    pow_nonce: u64,
+    queries: Vec<QueryProof>,
+}
+
+fn prove_fold(
+    state: &ProverState,
+    n_vars: usize,
+    lde_len: usize,
+    fold_challenges: &[Ext4],
+    final_value: Ext4,
+    params: Params,
+    transcript: &mut Transcript,
+) -> Result<FoldProof> {
     let half = Ext4::from_base(Field::new(2).inv());
     let mut layers: Vec<Vec<Ext4>> = Vec::with_capacity(n_vars + 1);
     layers.push(state.lde.clone());
@@ -671,11 +812,7 @@ pub fn open(
         queries.push(open_query(&layers, &trees, n_vars, q, params.cap_height)?);
     }
 
-    Ok(Proof {
-        sumcheck: SumcheckProof {
-            sum: sc.sum,
-            rounds: sc.round_evals,
-        },
+    Ok(FoldProof {
         layer_roots,
         caps,
         pow_nonce,
@@ -746,6 +883,120 @@ pub fn verify(
     let final_value = expected * weight.inv();
     let fold_challenges: Vec<Ext4> = challenges.iter().rev().copied().collect();
 
+    verify_fold(
+        commitment,
+        proof,
+        n_vars,
+        lde_len,
+        &fold_challenges,
+        final_value,
+        params,
+        transcript,
+    )
+}
+
+/// Verify a batched multi-point opening produced by [`open_multi`].
+///
+/// # Errors
+/// Returns [`Error::MalformedInput`] for a malformed batch and
+/// [`Error::FriVerificationFailed`] for any failed sumcheck, fold, query, or
+/// Merkle check.
+#[allow(clippy::too_many_lines)]
+pub fn verify_multi(
+    commitment: &Commitment,
+    points: &[Vec<Ext4>],
+    values: &[Ext4],
+    proof: &Proof,
+    params: Params,
+    transcript: &mut Transcript,
+) -> Result<()> {
+    params.validate()?;
+    if points.is_empty() || points.len() != values.len() || points.len() > MAX_BATCH {
+        return Err(Error::MalformedInput {
+            reason: "batch needs one value per point within the batch cap",
+        });
+    }
+    let n_vars = commitment.n_vars;
+    for point in points {
+        if point.len() != n_vars {
+            return Err(Error::MalformedInput {
+                reason: "point dimension must match n_vars",
+            });
+        }
+    }
+    if commitment.blowup != params.blowup {
+        return Err(Error::InvalidBlowup {
+            factor: params.blowup,
+        });
+    }
+    let lde_len = params.lde_len(n_vars)?;
+    proof.check_shape()?;
+    let expected_caps = if params.cap_height > 0 { n_vars } else { 0 };
+    if proof.sumcheck.rounds.len() != n_vars
+        || proof.layer_roots.len() != n_vars.saturating_sub(1)
+        || proof.caps.len() != expected_caps
+        || proof.queries.len() != params.num_queries
+    {
+        return Err(Error::MalformedInput {
+            reason: "proof shape does not match n_vars/params",
+        });
+    }
+
+    absorb_statement_multi(transcript, commitment, points, values);
+    let lambdas = sample_batch_lambdas(transcript, points.len())?;
+    let batched = points
+        .iter()
+        .zip(values)
+        .zip(&lambdas)
+        .fold(Ext4::ZERO, |acc, ((_, value), lambda)| {
+            acc + *lambda * *value
+        });
+    if proof.sumcheck.sum != batched {
+        return Err(Error::FriVerificationFailed);
+    }
+
+    let mut expected = batched;
+    let mut challenges = Vec::with_capacity(n_vars);
+    absorb_sumcheck(transcript, b"sumcheck/claim", &[expected]);
+    for round in &proof.sumcheck.rounds {
+        if round.len() != 3 || round[0] + round[1] != expected {
+            return Err(Error::FriVerificationFailed);
+        }
+        absorb_sumcheck(transcript, b"sumcheck/round", round);
+        let challenge = transcript.challenge_ext(b"sumcheck/challenge");
+        challenges.push(challenge);
+        expected = sumcheck::interpolate_at(round, challenge);
+    }
+    let weight = weight_at_multi(points, &lambdas, &challenges)?;
+    if weight == Ext4::ZERO {
+        return Err(Error::FriVerificationFailed);
+    }
+    let final_value = expected * weight.inv();
+    let fold_challenges: Vec<Ext4> = challenges.iter().rev().copied().collect();
+
+    verify_fold(
+        commitment,
+        proof,
+        n_vars,
+        lde_len,
+        &fold_challenges,
+        final_value,
+        params,
+        transcript,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_fold(
+    commitment: &Commitment,
+    proof: &Proof,
+    n_vars: usize,
+    lde_len: usize,
+    fold_challenges: &[Ext4],
+    final_value: Ext4,
+    params: Params,
+    transcript: &mut Transcript,
+) -> Result<()> {
     let mut roots = Vec::with_capacity(n_vars);
     roots.push(commitment.root);
     roots.extend_from_slice(&proof.layer_roots);
@@ -811,7 +1062,7 @@ pub fn verify(
                 let entry = proof.caps[i]
                     .get(branch >> fold.path.len())
                     .ok_or(Error::BadMerklePath)?;
-                verify_capped_digest(entry, &parent, &fold.path)
+                verify_capped_digest(entry, &parent, branch, &fold.path)
             };
             if !authenticated {
                 return Err(Error::BadMerklePath);
@@ -844,6 +1095,32 @@ pub fn verify(
     Ok(())
 }
 
+fn sample_batch_lambdas(transcript: &mut Transcript, count: usize) -> Result<Vec<Ext4>> {
+    let mut lambdas = Vec::with_capacity(count);
+    for _ in 0..count {
+        let lambda = transcript.challenge_ext(b"basefold/batch");
+        if lambda == Ext4::ZERO {
+            return Err(Error::FriVerificationFailed);
+        }
+        transcript.absorb_ext(b"basefold/batch", lambda);
+        lambdas.push(lambda);
+    }
+    Ok(lambdas)
+}
+
+fn weight_at_multi(points: &[Vec<Ext4>], lambdas: &[Ext4], challenges: &[Ext4]) -> Result<Ext4> {
+    if points.iter().any(|point| point.len() != challenges.len()) {
+        return Err(Error::MalformedInput {
+            reason: "batch point dimension must match n_vars",
+        });
+    }
+    let mut weight = Ext4::ZERO;
+    for (point, lambda) in points.iter().zip(lambdas) {
+        weight += *lambda * weight_at(point, challenges);
+    }
+    Ok(weight)
+}
+
 fn absorb_statement(
     transcript: &mut Transcript,
     commitment: &Commitment,
@@ -858,6 +1135,27 @@ fn absorb_statement(
     }
     writer.ext4(value);
     transcript.absorb(b"basefold/statement", &writer.finish());
+}
+
+fn absorb_statement_multi(
+    transcript: &mut Transcript,
+    commitment: &Commitment,
+    points: &[Vec<Ext4>],
+    values: &[Ext4],
+) {
+    let mut writer = Writer::new();
+    writer.bytes(&commitment.to_bytes());
+    writer.count(points.len());
+    for point in points {
+        writer.count(point.len());
+        for coordinate in point {
+            writer.ext4(*coordinate);
+        }
+    }
+    for value in values {
+        writer.ext4(*value);
+    }
+    transcript.absorb(b"basefold/batch-statement", &writer.finish());
 }
 
 fn absorb_sumcheck(transcript: &mut Transcript, label: &[u8], values: &[Ext4]) {
@@ -1011,9 +1309,20 @@ fn cap_root(cap: &[[u8; 32]]) -> Option<[u8; 32]> {
     level.first().copied()
 }
 
-fn verify_capped_digest(entry: &[u8; 32], digest: &[u8; 32], path: &[([u8; 32], bool)]) -> bool {
+fn verify_capped_digest(
+    entry: &[u8; 32],
+    digest: &[u8; 32],
+    index: usize,
+    path: &[([u8; 32], bool)],
+) -> bool {
+    if path.len() >= usize::BITS as usize {
+        return false;
+    }
     let mut current = *digest;
-    for (sibling, is_left) in path {
+    for (level, (sibling, is_left)) in path.iter().enumerate() {
+        if *is_left != ((index >> level) & 1 == 0) {
+            return false;
+        }
         current = if *is_left {
             hash_node(&current, sibling)
         } else {
@@ -1154,6 +1463,102 @@ mod tests {
             assert_eq!(proof.layer_roots.len(), n_vars.saturating_sub(1));
             assert_eq!(proof.queries.len(), params().num_queries);
         }
+    }
+
+    #[test]
+    fn multi_point_opening_verifies() {
+        for n_vars in [2, 5] {
+            let coeffs = coefficients(n_vars);
+            let first = point(n_vars);
+            let second: Vec<Ext4> = point(n_vars)
+                .into_iter()
+                .map(|coordinate| coordinate + Ext4::ONE)
+                .collect();
+            let values = [direct_eval(&coeffs, &first), direct_eval(&coeffs, &second)];
+            let state = commit(&coeffs, params().blowup).unwrap();
+            let mut prover = Transcript::new(b"basefold-multi");
+            let proof = open_multi(
+                &state,
+                &[first.clone(), second.clone()],
+                &values,
+                params(),
+                &mut prover,
+            )
+            .unwrap();
+            let mut verifier = Transcript::new(b"basefold-multi");
+            verify_multi(
+                state.commitment(),
+                &[first, second],
+                &values,
+                &proof,
+                params(),
+                &mut verifier,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn multi_point_batch_of_three_with_caps_verifies() {
+        let n_vars = 3;
+        let coeffs = coefficients(n_vars);
+        let base = point(n_vars);
+        let points: Vec<Vec<Ext4>> = (0..3)
+            .map(|offset| {
+                base.iter()
+                    .map(|coordinate| *coordinate + Ext4::from_base(Field::new(offset + 1)))
+                    .collect()
+            })
+            .collect();
+        let values: Vec<Ext4> = points
+            .iter()
+            .map(|point| direct_eval(&coeffs, point))
+            .collect();
+        let state = commit(&coeffs, params().blowup).unwrap();
+        let params = params().with_cap_height(1);
+        let mut prover = Transcript::new(b"basefold-multi-three");
+        let proof = open_multi(&state, &points, &values, params, &mut prover).unwrap();
+        let mut verifier = Transcript::new(b"basefold-multi-three");
+        verify_multi(
+            state.commitment(),
+            &points,
+            &values,
+            &proof,
+            params,
+            &mut verifier,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn multi_point_wrong_value_rejected() {
+        let coeffs = coefficients(4);
+        let first = point(4);
+        let second: Vec<Ext4> = point(4)
+            .into_iter()
+            .map(|coordinate| coordinate + Ext4::ONE)
+            .collect();
+        let values = [direct_eval(&coeffs, &first), direct_eval(&coeffs, &second)];
+        let state = commit(&coeffs, params().blowup).unwrap();
+        let mut prover = Transcript::new(b"basefold-multi-bad");
+        let proof = open_multi(
+            &state,
+            &[first.clone(), second.clone()],
+            &values,
+            params(),
+            &mut prover,
+        )
+        .unwrap();
+        let mut verifier = Transcript::new(b"basefold-multi-bad");
+        assert!(verify_multi(
+            state.commitment(),
+            &[first, second],
+            &[values[0], values[1] + Ext4::ONE],
+            &proof,
+            params(),
+            &mut verifier,
+        )
+        .is_err());
     }
 
     #[test]

@@ -9,7 +9,7 @@ transcript abuse, exact rate boundaries, masked (ZK) soundness, and a
 cargo test --test redteam -- --nocapture
 ```
 
-Measured: 2026-09-26 — **10 passed, 0 failed; 41 targeted attempts plus
+Measured: 2026-11-05 — **10 passed, 0 failed; 37 targeted attempts plus
 500 garbage trials, 0 acceptances, 0 panics, 0 unexpected decodes.**
 
 ## Results

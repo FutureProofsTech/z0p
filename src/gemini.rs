@@ -127,6 +127,11 @@ impl Params {
                 reason: "grinding_bits above 32",
             });
         }
+        if self.cap_height > 8 {
+            return Err(Error::MalformedInput {
+                reason: "cap_height above 8",
+            });
+        }
         Ok(())
     }
 

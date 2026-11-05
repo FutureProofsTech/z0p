@@ -40,7 +40,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\small z0p technical report}
-\fancyhead[R]{\small v0.2.1 --- 2026-11-05}
+\fancyhead[R]{\small v0.3.0 --- 2026-11-06}
 \fancyfoot[C]{\thepage}
 
 \title{\textbf{z0p: A Zero-Dependency Transparent STARK Stack\\in Safe Rust}\\[4pt]
@@ -120,7 +120,7 @@ caught a genuine proof-malleability hole (since closed by binding dimensions
 into the transcript).
 \end{itemize}
 
-\textbf{Status.} Version 0.2.1 is unaudited research software. The
+\textbf{Status.} Version 0.3.0 is unaudited research software. The
 approximately 100-bit figure is a query/proof-of-work schedule under a FRI
 heuristic, not an end-to-end soundness theorem. The paper states exactly what
 is enforced by code, what is conjectured, and what remains out of scope.
@@ -593,7 +593,7 @@ remain visible. \texttt{lookup}, \texttt{sumcheck}, \texttt{upcs},
 
 \section{Wire format and parameters}
 
-All proofs use a canonical versioned encoding, \texttt{VERSION=5}:
+All proofs use a canonical versioned encoding, \texttt{VERSION=6}:
 little-endian integers, $u32$ counts, canonical base and extension fields,
 32-byte digests, and $0/1$ direction bytes. The decoder rejects trailing
 bytes, truncation, non-canonical fields, and oversized counts before

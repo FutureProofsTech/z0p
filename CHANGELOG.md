@@ -6,6 +6,8 @@ All notable changes to `z0p` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-06
+
 ### Security
 - Merkle path verification now binds every direction bit to the claimed
   leaf index (plain, digest, capped, and 64-byte-leaf variants), and the
@@ -87,6 +89,13 @@ All notable changes to `z0p` are documented here. The format follows
   decoder, including a canonical `to_bytes`/`from_bytes` round-trip check.
 
 ### Changed
+- **Wire format v6 and compatibility.** `codec::VERSION` is now `6`.
+  v0.2.1 proofs are rejected at decode because the verifier semantics and
+  proof layouts changed in this release; regenerate proofs with v0.3.0.
+- **API tightening.** `gf2::F128::embed_f64` was removed (it was not a
+  field homomorphism), `ChaCha20` is no longer `Clone`, several `Params`
+  require `final_size >= 2` / `cap_height <= 8`, and AIR/VM ZK mask budgets
+  are larger. See the Security section for the corresponding fixes.
 - Profile-guided proving optimizations: specialized single-block BLAKE3
   leaf/node paths, explicit BLAKE3 round unrolling, base-scalar FRI
   folding, owned bit-reversal buffers, in-place Montgomery inversion, and
@@ -443,7 +452,8 @@ All notable changes to `z0p` are documented here. The format follows
   and security documentation.
 - Platinum gates: `tools/check.py` with a pinned `tools/baseline.json`.
 
-[Unreleased]: https://github.com/FutureProofsTech/z0p/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/FutureProofsTech/z0p/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/FutureProofsTech/z0p/releases/tag/v0.3.0
 [0.2.1]: https://github.com/FutureProofsTech/z0p/releases/tag/v0.2.1
 [0.2.0]: https://github.com/FutureProofsTech/z0p/releases/tag/v0.2.0
 [0.1.0]: https://github.com/FutureProofsTech/z0p/releases/tag/v0.1.0

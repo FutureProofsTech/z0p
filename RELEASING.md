@@ -40,6 +40,8 @@ the gates and that its recorded proof sizes and version metadata agree.
    ```sh
    gh release create "v$VERSION" --verify-tag --latest \
      --title "z0p v$VERSION" --notes-file /tmp/z0p-release.md \
+     papers/z0p-whitepaper.pdf \
+     papers/z0p-yellowpaper.pdf \
      papers/z0p-eprint.pdf
    gh release view "v$VERSION" --json assets,url
    ```
@@ -55,6 +57,6 @@ Include:
 - security fixes with credit, if disclosure is complete;
 - test/gate counts and any known limitations.
 
-The `z0p-eprint.pdf` asset must be regenerated before tagging if the paper,
-protocol, or benchmark claims changed. The PDF is committed; do not attach a
-stale build.
+The white, yellow, and combined PDFs must be regenerated before tagging if
+the paper, protocol, or benchmark claims changed. They are committed; do not
+attach stale builds.

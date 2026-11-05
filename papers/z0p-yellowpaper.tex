@@ -41,7 +41,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\small z0p yellow paper}
-\fancyhead[R]{\small v0.2.1 --- 2026-11-05}
+\fancyhead[R]{\small v0.3.0 --- 2026-11-06}
 \fancyfoot[C]{\thepage}
 
 \title{\textbf{z0p --- Yellow Paper}\\[4pt]
@@ -57,7 +57,7 @@
 \begin{abstract}
 This document specifies the mathematics, protocols, encodings, parameter
 validation, and security invariants implemented by \textbf{z0p} version
-0.2.1. z0p is a from-scratch, zero-dependency zero-knowledge proving stack in
+0.3.0. z0p is a from-scratch, zero-dependency zero-knowledge proving stack in
 safe Rust: binary fields, the BabyBear prime field, a quartic extension field,
 BLAKE3-256, Merkle trees, a parallel NTT, FRI, sumcheck, univariate and
 multilinear polynomial commitments, LogUp lookups, STARK-style AIR systems,
@@ -680,7 +680,7 @@ remain visible. \texttt{lookup}, \texttt{sumcheck}, \texttt{upcs},
 
 \section{Wire format}
 
-All proofs use a canonical versioned encoding, \texttt{VERSION=5}:
+All proofs use a canonical versioned encoding, \texttt{VERSION=6}:
 little-endian integers, \texttt{u32} counts, canonical base and extension
 fields, 32-byte digests, and $0/1$ direction bytes. The decoder rejects
 trailing bytes, truncation, non-canonical fields, and oversized counts before

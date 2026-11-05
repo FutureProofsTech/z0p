@@ -3,14 +3,14 @@
 *Transparent, post-quantum-oriented zero-knowledge proofs from first
 principles: a zero-dependency STARK stack in safe Rust.*
 
-**Version 1.1 — 2026-11-05.** Companion documents:
+**Version 1.2 — 2026-11-06.** Companion documents:
 [Yellow Paper](yellowpaper.md) (formal specification),
 [Benchmarks](benchmarks.md) (measured results and methodology),
 [Security tests](security-tests.md), [Red-team results](red-team.md), and
 the [white-paper PDF](../papers/z0p-whitepaper.pdf) and the
 [combined technical report PDF](../papers/z0p-eprint.pdf).
 
-> **Status.** v0.2.1, unaudited research software. The ~100-bit figure is a
+> **Status.** v0.3.0, unaudited research software. The ~100-bit figure is a
 > conjectured query/proof-of-work schedule, not an end-to-end soundness
 > theorem. See [SECURITY.md](../SECURITY.md) and [AUDIT.md](../AUDIT.md).
 
@@ -708,7 +708,7 @@ reference; tests pin this.
 
 ### 10.4 Wire format
 
-All proofs use a canonical versioned encoding (`VERSION = 5`): little-endian
+All proofs use a canonical versioned encoding (`VERSION = 6`): little-endian
 integers, `u32` counts, canonical base/extension fields, 32-byte digests,
 `0/1` direction bytes, no trailing bytes. Decoder limits are listed in the
 [README](../README.md#wire-format-and-compatibility) and the

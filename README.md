@@ -7,7 +7,7 @@
 [![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](Cargo.toml)
 [![unsafe: forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](src/lib.rs)
 
-> **Status: v0.2.1, unaudited research software.**
+> **Status: v0.3.0, unaudited research software.**
 > The advertised ~100-bit figure is a conjectured query/proof-of-work
 > schedule, not an end-to-end soundness theorem. See [SECURITY.md](SECURITY.md)
 > and [AUDIT.md](AUDIT.md) before relying on any claim.
@@ -48,7 +48,7 @@ Hash-based, transparent, and in the plausibly post-quantum STARK family.
 
 | Property | Value |
 |---|---|
-| Crate | `z0p` v0.2.1 |
+| Crate | `z0p` v0.3.0 |
 | Language | Rust 2021, MSRV **1.74** |
 | Runtime dependencies | **0** (`cargo tree` is one node) |
 | `unsafe` | **forbidden** (`#![forbid(unsafe_code)]`) |
@@ -60,7 +60,7 @@ Hash-based, transparent, and in the plausibly post-quantum STARK family.
 | Proof systems | Fibonacci AIR, range, table, IVC, VM, LogUp, recursion fragment |
 | PCS | FRI, UPCs, Gemini v1, BaseFold-style prototype |
 | Zero knowledge | vanishing-multiple masking (`prove_zk`) |
-| Wire format | canonical, versioned, `VERSION = 5` |
+| Wire format | canonical, versioned, `VERSION = 6` |
 | License | GPL-3.0-only |
 
 ### Latest measured result
@@ -568,7 +568,7 @@ The target covers every public decoder and requires a canonical
 
 ## Wire format and compatibility
 
-All proof types use a canonical versioned encoding, `VERSION = 5`:
+All proof types use a canonical versioned encoding, `VERSION = 6`:
 
 - little-endian integers; `u32` counts; `u64` dimensions and indices;
 - base-field elements are 4 canonical bytes (`< p`, otherwise rejected);
@@ -742,7 +742,7 @@ If you use z0p in academic work, cite the software metadata in
   author = {Future Proofs Tech},
   year   = {2026},
   url    = {https://github.com/FutureProofsTech/z0p},
-  note   = {Version 0.2.1, unaudited research software}
+  note   = {Version 0.3.0, unaudited research software}
 }
 ```
 

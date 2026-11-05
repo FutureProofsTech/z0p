@@ -5,8 +5,8 @@ abstract: "A from-scratch, zero-dependency zero-knowledge proving stack: binary 
 type: software
 authors:
   - name: "Future Proofs Tech"
-version: 0.2.1
-date-released: 2026-10-20
+version: 0.3.0
+date-released: 2026-11-06
 license: GPL-3.0-only
 repository-code: "https://github.com/FutureProofsTech/z0p"
 url: "https://github.com/FutureProofsTech/z0p"

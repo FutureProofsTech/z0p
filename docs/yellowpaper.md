@@ -2,14 +2,14 @@
 
 ## Formal specification of the z0p proving stack
 
-**Version 1.1 — 2026-11-05.** Normative where marked. Code references are to
-the `src/` modules of the crate at version `0.2.1`. The companion
+**Version 1.2 — 2026-11-06.** Normative where marked. Code references are to
+the `src/` modules of the crate at version `0.3.0`. The companion
 [White Paper](whitepaper.md) gives the design rationale and evaluation; the
 [formal PDF](../papers/z0p-yellowpaper.pdf) is compiled from this source. This
 document gives the exact mathematics, algorithms, encodings, validation
 rules, and security invariants implemented by the code.
 
-> **Status.** v0.2.1, unaudited research software. The production figure is a
+> **Status.** v0.3.0, unaudited research software. The production figure is a
 > **conjectured query/proof-of-work schedule**, not an end-to-end soundness
 > theorem. Normative parameter checks are enforced by the code; conjectured
 > bit-levels are explicitly marked.
@@ -1198,7 +1198,7 @@ against its commitments.
 ### 14.1 Version
 
 ```text
-VERSION = 5
+VERSION = 6
 ```
 
 All proof types encode as `VERSION || body`.
@@ -1463,7 +1463,7 @@ release tests, and the benchmark regression. The baseline pins all 24 rows.
 | `recursion` | `Params`, `prove`, `verify` |
 | `blind` | `mask_coeffs`, `masked_column_degree` |
 | `rng` | `ChaCha20`, `os_seed`, `fresh_stream` |
-| `codec` | internal canonical reader/writer (`VERSION = 5`) |
+| `codec` | internal canonical reader/writer (`VERSION = 6`) |
 
 ### 18.3 Parameter quick reference
 

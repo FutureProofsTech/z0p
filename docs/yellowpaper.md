@@ -4,7 +4,8 @@
 
 **Version 1.1 — 2026-11-05.** Normative where marked. Code references are to
 the `src/` modules of the crate at version `0.2.1`. The companion
-[White Paper](whitepaper.md) gives the design rationale and evaluation; this
+[White Paper](whitepaper.md) gives the design rationale and evaluation; the
+[formal PDF](../papers/z0p-yellowpaper.pdf) is compiled from this source. This
 document gives the exact mathematics, algorithms, encodings, validation
 rules, and security invariants implemented by the code.
 

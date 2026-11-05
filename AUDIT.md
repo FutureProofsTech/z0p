@@ -17,8 +17,10 @@ The review surface is the Rust crate in `src/` and its public API:
 | Masking / randomness | `blind`, `rng` | query-response hiding, seed handling |
 | Wire format | `codec` | canonical, fail-closed decoding (`VERSION = 5`) |
 
-The formal specification is [docs/yellowpaper.md](docs/yellowpaper.md). The
-design and performance overview is [docs/whitepaper.md](docs/whitepaper.md).
+The formal specification is [docs/yellowpaper.md](docs/yellowpaper.md) and
+[papers/z0p-yellowpaper.pdf](papers/z0p-yellowpaper.pdf). The design and
+performance overview is [docs/whitepaper.md](docs/whitepaper.md) and
+[papers/z0p-whitepaper.pdf](papers/z0p-whitepaper.pdf).
 The adversary capabilities and out-of-scope threats are in
 [SECURITY.md](SECURITY.md#threat-model).
 

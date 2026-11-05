@@ -7,7 +7,8 @@ principles: a zero-dependency STARK stack in safe Rust.*
 [Yellow Paper](yellowpaper.md) (formal specification),
 [Benchmarks](benchmarks.md) (measured results and methodology),
 [Security tests](security-tests.md), [Red-team results](red-team.md), and
-the [long-form PDF](../papers/z0p-eprint.pdf).
+the [white-paper PDF](../papers/z0p-whitepaper.pdf) and the
+[combined technical report PDF](../papers/z0p-eprint.pdf).
 
 > **Status.** v0.2.1, unaudited research software. The ~100-bit figure is a
 > conjectured query/proof-of-work schedule, not an end-to-end soundness

@@ -1,0 +1,970 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{fancyhdr}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue,
+  pdftitle={z0p Yellow Paper: Formal Specification of the z0p Proving Stack},
+  pdfauthor={nul0 (Future Proofs Tech)},
+  pdfsubject={Formal specification: STARKs, FRI, BLAKE3, zero knowledge}
+}
+
+\newtheorem{definition}{Definition}
+\newtheorem{lemma}{Lemma}
+\newtheorem{theorem}{Theorem}
+\newtheorem{conjecture}{Conjecture}
+\newtheorem{remark}{Remark}
+
+\newcommand{\yFp}{\mathbb{F}_p}
+\newcommand{\yFpTwo}{\mathbb{F}_{p^2}}
+\newcommand{\yFpFour}{\mathbb{F}_{p^4}}
+\newcommand{\yFold}{\mathrm{fold}}
+\newcommand{\yEq}{\mathrm{eq}}
+\newcommand{\yLde}{\mathrm{lde}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small z0p yellow paper}
+\fancyhead[R]{\small v0.2.1 --- 2026-11-05}
+\fancyfoot[C]{\thepage}
+
+\title{\textbf{z0p --- Yellow Paper}\\[4pt]
+\large Formal Specification of the z0p Proving Stack}
+\author{nul0 \\ \textit{Future Proofs Tech} \\ \texttt{futureproofs@proton.me}}
+\date{November 2026}
+
+\setlength{\emergencystretch}{2em}
+\begin{document}
+\sloppy
+\maketitle
+
+\begin{abstract}
+This document specifies the mathematics, protocols, encodings, parameter
+validation, and security invariants implemented by \textbf{z0p} version
+0.2.1. z0p is a from-scratch, zero-dependency zero-knowledge proving stack in
+safe Rust: binary fields, the BabyBear prime field, a quartic extension field,
+BLAKE3-256, Merkle trees, a parallel NTT, FRI, sumcheck, univariate and
+multilinear polynomial commitments, LogUp lookups, STARK-style AIR systems,
+hash-folded IVC, a register-machine AIR, and zero-knowledge masking.
+Normative requirements are stated explicitly. Conjectured bit-levels are
+marked as such. The production recipe targets a conjectured 100-bit
+query/proof-of-work schedule (rate $1/16$, 40 queries, 20-bit grinding); it is
+not an end-to-end soundness theorem. The artifact is unaudited research
+software.
+\end{abstract}
+
+\tableofcontents
+
+\section{Conventions and notation}
+
+\paragraph{Normative language.} \textbf{MUST}, \textbf{MUST NOT},
+\textbf{SHOULD}, and \textbf{MAY} are normative. A proof object is the Rust
+value; its encoding is the canonical byte string produced by
+\texttt{to\_bytes}. A verifier MUST reject on any failed check with
+\texttt{Err} and MUST NOT panic on untrusted input. Public \texttt{Params}
+structs have public fields; every entry point MUST re-validate them. Integer
+encodings are little-endian. \texttt{usize} is the platform word.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}L{0.22\linewidth}L{0.68\linewidth}@{}}
+\toprule
+Symbol & Meaning \\
+\midrule
+$p$ & BabyBear modulus $2^{31}-2^{27}+1=2013265921$ \\
+$\yFp$ & $\mathbb{Z}/p\mathbb{Z}$ \\
+$\yFpTwo$ & $\yFp[u]/(u^2-11)$ \\
+$\yFpFour$ & $\yFpTwo[v]/(v^2-u)$ \\
+$H$ & base trace domain of size $N$ \\
+$D$ & coset LDE domain of size $M=N\beta$ \\
+$\beta$ & blowup factor, power of two \\
+$\omega,\Omega$ & primitive $N$-th and $M$-th roots of unity \\
+$\gamma$ & coset shift \texttt{LDE\_SHIFT}=31 \\
+$Z_H(x)$ & $x^N-1$ \\
+$w_{\mathrm{last}}$ & $\omega^{N-1}$ \\
+$Q$ & FRI query count \\
+$f$ & FRI fold count \\
+$F$ & final layer size \\
+$H(x)$ & BLAKE3-256 digest \\
+\bottomrule
+\end{tabular}
+\caption{Notation used throughout the specification.}
+\end{table}
+
+\section{Fields}
+
+\subsection{BabyBear}
+
+\[
+p=2^{31}-2^{27}+1=2013265921,\qquad p-1=2^{27}\cdot15,\qquad g=31.
+\]
+Elements are canonical integers in $[0,p)$. The private representation is a
+\texttt{u32} with invariant \texttt{value < p}. The public constructor reduces
+modulo $p$; the decoder rejects non-canonical bytes.
+
+\paragraph{Addition and subtraction.} For $a,b<p$:
+\[
+a+b=\begin{cases}a+b,&a+b<p,\\a+b-p,&\text{otherwise,}\end{cases}
+\qquad
+a-b=\begin{cases}a-b,&a\ge b,\\a-b+p,&\text{otherwise.}\end{cases}
+\]
+Both fit in \texttt{u32} because $2p<2^{32}$. Negation maps $0\mapsto0$ and
+$a\mapsto p-a$.
+
+\paragraph{Multiplication.} Let
+\[
+\mathrm{MU}=\lfloor2^{64}/p\rfloor=9162596893,\quad
+x=ab<p^2<2^{62},\quad
+q=((x\gg32)\cdot\mathrm{MU})\gg32.
+\]
+Then $q\le\lfloor x/p\rfloor$ and $r=x-qp<2p$; a short loop subtracts $p$
+until $r<p$. This Barrett reduction is cross-checked against wide \texttt{\%}
+on 100,000 random pairs and edge values.
+
+\paragraph{Inversion and halving.} Inversion is Fermat
+$a^{-1}=a^{p-2}$, with $0^{-1}=0$ by convention. \texttt{halve(a)} computes
+$(a+(a\bmod2)p)/2$, exact because $p$ is odd. Batch inversion uses
+Montgomery's trick: one field inversion and $3n$ multiplications; zeros map to
+zero and do not contribute to the running product.
+
+\paragraph{Roots of unity.} For $k\le27$,
+$\texttt{two\_adic\_generator}(k)=g^{(p-1)/2^k}$ generates the unique
+subgroup of order $2^k$. \texttt{primitive\_root}(m) requires a power of two
+$m\le2^{27}$.
+
+\subsection{Quartic extension}
+
+Define
+\[
+\yFpTwo=\yFp[u]/(u^2-11),\qquad
+\yFpFour=\yFpTwo[v]/(v^2-u).
+\]
+An element is $a+bu+cv+duv$, stored as four canonical $\yFp$ coordinates.
+
+\paragraph{Multiplication.} Write $x=A+Cv$, $y=B+Dv$ with
+$A,B,C,D\in\yFpTwo$. Then
+\[
+xy=(AB+uCD)+(AD+CB)v,
+\]
+using Karatsuba for the cross term
+$\mathrm{cross}=(A+C)(B+D)-AB-CD$. $\yFpTwo$ multiplication is
+\[
+(a_0+a_1u)(b_0+b_1u)
+=(a_0b_0+11a_1b_1)+(a_0b_1+a_1b_0)u.
+\]
+
+\paragraph{Inversion.} For $x=c+dv$ with $c,d\in\yFpTwo$,
+\[
+x^{-1}=(c-dv)/(c^2-ud^2).
+\]
+The denominator inverse uses the $\yFpTwo$ norm
+\[
+(c_0+c_1u)^{-1}=(c_0-c_1u)/(c_0^2-11c_1^2).
+\]
+One $\yFpTwo$ inversion therefore suffices. \texttt{inv(0)=0}; no zero branch
+is used in the field core.
+
+\paragraph{Canonical encoding.} Each coordinate is four canonical
+little-endian bytes; an element is 16 bytes. The decoder checks every
+coordinate against $p$.
+
+\subsection{Binary fields}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Field & Polynomial \\
+\midrule
+$GF(2^8)$ & $x^8+x^4+x^3+x+1$ (\texttt{0x11B}) \\
+$GF(2^{64})$ & $x^{64}+x^4+x^3+x+1$ \\
+$GF(2^{128})$ & $x^{128}+x^7+x^2+x+1$ \\
+\bottomrule
+\end{tabular}
+\caption{Binary fields used for program words.}
+\end{table}
+
+Addition is XOR. Multiplication is carryless multiplication followed by
+reduction modulo the field polynomial. Arithmetic loops run fixed iteration
+counts; inverses use fixed Fermat exponentiation and map zero to zero. Every
+bit pattern is a valid element. \texttt{F128::embed\_f64} is not provided:
+a bit-level embedding of \texttt{F64} into \texttt{F128} is not a field
+homomorphism because the \texttt{F64} modulus does not divide the
+\texttt{F128} modulus.
+
+\section{Domains, NTT, and Reed--Solomon encoding}
+
+\paragraph{Domains.} The base domain is
+\[
+H=\{1,\omega,\dots,\omega^{N-1}\},\qquad \omega=\texttt{primitive\_root}(N).
+\]
+The evaluation domain is the coset
+\[
+D=\gamma\cdot\langle\Omega\rangle,\qquad |D|=M=N\beta,
+\]
+with $\Omega=\texttt{primitive\_root}(M)$ and $\gamma=31$. The ceiling is
+$M\le2^{27}$. The vanishing polynomial of $H$ is $Z_H(x)=x^N-1$.
+
+\paragraph{Bit reversal.} For $n=2^k$, index $i$ maps to
+\[
+\mathrm{rev}_k(i)=\mathrm{reverse\_bits}(i)\gg(\texttt{usize::BITS}-k).
+\]
+Small arrays are permuted in place; large arrays gather into a fresh buffer in
+parallel. FRI layers are bit-reversed so each adjacent quad is
+$(x,-x,j_0x,-j_0x)$.
+
+\paragraph{NTT.} The forward transform evaluates coefficients at powers of
+$\omega$; the inverse interpolates and scales by $1/n$. Cooley--Tukey stages:
+\[
+\begin{aligned}
+u&=\mathrm{block}[j],\\
+v&=\mathrm{block}[j+\ell/2]\cdot\mathrm{twiddle}[j\cdot(n/\ell)],\\
+\mathrm{block}[j]&=u+v,\\
+\mathrm{block}[j+\ell/2]&=u-v.
+\end{aligned}
+\]
+Twiddles are chained powers $1,\mathrm{root},\dots,\mathrm{root}^{n/2-1}$.
+The inverse folds $1/n$ into the final stage. Domains must be nonempty powers
+of two at most $2^{27}$.
+
+\paragraph{Coset evaluation.} For coefficients $c_0,\dots,c_{n-1}$ and blowup
+$\beta$, compute $M=n\beta$ values $c(\gamma\Omega^i)$ by multiplying $c_i$
+by $\gamma^i$, zero-padding to $M$, and applying the forward NTT. Extension
+coset evaluation applies the base transform to each of the four coordinates
+and recombines.
+
+\section{BLAKE3 and Merkle commitments}
+
+\paragraph{BLAKE3-256.} Unkeyed BLAKE3 with 256-bit output: 16-word state,
+7 ARX rounds, message permutation
+$[2,6,3,10,7,0,4,13,1,11,12,5,9,14,15,8]$, flags
+\texttt{CHUNK\_START=1}, \texttt{CHUNK\_END=2}, \texttt{PARENT=4},
+\texttt{ROOT=8}, 1024-byte chunks, 64-byte blocks, and Bao-style
+merge-while-even stacking. Validated against reference vectors for empty
+input, \texttt{abc}, one chunk, one byte over a chunk, two chunks, and
+multi-chunk inputs crossing boundaries. Incremental updates with arbitrary
+splits equal the one-shot digest.
+
+\paragraph{Merkle trees.} A complete binary tree over leaves padded by
+duplicating the last leaf to a power of two. For raw leaves:
+\[
+\mathrm{leaf}(d)=H(0x00\|d),\qquad
+\mathrm{node}(l,r)=H(0x01\|l\|r).
+\]
+FRI quad trees and AIR trace trees use 64-byte leaves hashed with standard
+BLAKE3 (one compression per full block); internal nodes use the same
+\texttt{0x01} construction.
+
+A path is a sequence $(\mathrm{sibling},\mathrm{is\_left})$. Verification
+recomputes the leaf digest, folds upward, and compares to the root. A path is
+valid for index $i$ only if for every level $k$,
+\[
+\mathrm{is\_left}_k=((i\gg k)\&1=0).
+\]
+This index binding is mandatory. Without it, a valid opening for leaf $j$
+would verify at any other in-range index with the same path length.
+
+\paragraph{Caps.} A cap at drop $d$ is
+\[
+\mathrm{cap}(d)=\mathrm{layers}[\mathrm{depth}-\min(d,\mathrm{depth})],
+\]
+containing $2^{\min(d,\mathrm{depth})}$ digests. Openings omit the top $d$
+path steps and authenticate the remaining path to the selected cap entry.
+Cap height is capped at 8 in every public \texttt{Params};
+\texttt{MAX\_CAP\_DIGESTS}=256.
+
+For FRI, opened layers commit one 64-byte leaf per quad; the final layer is
+sent in the clear and its cap is recomputed from \texttt{final\_poly}. For
+AIR, a 64-byte trace leaf contains eight joint rows ($A\|B$, 8 bytes per
+row). The verifier checks the row at $(\mathrm{index}\&7)\cdot8$ and
+authenticates the whole leaf at $\mathrm{index}/8$.
+
+\section{Fiat--Shamir transcript and proof of work}
+
+\paragraph{Framing.} \texttt{absorb(label,data)} appends
+\[
+\texttt{u64\_le(label.len())}\|\text{label}\|
+\texttt{u64\_le(data.len())}\|\text{data}.
+\]
+The implementation stores the history as a streaming BLAKE3 state. A squeeze
+clones the state, appends
+\[
+\texttt{u64\_le(label.len())}\|\text{label}\|\texttt{u64\_le(counter)},
+\]
+finalizes, increments the counter, and absorbs the 32-byte output back into
+the history. This is byte-identical to hashing the full concatenation but
+independent of history length.
+
+\paragraph{Challenges.} \texttt{challenge\_f64} uses the first 8 bytes;
+\texttt{challenge\_f128} uses 16 bytes; \texttt{challenge\_bb} reduces an
+8-byte word modulo $p$ (bias below $2^{-31}$); \texttt{challenge\_ext} reduces
+four 4-byte coordinates; \texttt{challenge\_index} masks low bits for a
+nonzero power-of-two domain and returns \texttt{None} otherwise.
+
+\paragraph{Proof of work.} \texttt{grind(label,d)} computes
+\[
+\mathrm{head}=H(\mathrm{history})\|\texttt{u64\_le(label.len())}\|\mathrm{label}
+\]
+and searches for the smallest nonce with at least $d$ leading zero bits under
+$H(\mathrm{head}\|\texttt{u64\_le(nonce)})$. The banded parallel search
+returns the same nonce as a sequential scan. Protocol parameters cap $d\le32$;
+\texttt{grind} fails closed above 32 by absorbing nonce $0$ and returning
+$0$. \texttt{verify\_grind} re-hashes and accepts only if the nonce meets the
+target; it hard-rejects $d>256$. Queries are sampled after the nonce is
+absorbed.
+
+\paragraph{Label schedule.}
+\begin{longtable}{@{}L{0.20\linewidth}L{0.70\linewidth}@{}}
+\toprule
+Protocol & Labels, in order \\
+\midrule
+\endhead
+FRI & \texttt{fri-dims}, \texttt{fri-layer-root} per cap digest,
+\texttt{fri-fold} $\times3$ per layer, \texttt{fri-final},
+\texttt{fri-pow}, \texttt{fri-query} per query \\
+AIR / range / table & \texttt{<proto>/params}, \texttt{<proto>/column},
+\texttt{<proto>/alpha} (fixed count) \\
+fold (IVC) & \texttt{fold/params}; per step \texttt{fold/step},
+\texttt{fold/trace}, six \texttt{fold/alpha}; then one \texttt{fold/gamma}
+per step \\
+lookup & \texttt{lookup/witness}, \texttt{lookup/table},
+\texttt{lookup/beta-challenge}, \texttt{lookup/beta}, \texttt{lookup/m},
+\texttt{lookup/qw}, \texttt{lookup/qt}, \texttt{lookup/sums},
+\texttt{lookup/ctx}, \texttt{lookup/r1}, \texttt{lookup/r2} \\
+lookup\_pcs & \texttt{lookup-pcs/commitments}, \texttt{lookup-pcs/beta},
+\texttt{lookup-pcs/quotients}, \texttt{lookup-pcs/sum-w},
+\texttt{lookup-pcs/ctx}, \texttt{lookup-pcs/r1},
+\texttt{lookup-pcs/gamma}, \texttt{lookup-pcs/r2}, and one
+\texttt{lookup-pcs/open} label per BaseFold opening \\
+vm & \texttt{vm/params}, \texttt{vm/trace}, four \texttt{vm/alpha} \\
+recursion & \texttt{rec/params}, \texttt{rec/trace}, seven \texttt{rec/alpha} \\
+sumcheck & \texttt{sumcheck/claim}; per round \texttt{sumcheck/round},
+\texttt{sumcheck/challenge} \\
+\bottomrule
+\end{longtable}
+
+A caller MUST start the transcript with a unique application label. The
+constructor absorbs \texttt{("domain",label)} first.
+
+\section{FRI polynomial commitment}
+
+\subsection{Parameters and commitment}
+
+A FRI parameter set is
+\[
+(\beta,Q,F,g,h),\qquad
+\beta\ge2,\quad Q\ge1,\quad 2\le F\le1024,\quad g\le32,\quad h\le8,
+\]
+with $F<M$ and $M/F$ a power of four. \texttt{commit} maps $n$ coefficients
+to $M=n\beta$ coset evaluations with a shifted NTT. \texttt{commit\_evals}
+accepts already-expanded LDE values with a declared degree bound $d<M$. Both
+paths validate parameters before the encoding NTT, reject empty or
+non-power-of-two lengths, enforce $M\le2^{27}$, and bind $(M,n,d)$ under
+\texttt{fri-dims} before any challenge. The rate gate
+\[
+d+1\le M/2
+\]
+is enforced at prove and verify.
+
+\subsection{Arity-4 folding}
+
+Layers are bit-reversed. Each adjacent quad sits at
+$(x,-x,j_0x,-j_0x)$ for the fixed fourth root $j_0$, sharing $x^4$. Writing
+$P(X)=A+BX+CX^2+DX^3$ in $Y=X^4$, the fold is
+\[
+\yFold(e_0,e_1,e_2,e_3)=A+r_0B+r_1C+r_2D,
+\]
+with
+\[
+\begin{aligned}
+A&=(e_0+e_1+e_2+e_3)/4,\\
+B&=((e_0-e_1)-j_0(e_2-e_3))/(4x),\\
+C&=((e_0+e_1)-(e_2+e_3))/(4x^2),\\
+D&=((e_0-e_1)+j_0(e_2-e_3))/(4x^3),
+\end{aligned}
+\]
+and $(r_0,r_1,r_2)\in\yFpFour^3$. Point inverses are base-field values and
+are batch-inverted once per layer. Each fold quarters the degree.
+
+\subsection{Proof and verification}
+
+A proof carries the final polynomial in the clear, one opening per query
+(four $\yFpFour$ values per folded quad plus the middle Merkle path segment),
+and a PoW nonce. Verification performs:
+\begin{enumerate}[leftmargin=1.3em]
+\item validate dimensions, cap shapes, fold count, and the rate gate;
+\item absorb dimensions, cap digests, and the final polynomial;
+\item check the PoW nonce against the replayed history;
+\item verify the final layer by divided differences against residual
+$d\gg2f$ at the true folded domain points;
+\item recompute the final layer cap from \texttt{final\_poly} and compare it
+to the commitment;
+\item sample query indices after grinding and check every Merkle path and fold
+relation, chaining intermediate parents forward and the last parent into
+\texttt{final\_poly}.
+\end{enumerate}
+
+The final degree check is non-vacuous: a one-point final layer would let any
+value interpolate a degree-0 polynomial, so $F\ge2$ is mandatory and
+\[
+(d\gg2f)+1<F
+\]
+is enforced. A fold-free instance ($F=M$) is rejected because it has no query
+openings binding \texttt{final\_poly} to the commitment.
+
+\subsection{Conjectured soundness}
+
+Under the Johnson-radius heuristic, a word at distance $\delta$ from the code
+survives one query with probability at most $1-\delta$, where
+$\delta\approx1-\sqrt{\rho}$.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Shape & Rate $\rho$ & Queries $Q$ & Grinding & Conjectured query+PoW \\
+\midrule
+Bench & $1/8$ & 12 & 0 & $\approx18$ bits \\
+Production & $1/16$ & 40 & 20 & $\approx100$ bits ($80+20$) \\
+\bottomrule
+\end{tabular}
+\caption{Conjectured FRI query/PoW schedule. Algebraic error is separate.}
+\end{table}
+
+These counts exclude finite-field algebraic error. FRI folds, STARK
+compositions, UPCs/Gemini points and betas, sumcheck rounds, and lookup
+identities use $\yFpFour$, so a degree-$d$ identity collides with probability
+about $d/p^4$ per challenge ($\approx124$ bits). This remains a query/PoW
+formula, not an end-to-end theorem.
+
+\section{Multilinear polynomials and sumcheck}
+
+A multilinear polynomial with $n$ variables stores $2^n$ evaluations in
+MSB-first order. \texttt{evaluate} folds the least-significant variable first.
+The equality polynomial is
+\[
+\yEq(r,x)=\prod_i\bigl(r_ix_i+(1-r_i)(1-x_i)\bigr).
+\]
+A summand is a sum of terms
+$f(x)=\sum_kc_k\prod_{j\in\mathrm{factors}_k}\mathrm{mle}_j(x)$ with
+$c_k\in\yFpFour$. Sumcheck proves $S=\sum_{x\in\{0,1\}^n}f(x)$ by sending
+round polynomials of degree at most the maximum factor count. Verification
+checks $g_i(0)+g_i(1)=g_{i-1}(r_{i-1})$, samples $r_i\in\yFpFour$, and
+finally checks the oracle value. If the oracle is committed, each final value
+is opened at the challenge point.
+
+\section{Univariate, Gemini, and BaseFold commitments}
+
+\subsection{UPCs}
+
+\texttt{upcs} commits a univariate polynomial as a Merkle-committed
+Reed--Solomon LDE. To prove $g(\beta)=y$, the prover commits
+$q=(g-y)/(X-\beta)$ and proves both $g$ and $q$ low-degree with FRI; the
+verifier checks $(X-\beta)q=g-y$ at the quotient's query points. Multi-point
+openings use $I$ interpolating the claims and $Z=\prod_j(X-p_j)$, with
+$q=(g-I)/Z$ and $g=I+Zq$. When the points determine the polynomial
+($k=\mathrm{poly\_len}$), the quotient is zero and the verifier checks $g$
+against the interpolant directly. Optional Merkle caps shorten paths and are
+authenticated against the commitment root.
+
+\subsection{Gemini}
+
+Gemini commits the monomial-coefficient encoding
+$g_0(X)=\sum_bc_bX^{\mathrm{index}(b)}$ and proves $f(r)=y$ by folding one
+variable at a time:
+\[
+g_{i-1}(X)=A_i(X^2)+XB_i(X^2),\qquad
+g_i(Y)=A_i(Y)+r_iB_i(Y).
+\]
+Each committed layer is opened once with a multi-point UPCs proof at all
+points its relations use. Layer commitments are absorbed before the fold
+betas. Proof size is linear, not constant. Each fold identity has degree below
+$2^{n-i+1}$, so one random check misses a nonzero identity with probability at
+most $2^{n-i+1}/p^4$.
+
+\subsection{BaseFold prototype}
+
+BaseFold commits the coefficient encoding with FRI and reduces $f(r)=y$ to a
+coefficient-oracle evaluation $c(\rho)$ with sumcheck. The prover folds the
+LDE with the M\"obius/eq rule
+\[
+(1-\rho_i)E(X)+\rho_iO(X)
+\]
+rather than the coefficient-encoding rule $E(X)+\rho_iO(X)$, so the final FRI
+constant is exactly $c(\rho)$. The verifier recomputes
+\[
+w(\rho)=\prod_i(1-\rho_i+\rho_ir_i)
+\]
+and checks $f(r)=c(\rho)w(\rho)$. Proofs carry one root, $n-1$ layer roots,
+sumcheck rounds, and one pair plus one Merkle path per layer per query.
+Optional caps store a digest frontier per layer and hash it back to the layer
+root. Batched multi-point openings use the multilinear basis table and are
+capped at 1024 points. The prototype is not wired into the AIR/STARK stack
+and has no end-to-end soundness proof; it backs the committed lookup.
+
+\section{Lookup arguments}
+
+\subsection{LogUp in clear}
+
+For witness $w$ and table $t$ padded to powers of two, the prover computes
+first-index multiplicities $m$, samples $\beta$ avoiding poles, and forms
+\[
+q^w_i=\frac{1}{\beta+w_i},\qquad
+q^t_j=\frac{m_j}{\beta+t_j}.
+\]
+Four sumchecks establish the rational identity
+$\sum_iq^w_i=\sum_jq^t_j$ and the read-checks
+$q^w_i(\beta+w_i)=1$, $q^t_j(\beta+t_j)=m_j$. The verifier has witness and
+table in clear and recomputes canonical multiplicities exactly; fractional
+multiplicities are rejected. The API is sound for membership but not hiding.
+
+\subsection{Committed LogUp}
+
+\texttt{lookup\_pcs} commits witness, table, multiplicities, and both quotient
+columns with BaseFold. The verifier sees five commitments and eight openings.
+The read-checks use the committed columns directly:
+\[
+\yEq\cdot\bigl(q\cdot(\beta+v)-\mathrm{target}\bigr)=0,
+\]
+expanded as $\yEq qv+\beta\yEq q-\yEq\,\mathrm{target}$. A fresh $\gamma$
+folds the total multiplicity weight into the sum-t claim:
+\[
+\sum(q^t+\gamma m)=\sum q^w+\gamma W.
+\]
+The verifier rejects $\gamma=0$. Every final sumcheck value is opened against
+its commitment. At 1,024-in-1,024 with $B16Q40G20C4$, the prototype measures
+273.01~ms prove, 5.77~ms verify, and 642,443 bytes. It is committed-input but
+not zero-knowledge and does not constrain columns to the base field.
+
+\section{AIR systems}
+
+\subsection{Fibonacci AIR}
+
+Trace $A[0]=a_0$, $B[0]=b_0$, $A[i+1]=B[i]$, $B[i+1]=A[i]+B[i]$, claim
+$B[N-1]=b_{\mathrm{last}}$. With $w_{\mathrm{last}}=\omega^{N-1}$ and
+$Z_{\mathrm{trans}}(x)=(x^N-1)/(x-w_{\mathrm{last}})$:
+\[
+\begin{aligned}
+C(x)={}&\alpha_0\frac{a'-b}{Z_{\mathrm{trans}}(x)}
++\alpha_1\frac{b'-(a+b)}{Z_{\mathrm{trans}}(x)}\\
+&+\alpha_2\frac{a-a_0}{x-1}
++\alpha_3\frac{b-b_0}{x-1}
++\alpha_4\frac{b-b_{\mathrm{last}}}{x-w_{\mathrm{last}}}.
+\end{aligned}
+\]
+Five \texttt{fib/alpha} challenges; $\deg C<N$ iff the trace is valid.
+Dividing, not multiplying, by $Z_{\mathrm{trans}}$ is load-bearing. Blowup is
+at least 4. Next-row values are the same committed columns at the
+$\omega$-shifted LDE index, authenticated by a second Merkle path.
+
+\subsection{Range check AIR}
+
+Value column $V$ plus $n$ bit columns ($1\le n\le24$), with challenges
+$\alpha_{\mathrm{decomp}}$, $\{\alpha_j\}$, $\alpha_{\mathrm{bound}}$:
+\[
+C=\alpha_{\mathrm{decomp}}\frac{V-\sum_j2^jC_j}{Z_H}
++\sum_j\alpha_j\frac{C_j(C_j-1)}{Z_H}
++\alpha_{\mathrm{bound}}\frac{V-\mathrm{value}}{x-1}.
+\]
+Booleanity doubles the masked degree; masked callers should size blowup and
+queries for a rate near $2/\beta$. The verifier caps the declared bound at the
+largest honest masked degree.
+
+\subsection{Table membership AIR}
+
+\[
+C(x)=\alpha_{\mathrm{member}}\frac{\prod_{t\in T}(v-t)}{Z_H(x)}
++\alpha_{\mathrm{bound}}\frac{v-\mathrm{value}}{x-1}.
+\]
+The honest composition bound is $|T|(n+k-1)-n$ for $n$ rows and $k$ maskers.
+The tiny-table \texttt{for\_security} tuner floors blowup at 4 so FRI always
+has a valid final layer.
+
+\subsection{Hash-folded IVC}
+
+Segments of \texttt{seg\_steps} Fibonacci rows are committed independently
+with explicit in/out claims. The verifier checks chain links, then verifies
+one shared FRI proof over
+\[
+V=\sum_s\gamma_sC_s
+\]
+with per-step challenges. A far-from-code segment keeps the combination far
+with overwhelming probability over the gammas. The statement is existential
+over the number of segments; callers requiring an exact step count must check
+\texttt{proof.steps.len()}. The accumulator retains each segment's LDE,
+Merkle tree, and composition until finalization.
+
+\subsection{Register-machine execution}
+
+A public two-register straight-line program runs from a private initial state
+to a public output. Opcodes are \texttt{Add}, \texttt{Mul}, \texttt{Swap},
+\texttt{SetA}, \texttt{SetB}, and \texttt{Halt}; the last row is the public
+output and has no outgoing transition. Public one-hot selectors and immediate
+polynomials drive transition numerators $T,U$:
+\[
+\begin{aligned}
+C(x)={}&\alpha_0\frac{T(x)}{Z_{\mathrm{trans}}(x)}
++\alpha_1\frac{U(x)}{Z_{\mathrm{trans}}(x)}\\
+&+\alpha_2\frac{A(x)-a_{\mathrm{last}}}{x-w_{\mathrm{last}}}
++\alpha_3\frac{B(x)-b_{\mathrm{last}}}{x-w_{\mathrm{last}}}.
+\end{aligned}
+\]
+Plain composition degree is below $2n-1$, so blowup is at least 8. Masked
+columns have degree $\mathrm{padded}-1$; the \texttt{Mul} transition is
+quadratic, so the prover declares $2(n+n_{\mathrm{rand}}-1)$ and the verifier
+accepts up to $2\cdot\mathrm{padded}-2$. Each query reveals the current and
+shifted rows, so the mask budget is $2Q$. The program and output remain
+public; there is no control flow or memory.
+
+\subsection{Recursion fragment}
+
+\texttt{recursion} proves one FRI query's fold chain as a small STARK. Public
+inputs are the outer \texttt{lde\_len}, leaf, per-depth challenges, the
+layer-0 quad, and the output; the witness is the sequence of quads and folded
+outputs. Constraints cover the fold identity, the selected next-layer element,
+the initial quad, and the final output. The fragment does not yet verify
+BLAKE3 paths, the final degree check, or transcript derivation inside the AIR.
+
+\section{Zero-knowledge masking}
+
+Masked proving maps a column $T$ of degree $<n$ to
+\[
+M(x)=T(x)+Z_H(x)R(x),
+\]
+where $R$ has $n_{\mathrm{rand}}$ uniform coefficients. $Z_H$ vanishes on
+every base row, so trace values and AIR quotient identities are preserved.
+Off-domain, the mask term is nonzero. Evaluations of $R$ at $k$ distinct
+points are jointly uniform when $n_{\mathrm{rand}}\ge k$ (Vandermonde),
+giving perfect hiding of query responses.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Protocol & Revealed values per column per query & Minimum $n_{\mathrm{rand}}$ \\
+\midrule
+\texttt{range}, \texttt{table} & one point & $Q$ \\
+\texttt{vm} & current and shifted rows & $2Q$ \\
+\texttt{air} & eight-row leaf and shifted leaf & $16Q$ \\
+\bottomrule
+\end{tabular}
+\caption{Masking budgets for the values actually revealed.}
+\end{table}
+
+The composition degree grows accordingly; callers must size
+\texttt{final\_size} for the masked LDE. Verification is unchanged, and
+masked false statements still fail. This is query-response hiding, not full
+program privacy: public inputs, Merkle roots, and composition commitments
+remain visible. \texttt{lookup}, \texttt{sumcheck}, \texttt{upcs},
+\texttt{gemini}, and \texttt{basefold} are not hiding.
+
+\section{Wire format}
+
+All proofs use a canonical versioned encoding, \texttt{VERSION=5}:
+little-endian integers, \texttt{u32} counts, canonical base and extension
+fields, 32-byte digests, and $0/1$ direction bytes. The decoder rejects
+trailing bytes, truncation, non-canonical fields, and oversized counts before
+allocation.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+Limit & Value \\
+\midrule
+\texttt{MAX\_QUERIES} & $2^{20}=1{,}048{,}576$ \\
+\texttt{MAX\_FOLDS} & 64 \\
+\texttt{MAX\_PATH\_STEPS} & 128 \\
+\texttt{MAX\_CAP\_DIGESTS} & 256 \\
+\texttt{MAX\_ELEMS} & $2^{27}=134{,}217{,}728$ \\
+\texttt{MAX\_STEPS} (IVC) & $2^{20}=1{,}048{,}576$ \\
+FRI \texttt{MAX\_FINAL\_SIZE} & 1024 \\
+maximum Merkle cap height & 8 \\
+BaseFold \texttt{MAX\_BATCH} & 1024 \\
+BaseFold \texttt{MAX\_VARS} & 16 \\
+Gemini \texttt{MAX\_VARS} & 20 \\
+UPCs \texttt{MAX\_POINTS} & 16 \\
+VM \texttt{MAX\_PROGRAM} & $2^{20}$ \\
+recursion \texttt{MAX\_FOLDS} & 16 \\
+\bottomrule
+\end{tabular}
+\caption{Hard decoder and protocol limits.}
+\end{table}
+
+Proof bodies:
+\begin{itemize}[leftmargin=1.3em]
+\item FRI: final polynomial, PoW nonce, query count, per-query fold witnesses
+(four $\yFpFour$ values plus path).
+\item AIR/range/table/vm/recursion: column cap, FRI commitment and proof,
+opening count, per-opening index/values/paths (and 64-byte leaves for AIR).
+\item fold: step count, per-step claims/cap/openings, shared FRI commitment
+and proof.
+\item BaseFold: sumcheck sum and rounds, layer roots, caps, PoW nonce, queries.
+\item UPCs: two FRI instances, quotient commitment/proof, openings.
+\item Gemini: layer commitments, values, nested UPCs openings.
+\item lookup: beta, multiplicities, quotient columns, sums, four nested
+sumcheck proofs.
+\item lookup\_pcs: beta, sum, four nested sumcheck proofs, eight BaseFold
+openings.
+\item sumcheck: claimed sum, rounds, final values.
+\end{itemize}
+
+\section{Parameter validation and sizing}
+
+Every entry point validates:
+\begin{itemize}[leftmargin=1.3em]
+\item domains are nonempty powers of two within $2^{27}$;
+\item blowup is a power of two ($\ge4$ for AIR/fold, $\ge2$ for
+FRI/range/table, $\ge8$ for Gemini/VM);
+\item queries $\ge1$ and $\le2^{20}$;
+\item \texttt{final\_size} $\ge2$, power of two, $\le1024$, and strictly
+below the LDE size;
+\item $M/F$ is a power of four;
+\item cap height $\le8$;
+\item grinding bits $\le32$;
+\item rate gate $d+1\le M/2$;
+\item residual bound non-vacuous: $(d\gg2f)+1<F$;
+\item recursion outer \texttt{lde\_len} $\le2^{27}$.
+\end{itemize}
+
+\texttt{Params::for\_security(len,\dots,target)} selects blowup 16, computes
+millibits per query from the rate and composition degree, splits the target
+between queries and grinding, and chooses \texttt{final\_size} and
+\texttt{cap\_height} with \texttt{tune\_shape}. For target 100, the
+AIR/FRI production shape is rate $1/16$, 40 queries, and 20-bit grinding.
+The FRI tuner never selects a one-point final layer and caps normal finals at
+32; the hard verifier cap is 1024.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Protocol & Degree bound & Mask budget \\
+\midrule
+AIR & $N+n_{\mathrm{rand}}-1$ & $16Q$ \\
+Range & $N+2n_{\mathrm{rand}}-2$ & $Q$ \\
+Table & $|T|(N+n_{\mathrm{rand}}-1)-N$ & $Q$ \\
+VM & $2(N+n_{\mathrm{rand}}-1)$ & $2Q$ \\
+\bottomrule
+\end{tabular}
+\caption{Masked composition bounds and mask budgets.}
+\end{table}
+
+\section{Security analysis}
+
+\paragraph{Assumptions.} BLAKE3 collision/preimage resistance; FRI soundness
+under the Johnson-radius heuristic; Fiat--Shamir in the (quantum)
+random-oracle model; standard Reed--Solomon list-decoding bounds. No
+discrete-log, pairing, or setup assumptions.
+
+\paragraph{Adversary model.} The adversary controls proof bytes, commitments,
+public parameters, and public statements. It may choose malformed counts,
+paths, caps, field encodings, and dimensions. The verifier must fail closed,
+never panic, and never allocate based on an unchecked count. The adversary may
+also choose the prover's witness and strategy; soundness is argued against a
+malicious prover, not only random errors.
+
+\paragraph{Enforced invariants.}
+\begin{enumerate}[leftmargin=1.3em]
+\item Rate gate at prove and verify.
+\item Verifier-derived domains and query indices.
+\item Non-vacuous final divided-difference check.
+\item Cap/path shape pins before hashing.
+\item Direction bits bound to claimed indices.
+\item \texttt{fri-dims} dimension binding.
+\item Canonical-only decoding with hard caps.
+\item PoW bound to the full history; queries sampled after grinding.
+\item Committed read-checks in \texttt{lookup\_pcs}.
+\item Correct masked composition bounds in VM.
+\item Next-row openings authenticated against the same trace cap.
+\item No allocation before count limits are checked.
+\end{enumerate}
+
+\paragraph{Closed findings.} Internal adversarial review has closed Merkle
+path index substitution across all verifiers and hand-rolled FRI/BaseFold
+walks; one-point FRI final layers and fold-free FRI; final cap not bound to
+\texttt{final\_poly}; \texttt{lookup\_pcs} read-checks using uncommitted
+shifted MLEs; VM masked \texttt{Mul} degree under-declaration; AIR/VM ZK mask
+budgets undercounting revealed values; batched BaseFold openings using the
+equality table instead of the multilinear basis table; and prover allocation
+ordering, cap-height/roundtrip limits, recursion domain bounds, checked
+buffer arithmetic, and transcript/grinding hardening.
+
+\paragraph{Residual risk.} The system is unaudited. The query/PoW figures are
+conjectured. The small-table AIR scales with table size. \texttt{lookup\_pcs}
+is not zero-knowledge and does not constrain columns to the base field.
+BaseFold, Gemini, VM, and recursion are prototypes. Side channels in the host
+OS, compiler, or CPU are out of scope. Do not deploy for high-value statements
+before an external audit.
+
+\section{Evidence and reproducibility}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}L{0.20\linewidth}cL{0.62\linewidth}@{}}
+\toprule
+Suite & Tests & Evidence \\
+\midrule
+Library & 277 & KATs, Horner/\texttt{\%} cross-checks, parallel determinism, protocol roundtrips \\
+\texttt{security.rs} & 13 & 479 hostile attempts, zero accepted \\
+\texttt{redteam.rs} & 10 & 37 targeted + 500 garbage, zero accepted/panics \\
+\texttt{hardening.rs} & 11 & Hostile params, exhaustive per-bit AIR decoder fuzz, 14,000 mutations, zero panics \\
+Doc tests & 5 & Public examples \\
+\textbf{Total} & \textbf{316} & Plus coverage-guided \texttt{fuzz/decode} \\
+\bottomrule
+\end{tabular}
+\caption{Validation matrix on the current tree.}
+\end{table}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Workload (production query/PoW) & Prove & Verify & Size \\
+\midrule
+AIR 1,024 steps & 37.05\,ms & 0.48\,ms & 68,573\,B \\
+AIR 8,192 steps & 49.81\,ms & 0.59\,ms & 101,233\,B \\
+AIR 65,536 steps & 115.49\,ms & 0.90\,ms & 141,641\,B \\
+AIR \textbf{1,048,576} steps & \textbf{1,733.55\,ms} & \textbf{1.13\,ms} & \textbf{203,553\,B} \\
+FRI poly-1,024 & 21.50\,ms & 0.31\,ms & 43,174\,B \\
+\bottomrule
+\end{tabular}
+\caption{Production AIR/FRI measurements, 2026-11-05.}
+\end{table}
+
+The 1M-step row is $1.653\,\mu$s/step and 604,872 steps/s. The full gate is
+\texttt{python3 tools/check.py}; it runs fmt, Markdown links, rustdoc,
+pedantic clippy, debug tests, release tests, and the benchmark regression.
+The baseline pins all 24 rows: proof sizes byte-for-byte, times within
+$3\times$ of \texttt{tools/baseline.json}.
+
+\appendix
+
+\section{Error taxonomy}
+
+\begin{longtable}{@{}L{0.30\linewidth}L{0.60\linewidth}@{}}
+\toprule
+Error & Meaning \\
+\midrule
+\endhead
+\texttt{EmptyInput} & Empty table/vector where at least one element is required \\
+\texttt{IndexOutOfBounds} & Index outside a committed domain \\
+\texttt{InvalidDomainSize} & Non-power-of-two, zero, or above the domain ceiling \\
+\texttt{InvalidBlowup} & Blowup below the protocol floor or not a power of two \\
+\texttt{NoQueries} & Zero FRI queries \\
+\texttt{BadMerklePath} & Failed path, cap, shape, or index check \\
+\texttt{FriVerificationFailed} & Fold, degree, PoW, or identity failure \\
+\texttt{MalformedInput} & Canonical encoding or parameter violation \\
+\texttt{RngUnavailable} & OS RNG failure \\
+\bottomrule
+\end{longtable}
+
+\section{Public API map}
+
+\begin{longtable}{@{}L{0.22\linewidth}L{0.68\linewidth}@{}}
+\toprule
+Module & Main entry points \\
+\midrule
+\endhead
+\texttt{babybear} & \texttt{Field}, \texttt{batch\_invert} \\
+\texttt{ext4} & \texttt{Ext4}, \texttt{from\_base}, \texttt{mul\_base}, \texttt{inv} \\
+\texttt{gf2} & \texttt{F8}, \texttt{F64}, \texttt{F128}, \texttt{splitmix64} \\
+\texttt{hash} & \texttt{blake3\_256}, \texttt{Hasher} \\
+\texttt{merkle} & \texttt{MerkleTree}, \texttt{hash\_leaf}, \texttt{hash\_node}, \texttt{capped\_shape} \\
+\texttt{transcript} & \texttt{Transcript}, \texttt{challenge\_*}, \texttt{grind}, \texttt{verify\_grind} \\
+\texttt{ntt} & \texttt{forward}, \texttt{inverse}, \texttt{interpolate}, \texttt{evaluate\_on\_coset}, \texttt{evaluate} \\
+\texttt{fri} & \texttt{Params}, \texttt{commit}, \texttt{commit\_evals}, \texttt{open}, \texttt{verify} \\
+\texttt{mle} & \texttt{Mle}, \texttt{eq\_evals}, \texttt{evaluate}, \texttt{fix\_last} \\
+\texttt{sumcheck} & \texttt{Term}, \texttt{Proof}, \texttt{prove}, \texttt{verify}, \texttt{interpolate\_at} \\
+\texttt{upcs} & \texttt{commit}, \texttt{open}, \texttt{open\_multi}, \texttt{verify}, \texttt{verify\_multi} \\
+\texttt{gemini} & \texttt{commit}, \texttt{commit\_evals}, \texttt{open}, \texttt{verify} \\
+\texttt{basefold} & \texttt{commit}, \texttt{open}, \texttt{open\_multi}, \texttt{verify}, \texttt{verify\_multi} \\
+\texttt{lookup} & \texttt{prove}, \texttt{verify} \\
+\texttt{lookup\_pcs} & \texttt{prove}, \texttt{verify}, \texttt{Commitments} \\
+\texttt{air} & \texttt{Params}, \texttt{build\_trace}, \texttt{prove}, \texttt{prove\_zk}, \texttt{verify} \\
+\texttt{range} & \texttt{Params}, \texttt{build\_columns}, \texttt{prove}, \texttt{prove\_zk}, \texttt{verify} \\
+\texttt{table} & \texttt{Params}, \texttt{prove}, \texttt{prove\_zk}, \texttt{verify} \\
+\texttt{fold} & \texttt{Params}, \texttt{Accumulator}, \texttt{verify} \\
+\texttt{vm} & \texttt{Params}, \texttt{Op}, \texttt{prove}, \texttt{prove\_zk}, \texttt{verify} \\
+\texttt{recursion} & \texttt{Params}, \texttt{prove}, \texttt{verify} \\
+\texttt{blind} & \texttt{mask\_coeffs}, \texttt{masked\_column\_degree} \\
+\texttt{rng} & \texttt{ChaCha20}, \texttt{os\_seed}, \texttt{fresh\_stream} \\
+\bottomrule
+\end{longtable}
+
+\section{Parameter quick reference}
+
+\begin{longtable}{@{}L{0.28\linewidth}L{0.64\linewidth}@{}}
+\toprule
+Constructor & Key validation \\
+\midrule
+\endhead
+\texttt{fri::Params::new} & blowup $\ge2$, queries $\ge1$, final $2\dots1024$ \\
+\texttt{air::Params::new} & $N$ power of two $\ge2$, blowup $\ge4$, $M\le2^{27}$ \\
+\texttt{range::Params::new} & bits $1\dots24$, blowup $\ge2$ \\
+\texttt{table::Params::new} & table checked at prove/verify, blowup $\ge2$ \\
+\texttt{fold::Params::new} & segment $\ge2$, blowup $\ge4$ \\
+\texttt{vm::Params::new} & blowup $\ge8$, program $\le N-1$ \\
+\texttt{recursion::Params::new} & folds $1\dots16$, outer LDE $\le2^{27}$ \\
+\texttt{basefold::Params::new} & blowup $\ge2$, cap $\le8$, vars $\le16$ \\
+\texttt{gemini::Params::new} & blowup $\ge8$, vars $\le20$ \\
+\texttt{upcs} & points $\le16$, blowup $\ge2$, LDE $\le2^{27}$ \\
+\bottomrule
+\end{longtable}
+
+\section{Glossary}
+
+\begin{longtable}{@{}L{0.22\linewidth}L{0.70\linewidth}@{}}
+\toprule
+Term & Meaning \\
+\midrule
+\endhead
+AIR & Algebraic Intermediate Representation \\
+FRI & Fast Reed--Solomon IOP of Proximity \\
+LDE & Low-degree extension \\
+MLE & Multilinear extension \\
+PCS & Polynomial commitment scheme \\
+PoW & Proof of work / Fiat--Shamir grinding \\
+STARK & Scalable Transparent Argument of Knowledge \\
+UPCs & Univariate polynomial commitment scheme \\
+ZK & Zero knowledge \\
+\bottomrule
+\end{longtable}
+
+\section{Reproducibility checklist}
+
+\begin{enumerate}[leftmargin=1.3em]
+\item \texttt{cargo fmt --check}
+\item \texttt{python3 tools/check\_links.py}
+\item \texttt{RUSTDOCFLAGS="-D warnings" cargo doc --no-deps}
+\item \texttt{cargo clippy --all-targets -- -D warnings}
+\item \texttt{cargo test} and \texttt{cargo test --release}
+\item \texttt{cargo bench} (24 rows)
+\item \texttt{python3 tools/check.py} (full gate)
+\end{enumerate}
+
+\end{document}

@@ -75,9 +75,10 @@ All notable changes to `z0p` are documented here. The format follows
   unchanged.
 
 ### Added
-- Expanded GitHub README, white paper, yellow paper, and a 19-page LaTeX
-  technical report/PDF, all aligned with the current code and the
-  2026-11-05 measured benchmark run.
+- Expanded GitHub README, white paper, yellow paper, and separate compiled
+  LaTeX/PDF editions: an 11-page white paper, a 16-page formal yellow paper,
+  and the 19-page combined technical report, all aligned with the current
+  code and the 2026-11-05 measured benchmark run.
 - `RELEASING.md` and `tools/release_check.py` for immutable, reproducible
   releases and version/tag consistency checks.
 - An explicit project-status banner and an audit review order covering the

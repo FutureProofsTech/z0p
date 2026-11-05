@@ -612,8 +612,12 @@ the size assertions; see [CONTRIBUTING.md](CONTRIBUTING.md).
 | [docs/security-tests.md](docs/security-tests.md) | Attack-suite results and closed findings |
 | [docs/red-team.md](docs/red-team.md) | Cross-proof, false-statement, IVC, garbage-storm results |
 | [docs/unit-tests.md](docs/unit-tests.md) | Per-module test breakdown |
-| [papers/z0p-eprint.tex](papers/z0p-eprint.tex) | Long-form LaTeX technical report |
-| [papers/z0p-eprint.pdf](papers/z0p-eprint.pdf) | Compiled 19-page PDF |
+| [papers/z0p-whitepaper.tex](papers/z0p-whitepaper.tex) | White-paper LaTeX source |
+| [papers/z0p-whitepaper.pdf](papers/z0p-whitepaper.pdf) | Compiled white paper (11 pages) |
+| [papers/z0p-yellowpaper.tex](papers/z0p-yellowpaper.tex) | Yellow-paper LaTeX source |
+| [papers/z0p-yellowpaper.pdf](papers/z0p-yellowpaper.pdf) | Compiled formal specification (16 pages) |
+| [papers/z0p-eprint.tex](papers/z0p-eprint.tex) | Combined long-form technical report source |
+| [papers/z0p-eprint.pdf](papers/z0p-eprint.pdf) | Combined technical report (19 pages) |
 | [SECURITY.md](SECURITY.md) | Threat model, reporting, disclosure policy |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Ground rules, gates, wire-format policy |
 | [RELEASING.md](RELEASING.md) | Immutable tags and release checklist |
@@ -673,8 +677,12 @@ docs/
   red-team.md        red-team results
   unit-tests.md      unit-test breakdown
 papers/
-  z0p-eprint.tex     long-form technical report source
-  z0p-eprint.pdf     compiled PDF
+  z0p-whitepaper.tex   white-paper LaTeX source
+  z0p-whitepaper.pdf   compiled white paper
+  z0p-yellowpaper.tex  formal-specification LaTeX source
+  z0p-yellowpaper.pdf  compiled yellow paper
+  z0p-eprint.tex       combined technical report source
+  z0p-eprint.pdf       combined technical report PDF
 AUDIT.md         auditor entry point
 CITATION.cff     software citation metadata
 SECURITY.md      threat model + vulnerability reporting
@@ -738,8 +746,10 @@ If you use z0p in academic work, cite the software metadata in
 }
 ```
 
-The long-form technical report is [papers/z0p-eprint.pdf](papers/z0p-eprint.pdf).
-The formal specification is [docs/yellowpaper.md](docs/yellowpaper.md).
+The white paper is [papers/z0p-whitepaper.pdf](papers/z0p-whitepaper.pdf).
+The formal specification is [papers/z0p-yellowpaper.pdf](papers/z0p-yellowpaper.pdf)
+(and its Markdown source [docs/yellowpaper.md](docs/yellowpaper.md)).
+The combined technical report is [papers/z0p-eprint.pdf](papers/z0p-eprint.pdf).
 
 **License:** GPL-3.0-only. See [LICENSE](LICENSE).
 
